@@ -53,7 +53,7 @@ def build_parser():
     sp = add("status", workflow.cmd_status, "set an issue's status (and optionally assignee)")
     sp.add_argument("issue", type=int)
     sp.add_argument("status")
-    sp.add_argument("--assignee")
+    sp.add_argument("--assignee", help="member name/email/id, or 'reviewer' for your configured reviewer")
 
     sp = add("test", tests.cmd_test, "run the repo's full suite; print summaries and unexpected failures only")
     sp.add_argument("repo", choices=repos)

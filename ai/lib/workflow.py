@@ -205,6 +205,10 @@ def cmd_comment(args):
 
 def cmd_status(args):
     fields = {"issue_number": args.issue, "status": args.status}
+    if args.assignee == "reviewer":          # the engineer's reviewer from config.local.json
+        args.assignee = config().get("reviewer") or ""
+        if not args.assignee:
+            raise AiError("no reviewer configured: run `dev-tools/installer/p4m configure`")
     if args.assignee:
         fields["assignee"] = args.assignee
     tracker_call("update_issue", **fields)
