@@ -112,6 +112,13 @@ class ReadOutcomeTest(unittest.TestCase):
     def test_no_result_is_failure(self):
         self.assertEqual(policy.read_outcome(None)[0], "failed")
 
+    def test_turn_budget_hands_back_for_input(self):
+        outcome, summary, comment = policy.read_outcome(
+            {"is_error": True, "subtype": "error_max_turns", "num_turns": 80, "session_id": "s"})
+        self.assertEqual(outcome, "needs_input")
+        self.assertIn("80-turn budget", summary)
+        self.assertIn("assign the issue back", comment)
+
 
 class ModelChoiceTest(unittest.TestCase):
     def test_complex_issue_runs_on_opus(self):
@@ -184,6 +191,11 @@ class BuildCommandTest(unittest.TestCase):
         cmd = runner.build_command("claude", make_agent(), "go on", "opus", session_id="abc")
         self.assertEqual(cmd[cmd.index("--resume") + 1], "abc")
         self.assertEqual(cmd[cmd.index("--model") + 1], "opus")
+
+    def test_turn_budget(self):
+        self.assertNotIn("--max-turns", runner.build_command("claude", make_agent(), "x", "sonnet"))
+        cmd = runner.build_command("claude", make_agent(max_turns=80), "x", "sonnet")
+        self.assertEqual(cmd[cmd.index("--max-turns") + 1], "80")
 
 
 if __name__ == "__main__":

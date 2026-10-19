@@ -15,8 +15,7 @@
       "phpunit": []
     },
     "prometheus": {
-      "ember": [],
-      "emberBaselineFailCount": 8
+      "ember": []
     }
   }
 }

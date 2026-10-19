@@ -82,6 +82,12 @@ Firefox uses its own certificate store: set `security.enterprise_roots.enabled =
 | `p4m db reset [--with-test]` | Wipe the DB volume, re-import the dump, migrate |
 | `p4m test api --mode backend,acl` | gaia api-tester against gaia-test (`--filter`, `--mode live`) |
 | `p4m test phpunit [path]` / `test hermes` | Unit tests |
+| `p4m test ember [--filter X] [--fresh]` | Prometheus tests in a test container: source copied in, incremental `ember build -e test --watch`, `ember test --path` (reruns in seconds) |
+| `p4m test clean` | remove the throwaway `p4m-test-*` containers |
+
+Every `p4m test` runs against **this workspace's checkout** (or `--src <path>`). The shared containers serve the
+folder `p4m up` ran from; when that is another folder, a throwaway `p4m-test-<service>-<hash>` container is
+started from the same image, env, network and mounts with the source pointed here, and kept for reuse.
 | `p4m repos status` / `sync` / `fix-eol` | Git state; clone + checkout + pull; CRLF→LF for shell scripts |
 | `p4m doctor` | Check tools, WSL, Docker, ports 80/443/5432, hosts file, CA trust, repos |
 | `p4m watch start\|stop\|status` | File sync of the prometheus source into its container (started by `p4m up`) |

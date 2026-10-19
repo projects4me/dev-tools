@@ -10,8 +10,8 @@ from pathlib import Path
 
 import sys
 
-from .common import (AiError, PROJECT_FOR_REPO, REPOS, config, git, issue_repo, load_timers, now, ody,
-                     repo_dir, save_timers, say, start_timer, succeeds, tracker_call)
+from .common import (AiError, PROJECT_FOR_REPO, REPOS, base_branch, config, git, git_dir, issue_repo,
+                     load_timers, now, ody, repo_dir, save_timers, say, start_timer, succeeds, tracker_call)
 
 
 def branch_name(issue):
@@ -31,10 +31,11 @@ def strip_html(text, limit=None):
 # --- sync / start ---------------------------------------------------------------------------
 
 def sync_dev(repo):
-    """Fetch origin and fast-forward local dev; returns the dev head line."""
+    """Fetch origin and fast-forward the local base branch (dev, or main for the tooling); returns its head."""
+    base = base_branch(repo)
     git(repo, "fetch", "-q", "origin")
-    git(repo, "checkout", "-q", "dev")
-    git(repo, "merge", "--ff-only", "-q", "origin/dev")
+    git(repo, "checkout", "-q", base)
+    git(repo, "merge", "--ff-only", "-q", f"origin/{base}")
     return git(repo, "log", "--oneline", "-1")
 
 
@@ -97,76 +98,89 @@ def cmd_timer(args):
 
 # --- commit / push --------------------------------------------------------------------------
 
-def _message(args):
-    if args.message_file:
-        text = Path(args.message_file).read_text(encoding="utf-8").strip()
-    else:
-        text = args.message.strip()
+def with_trailer(text):
+    text = text.strip()
     trailer = config()["coAuthor"]
     if trailer not in text:
         text += "\n\n" + trailer
     return text + "\n"
 
 
-def cmd_commit(args):
-    repo, issue = args.repo, args.issue
+def check_commit(repo, issue, files):
+    """Refuse a commit that would break a house rule: wrong branch, never-commit file, base moved."""
     branch = git(repo, "branch", "--show-current")
     if branch != branch_name(issue):
         raise AiError(f"on branch '{branch}', expected '{branch_name(issue)}'")
-    blocked = [f for f in args.files if f.replace("\\", "/") in config()["neverCommit"]]
+    blocked = [f for f in files if f.replace("\\", "/") in config()["neverCommit"]]
     if blocked:
         raise AiError(f"refusing to commit: {', '.join(blocked)} (house rule)")
-
+    base = base_branch(repo)
     git(repo, "fetch", "-q", "origin")
-    base = git(repo, "rev-parse", "--short", "origin/dev")
-    if not succeeds(["git", "merge-base", "--is-ancestor", "origin/dev", "HEAD"], cwd=repo_dir(repo)):
-        raise AiError(f"origin/dev ({base}) has moved past this branch: rebase onto origin/dev first")
+    if not succeeds(["git", "merge-base", "--is-ancestor", f"origin/{base}", "HEAD"], cwd=repo_dir(repo)):
+        sha = git(repo, "rev-parse", "--short", f"origin/{base}")
+        raise AiError(f"origin/{base} ({sha}) has moved past this branch: rebase onto origin/{base} first")
+    return branch
 
-    ody(repo, "git", "add", "--", *args.files)
+
+def commit_files(repo, issue, message, files, push=True):
+    """Stage exactly `files`, commit as Agent Odysseus with the co-author trailer, push to odysseus."""
+    branch = check_commit(repo, issue, files)
+    ody(repo, "git", "add", "--", *files)
     staged = git(repo, "diff", "--cached", "--name-only").splitlines()
-    unexpected = sorted(set(staged) - {f.replace("\\", "/") for f in args.files})
+    unexpected = sorted(set(staged) - {f.replace("\\", "/") for f in files})
     if unexpected:
         raise AiError(f"other files are staged, unstage them first: {', '.join(unexpected)}")
-    msg_file = repo_dir(repo) / ".git" / "AI_COMMIT_MSG"
-    msg_file.write_text(_message(args), encoding="utf-8")
+    msg_file = git_dir(repo) / "AI_COMMIT_MSG"
+    msg_file.write_text(with_trailer(message), encoding="utf-8")
     ody(repo, "git", "commit", "-q", "-F", str(msg_file))
     say(git(repo, "show", "--stat", "--format=%h %an: %s", "HEAD"))
-    if not args.no_push:
+    if push:
         ody(repo, "git", "push", "-q", "-u", "odysseus", branch)
-        say(f"pushed {branch} to odysseus (based on origin/dev {base})")
+        say(f"pushed {branch} to odysseus (based on origin/{base_branch(repo)} "
+            f"{git(repo, 'rev-parse', '--short', f'origin/{base_branch(repo)}')})")
+
+
+def cmd_commit(args):
+    text = Path(args.message_file).read_text(encoding="utf-8") if args.message_file else args.message
+    commit_files(args.repo, args.issue, text, args.files, push=not args.no_push)
 
 
 # --- PR hand-off ----------------------------------------------------------------------------
 
-def cmd_pr(args):
-    """Open the PR as Agent Odysseus, then comment, log time, set in_review and assign the reviewer."""
-    repo, issue = args.repo, args.issue
-    branch = branch_name(issue)
-    body = Path(args.body_file).read_text(encoding="utf-8").rstrip()
+def open_pr(repo, issue, title, body):
+    """Open the PR as Agent Odysseus (footer added); returns its URL."""
+    body = body.rstrip()
     footer = config()["prFooter"]
     if footer not in body:
         body += "\n\n" + footer
-    body_file = repo_dir(repo) / ".git" / "AI_PR_BODY.md"
+    body_file = git_dir(repo) / "AI_PR_BODY.md"
     body_file.write_text(body + "\n", encoding="utf-8")
-    url = ody(repo, "gh", "pr", "create", "--repo", REPOS[repo], "--base", "dev", "--head", branch,
-              "--title", args.title, "--body-file", str(body_file)).splitlines()[-1]
-    commit = git(repo, "rev-parse", "--short", "HEAD")
-    base = git(repo, "rev-parse", "--short", "origin/dev")
+    url = ody(repo, "gh", "pr", "create", "--repo", REPOS[repo], "--base", base_branch(repo),
+              "--head", branch_name(issue), "--title", title, "--body-file", str(body_file)).splitlines()[-1]
     say(f"PR: {url}")
+    return url
+
+
+def cmd_pr(args):
+    """Open the PR as Agent Odysseus, then comment, log time, set in_review and assign the reviewer."""
+    repo, issue = args.repo, args.issue
+    url = open_pr(repo, issue, args.title, Path(args.body_file).read_text(encoding="utf-8"))
+    commit = git(repo, "rev-parse", "--short", "HEAD")
+    base = git(repo, "rev-parse", "--short", f"origin/{base_branch(repo)}")
     pr_hand_off(issue, url, commit, base, args.time_note, args.no_time)
 
 
-def pr_hand_off(issue, url, commit, base, time_note=None, no_time=False):
+def pr_hand_off(issue, url, commit, base, time_note=None, no_time=False, notes_html=""):
+    reviewer = config().get("reviewer")
+    if not reviewer:                     # checked first, so nothing is posted twice on a retry
+        raise AiError("no reviewer configured: run `dev-tools/installer/p4m configure` (sets ai/config.local.json)")
     number = url.rstrip("/").split("/")[-1]
     repo_name = url.split("github.com/")[-1].split("/pull/")[0].split("/")[-1]
     tracker_call("add_comment", issue_number=issue, comment=(
         f"<p><strong>PR opened:</strong> <a href=\"{url}\">{repo_name}#{number}</a> "
-        f"(commit {commit}, based on dev {base}).</p>"))
+        f"(commit {commit}, based on {base}).</p>{notes_html}"))
     if not no_time:
         log_elapsed(issue, time_note or f"commit and PR {repo_name}#{number}")
-    reviewer = config().get("reviewer")
-    if not reviewer:
-        raise AiError("no reviewer configured: run `dev-tools/installer/p4m configure` (sets ai/config.local.json)")
     tracker_call("update_issue", issue_number=issue, status="in_review", assignee=reviewer)
     say(f"issue #{issue}: comment added, in_review, assigned to {reviewer}")
 
@@ -175,7 +189,7 @@ def cmd_handoff(args):
     """Tracker hand-off for a PR that already exists (e.g. opened by hand)."""
     repo = args.repo
     commit = git(repo, "rev-parse", "--short", "HEAD")
-    base = git(repo, "rev-parse", "--short", "origin/dev")
+    base = git(repo, "rev-parse", "--short", f"origin/{base_branch(repo)}")
     pr_hand_off(args.issue, args.url, commit, base, args.time_note, args.no_time)
 
 

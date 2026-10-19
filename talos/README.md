@@ -84,6 +84,7 @@ their events), and an env file with its `GAIA_*` credentials.
 | `actions` | status → `{prompt, resume}`; placeholders `{issue}`, `{repo}`, `{project}`, `{status}` (never issue text) |
 | `model.default`, `model.byComplexity`, `model.escalate` | e.g. `sonnet`; `{simple: sonnet, complex: opus}`; `opus` |
 | `maxIterations` | Claude runs per issue before a human must look (0 = no limit; default 10) |
+| `maxTurns` | turns per run (`claude --max-turns`); when reached, the issue goes back as `needs_input` with the session kept, so assigning it back resumes it (0 = no limit; Odysseus: 80) |
 | `resumeMaxIdleMinutes` | resume a session only if its last run ended this recently (0 = always; default 55) |
 | `permissionMode`, `allowedTools` | passed to `claude -p` |
 | `rolePrompt` | file appended to the system prompt: the agent's role and headless rules |

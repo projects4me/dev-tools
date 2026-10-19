@@ -58,3 +58,28 @@ Items 4, 6, 9 and the CLAUDE.md move in 7 change your Claude Code settings or ho
 - https://composio.dev/blog/ways-to-cut-token-consumption-in-claude-code
 - https://www.analyticsvidhya.com/blog/2026/05/tips-for-claude-code-token-saving/
 - https://aident.ai/blog/reduce-mcp-token-usage-claude-code-codex
+
+## 5. Second review (2026-10-20, agaia-4019): Talos runs of aprom-3964, agaia-4017, aprom-4018
+
+Five implementation runs cost $7.84 and 61 minutes for simple issues. Nearly all tokens were cache reads (every
+turn re-sends the context: 29k at the start, up to 150k), so cost grows with turns × context. By share of context
+tokens: reading code 29%, editing 18%, **test-environment wrangling 17%, workflow chores 15%, reading dev-tools
+source to learn how to use it 14%**. About 75–80% of wall time went on test runs.
+
+| Cause | Fix (deterministic) |
+|---|---|
+| `gaia-test` / `prometheus-dev` served another workspace's checkout, so `ai test` tested the wrong code and the agent built its own containers (~15 calls) | `p4m test` checks the container's mount and uses a throwaway container for this checkout (`installer/testenv.py`) |
+| CRLF harness scripts in the checkout | `p4m test` / `prepare-test` run `fix-eol` on the checkout; `.gitattributes` in gaia/prometheus (agaia-4020, aprom-4021) |
+| Count-based Ember baseline: a known failure looked new (aprom-3964 blocked, a second run) | name-based baseline on the merge-base, recorded on demand (`lib/baseline.py`) |
+| Every Ember run rebuilt the app (85–175 s) | warm incremental test build in the test container: reruns 8–15 s, full suite ~100 s |
+| Full suites re-run 4–6 times per issue | `ai test --changed` maps changed files to tests (`lib/testmap.py`); the full run once, enforced by `ai ship` |
+| `ai commit`/`ai pr` broke in submodules (`.git` is a file), so manual fallbacks after reading `workflow.py` | real git dir via `git rev-parse --absolute-git-dir` |
+| ~10 workflow calls per hand-off | `ai ship` from one JSON spec |
+| 25–35 whole-file `cat`/`sed` calls to find the shape of the code | `ai context <issue>` (outlines with line numbers) |
+| CodeRabbit output 16–22k chars per review round | bot boilerplate folded, findings kept, resolved threads hidden in `--open` (`--raw` for all) |
+| `python3` hit the Windows Store stub (120 s hang) | skills: use `python` |
+| Opus for a large but settled change ($5.63 of $7.84) | `complex` means judgement, not size (MCP tool description, Talos role) |
+| No ceiling on a run | Talos `maxTurns` (80): stops, hands back as `needs_input`, session kept |
+
+Measured on the same branches after the change: Prometheus targeted 14 s (was 85–89 s), full 100 s (was 175 s);
+Gaia targeted 48 s (was ~3 min per full run).

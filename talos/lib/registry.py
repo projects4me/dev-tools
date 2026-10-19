@@ -36,6 +36,7 @@ class Agent:
     enabled: bool = True
     pickup_status: str = None           # status set when Talos starts work on an issue (None = leave it)
     resume_max_idle_minutes: int = 55   # resume a session only if its last run ended this recently (0 = always)
+    max_turns: int = 0                  # turns per run before Claude stops and the issue goes back (0 = no limit)
     extra: dict = field(default_factory=dict)
 
     def action_for(self, status):
@@ -95,6 +96,7 @@ def load_agent(folder):
         enabled=raw.get("enabled", True),
         pickup_status=raw.get("pickupStatus"),
         resume_max_idle_minutes=int(raw.get("resumeMaxIdleMinutes", 55)),
+        max_turns=int(raw.get("maxTurns", 0)),
     )
 
 

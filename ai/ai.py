@@ -10,7 +10,7 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 from lib.common import AiError, REPOS  # noqa: E402
-from lib import apitester, review, tests, workflow  # noqa: E402
+from lib import apitester, context, review, ship, tests, workflow  # noqa: E402
 
 
 def build_parser():
@@ -55,8 +55,31 @@ def build_parser():
     sp.add_argument("status")
     sp.add_argument("--assignee", help="member name/email/id, or 'reviewer' for your configured reviewer")
 
-    sp = add("test", tests.cmd_test, "run the repo's full suite; print summaries and unexpected failures only")
+    sp = add("test", tests.cmd_test, "run the repo's suites on the workspace checkout; print summaries and "
+                                     "failures marked known (config or failing on the base commit) / unexpected")
+    sp.add_argument("repo", choices=list(tests.SUITES))
+    sp.add_argument("--changed", action="store_true",
+                    help="only the tests mapped from the branch's changed files (fast; ship needs a full run)")
+    sp.add_argument("--filter", help="explicit filter: QUnit text or /regex/ (prometheus), case id/path a|b (gaia api)")
+    sp.add_argument("--no-baseline", action="store_true",
+                    help="don't run the base commit to classify failures not seen before")
+
+    sp = add("baseline", tests.cmd_baseline, "record which tests fail on origin/<base> now, by name")
+    sp.add_argument("repo", choices=list(tests.SUITES))
+    sp.add_argument("--force", action="store_true", help="re-run even if recorded for this commit")
+
+    sp = add("context", context.cmd_context,
+             "context pack for an issue: outlines of the files/classes/endpoints it names, tests, api cases, deps")
+    sp.add_argument("issue", type=int)
+    sp.add_argument("--repo", choices=repos)
+
+    sp = add("ship", ship.cmd_ship, "test gate, commit, push, PR, tracker notes, time, in_review: one call "
+                                    "from a JSON spec (see lib/ship.py)")
     sp.add_argument("repo", choices=repos)
+    sp.add_argument("issue", type=int)
+    sp.add_argument("file", help="ship.json")
+    sp.add_argument("--dry-run", action="store_true", help="print the commit, PR and notes; change nothing")
+    sp.add_argument("--no-tests", metavar="REASON", help="ship without a recorded test run (docs-only changes)")
 
     sp = add("commit", workflow.cmd_commit,
              "check branch/base, stage exactly FILES, commit as Agent Odysseus (+co-author), push to odysseus")
@@ -88,6 +111,7 @@ def build_parser():
     sp.add_argument("repo", choices=repos)
     sp.add_argument("pr", type=int)
     sp.add_argument("--open", action="store_true", help="only threads without an agent reply or with follow-ups")
+    sp.add_argument("--raw", action="store_true", help="don't fold bot boilerplate (<details> blocks, walkthroughs)")
 
     sp = add("reply", review.cmd_reply, 'post replies from JSON {"<comment id>": "<reply>"}')
     sp.add_argument("repo", choices=repos)
