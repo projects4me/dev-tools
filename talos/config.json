@@ -1,0 +1,6 @@
+{
+  "hermesUrl": "https://hermes.local-projects4.me",
+  "claudeBin": "",
+  "nodeBin": "node",
+  "reconnectSeconds": 10
+}

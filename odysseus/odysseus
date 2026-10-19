@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# Run git or gh as Agent Odysseus (the team's shared agent identity) without touching anyone's own
+# git/gh configuration.
+#   odysseus git commit -m "..."      -> commits authored + SSH-signed as Agent Odysseus
+#   odysseus gh pr create ...          -> gh with the agent's token (GH_TOKEN from odysseus.env)
+# Pushes go through the "odysseus" remote (git@github-odysseus:...), never "origin".
+# Settings come from odysseus.env (git-ignored; `dev-tools/installer/p4m configure` writes it).
+set -euo pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -f "$HERE/odysseus.env" ]; then set -a; source "$HERE/odysseus.env"; set +a; fi
+NAME="${ODYSSEUS_NAME:-Agent Odysseus}"
+EMAIL="${ODYSSEUS_EMAIL:-agent.odysseus@projects4.me}"
+KEY="${ODYSSEUS_SSH_KEY:-$HOME/.ssh/agent_odysseus}"
+
+cmd="${1:-}"; shift || true
+case "$cmd" in
+  git)
+    [ -f "$KEY" ] || { echo "Agent Odysseus SSH key not found at $KEY (run dev-tools/installer/p4m configure)" >&2; exit 1; }
+    exec git -c user.name="$NAME" -c user.email="$EMAIL" \
+             -c gpg.format=ssh -c user.signingkey="$KEY.pub" -c commit.gpgsign=true \
+             -c core.sshCommand="ssh -i $KEY -o IdentitiesOnly=yes" "$@"
+    ;;
+  gh)
+    [ -n "${GH_TOKEN:-}" ] || { echo "GH_TOKEN is empty in $HERE/odysseus.env (run dev-tools/installer/p4m configure)" >&2; exit 1; }
+    export GH_TOKEN
+    GH="$(command -v gh || true)"
+    [ -n "$GH" ] || [ ! -x "/c/Program Files/GitHub CLI/gh.exe" ] || GH="/c/Program Files/GitHub CLI/gh.exe"
+    [ -n "$GH" ] || { echo "GitHub CLI (gh) not found: install it (Ubuntu: sudo apt install gh)" >&2; exit 1; }
+    exec "$GH" "$@"
+    ;;
+  *)
+    echo "usage: odysseus git|gh <args...>" >&2; exit 2
+    ;;
+esac

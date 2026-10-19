@@ -1,0 +1,4 @@
+#!/usr/bin/env sh
+# Projects4Me workflow automation for Claude Code: see README.md
+DIR="$(cd "$(dirname "$0")" && pwd)"
+exec python3 "$DIR/ai.py" "$@"

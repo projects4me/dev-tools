@@ -1,0 +1,4 @@
+#!/usr/bin/env sh
+# Talos: dispatch Projects4Me issues to headless Claude Code agents. See README.md
+DIR="$(cd "$(dirname "$0")" && pwd)"
+exec python3 "$DIR/talos.py" "$@"

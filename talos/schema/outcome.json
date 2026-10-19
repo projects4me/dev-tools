@@ -1,0 +1,20 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["outcome", "summary"],
+  "properties": {
+    "outcome": {
+      "type": "string",
+      "enum": ["done", "needs_input", "blocked", "escalate"],
+      "description": "done: the work for this hand-off is finished and you already handed the issue back (e.g. PR opened, in_review, assigned to the reviewer). needs_input: a decision or answer is needed. blocked: a tool, permission, environment or dependency stops you. escalate: the issue needs a stronger model to continue."
+    },
+    "summary": {
+      "type": "string",
+      "description": "One or two plain-text sentences on what this run did, for the Talos log."
+    },
+    "comment": {
+      "type": "string",
+      "description": "HTML for the issue thread. Required for needs_input (the question, options and your recommended option), blocked (what is blocking and what would unblock it) and escalate (why). Empty for done."
+    }
+  }
+}

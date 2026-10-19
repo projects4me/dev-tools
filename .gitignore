@@ -1,0 +1,34 @@
+# Local state and secrets - never commit. `installer/p4m configure` writes the *.env and *.local.json files.
+
+# installer (p4m): stack settings, generated compose/proxy/certs, diagnostics
+p4m.env
+.p4m/
+logs/
+
+# per-engineer settings written by `p4m configure`
+workspace.local.json
+ai/config.local.json
+talos/config.local.json
+talos/agents/*/agent.local.json
+
+# credentials
+gaia-mcp/*.env
+!gaia-mcp/gaia-mcp.env.example
+odysseus/odysseus.env
+
+# runtime state
+ai/state/
+talos/state/
+talos/node_modules/
+
+# Python / OS / editors
+__pycache__/
+*.pyc
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# local working files (project notes and mockups; ISSUES.md describes unfixed security issues - keep out of this public repo)
+ISSUES.md
+mockups/

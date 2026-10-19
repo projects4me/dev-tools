@@ -1,0 +1,9 @@
+{
+  "name": "talos",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Talos Hermes listener (Socket.IO client); the dispatcher itself is Python, see README.md",
+  "dependencies": {
+    "socket.io-client": "^4.8.3"
+  }
+}

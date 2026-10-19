@@ -1,0 +1,51 @@
+"""Agent registry: agent.local.json overlay and the reviewer placeholder."""
+
+import json
+import shutil
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+from unittest import mock
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from lib import policy, registry  # noqa: E402
+from lib.config import TalosError  # noqa: E402
+
+ODYSSEUS = Path(__file__).resolve().parent.parent / "agents" / "odysseus"
+
+
+class RegistryTest(unittest.TestCase):
+    def setUp(self):
+        self.folder = Path(tempfile.mkdtemp()) / "odysseus"
+        self.folder.mkdir()
+        for name in ("agent.json", "role.md"):
+            shutil.copy(ODYSSEUS / name, self.folder / name)
+        env = Path(tempfile.mkdtemp()) / "agent.env"
+        env.write_text("GAIA_EMAIL=x\n", encoding="utf-8")
+        raw = json.loads((self.folder / "agent.json").read_text(encoding="utf-8"))
+        raw["gaiaEnv"] = str(env)   # absolute path wins over DEV_TOOLS / gaiaEnv
+        (self.folder / "agent.json").write_text(json.dumps(raw), encoding="utf-8")
+
+    def test_tracked_agent_json_has_no_reviewer(self):
+        with self.assertRaises(TalosError) as e:
+            registry.load_agent(self.folder)
+        self.assertIn("p4m configure", str(e.exception))
+
+    def test_local_overlay_supplies_reviewer(self):
+        (self.folder / "agent.local.json").write_text(json.dumps(
+            {"acceptAssignmentsFrom": ["7"], "handoffTo": "7", "reviewerName": "Ayesha"}), encoding="utf-8")
+        agent = registry.load_agent(self.folder)
+        self.assertEqual((agent.accept_from, agent.handoff_to, agent.reviewer_name), (["7"], "7", "Ayesha"))
+        issue = {"number": 5, "project": "A Gaia", "status": "feedback"}
+        prompt = policy.render_prompt(agent.actions["feedback"], issue, "gaia", reviewer=agent.reviewer_name)
+        self.assertTrue(prompt.startswith("Ayesha answered on Projects4Me issue #5"))
+
+    def test_shipped_prompts_name_no_person(self):
+        raw = (ODYSSEUS / "agent.json").read_text(encoding="utf-8") + (ODYSSEUS / "role.md").read_text(encoding="utf-8")
+        self.assertNotIn("Hammad", raw)
+
+
+if __name__ == "__main__":
+    unittest.main()

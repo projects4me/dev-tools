@@ -1,0 +1,4 @@
+#!/usr/bin/env sh
+# Projects4Me CLI launcher for macOS / Linux / Git Bash
+DIR="$(cd "$(dirname "$0")" && pwd)"
+exec python3 "$DIR/p4m.py" "$@"
