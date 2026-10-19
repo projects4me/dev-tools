@@ -103,6 +103,18 @@ def ask(label, default=None, kind=None, answers=None, key=None):
     return value or default
 
 
+def prometheus_client():
+    """The OAuth client id and secret Prometheus uses (the same in every environment), read from its config, so
+    nobody has to type them. (None, None) when the Prometheus checkout isn't there."""
+    config = ROOT / "prometheus" / "config" / "environment.js"
+    if not config.exists():
+        return None, None
+    text = config.read_text(encoding="utf-8")
+    cid = re.search(r"clientId:\s*['\"]([^'\"]+)['\"]", text)
+    secret = re.search(r"clientSecret:\s*['\"]([^'\"]+)['\"]", text)
+    return (cid.group(1) if cid else None), (secret.group(1) if secret else None)
+
+
 def local_domain():
     env = read_env(TOOLS_DIR / "p4m.env")
     return env.get("P4M_DOMAIN") or "local-projects4.me"
@@ -127,10 +139,15 @@ def collect(previous, answers):
     a["hermesUrl"] = ask("Hermes URL", previous.get("hermesUrl") or f"https://hermes.{dom}",
                          answers=answers, key="hermesUrl")
     a["aresUrl"] = ask("Ares URL", previous.get("aresUrl") or f"https://ares.{dom}", answers=answers, key="aresUrl")
-    a["clientId"] = ask("OAuth client id", gaia_env.get("GAIA_CLIENT_ID") or "projects4me",
-                        answers=answers, key="clientId")
-    a["clientSecret"] = ask("OAuth client secret (prometheus/config/environment.js)", gaia_env.get("GAIA_CLIENT_SECRET"),
-                            SECRET, answers, "clientSecret")
+    client_id, client_secret = prometheus_client()
+    if client_id and client_secret and not (answers and ("clientId" in answers or "clientSecret" in answers)):
+        a["clientId"], a["clientSecret"] = client_id, client_secret
+        _say(f"  OAuth client: '{client_id}' from prometheus/config/environment.js")
+    else:   # no Prometheus checkout to read it from
+        a["clientId"] = ask("OAuth client id", gaia_env.get("GAIA_CLIENT_ID") or client_id or "projects4me",
+                            answers=answers, key="clientId")
+        a["clientSecret"] = ask("OAuth client secret (prometheus/config/environment.js)",
+                                gaia_env.get("GAIA_CLIENT_SECRET") or client_secret, SECRET, answers, "clientSecret")
 
     _say("\nAgent Odysseus (the team's shared agent identity; the team lead shares these)")
     a["agentEmail"] = ask("Agent Projects4Me email", gaia_env.get("GAIA_EMAIL") or "agent.odysseus@projects4.me",
@@ -297,7 +314,7 @@ def main(argv=None):
     import argparse
     p = argparse.ArgumentParser(prog="p4m configure", description=__doc__.splitlines()[0])
     p.add_argument("--answers", help="JSON file with answers (keys as in workspace.local.json plus "
-                                     "clientSecret, agentPassword, ghToken, sshKey) for a non-interactive run")
+                                     "agentPassword, ghToken, sshKey; clientId/clientSecret only to override Prometheus' own) for a non-interactive run")
     p.add_argument("--skip-checks", action="store_true", help="don't verify GitHub/SSH access at the end")
     args = p.parse_args(argv)
     answers = json.loads(Path(args.answers).read_text(encoding="utf-8")) if args.answers else None
