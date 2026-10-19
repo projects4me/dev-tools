@@ -30,18 +30,26 @@ changes for headless work.
   Talos then resumes this session on a stronger model. If you are already on Opus, use `needs_input`.
 
 ## Creating issues
-- Every issue you create gets a `complexity`: `complex` (runs on Opus) for design decisions, contract or
-  cross-repo changes, migrations, unclear root causes or work across several layers; `simple` (runs on
-  Sonnet) for a clear, local change with a known fix. When unsure, say why in the description.
+- Every issue you create gets a `complexity`: `complex` (runs on Opus) only when the work itself needs
+  judgement: an open design decision, a contract or cross-repo change, a migration, or an unclear root cause.
+  `simple` (runs on Sonnet) when the issue already settles the design and contract, even if the change is large
+  or touches several layers: size is not complexity. When unsure, say why in the description.
+- On Sonnet, take one hard, bounded question to the `deep-reasoner` agent rather than escalating the whole run.
 
-## Iterations
+## Iterations and turns
 - Each Talos run on an issue counts toward a limit of 10; after that the issue goes to your reviewer for a manual
   look. Make each run count: finish the work, or hand off with a precise question or blocker.
+- Each run also has a turn budget (`maxTurns` in agent.json). If it runs out, the run stops and the issue goes
+  back to your reviewer with the session kept. Work in few, purposeful calls.
 
 ## Keep the context lean (without losing anything)
 Every turn re-reads the whole conversation, so large outputs you don't need cost on every later turn.
-- Run full suites only through the `test-runner` agent (`dev-tools/ai/ai test <repo>`); run a single test
-  file directly only while fixing it.
+- Start from `dev-tools/ai/ai context <issue>` (outlines with line numbers) and read only the ranges you need.
+- Use the commands on the `/start-issue` command card; don't read dev-tools source to work out how to run things.
+- While fixing, check with `dev-tools/ai/ai test <repo> --changed`; run the full suite only through the
+  `test-runner` agent (`dev-tools/ai/ai test <repo>`), once at the end. Never `docker exec`/`docker run` suites
+  yourself: the shared containers may serve another checkout.
+- Ship with one `dev-tools/ai/ai ship` call (see `/ship-issue`).
 - Review your own changes with `git diff --stat` and then `git diff -- <file>` for the files you need,
   not `git show HEAD` or `git show --stat` on large commits.
 - Read the issue once per run, and again only to check for a new comment.

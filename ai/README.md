@@ -17,11 +17,14 @@ the `dev-tools/gaia-mcp` client (same credentials and code as the `gaia` MCP ser
 | `time <issue> "<what>"` | logs **actual elapsed** time since the issue's last checkpoint ("Actual elapsed HH:MM-HH:MM PKT: …") and moves the checkpoint |
 | `timer <issue>` | reset the checkpoint (e.g. when resuming an issue later) |
 | `comment <issue> <file.html>` / `status <issue> <status> [--assignee]` | tracker comment / status |
-| `test <repo>` | gaia: phpunit security + utils, prepare-test, api backend,acl,client. Prints summary lines and failures marked known/unexpected; full logs in `state/` |
-| `commit <repo> <issue> -F msg --files …` | branch check, refuse if origin/dev moved, refuse unrelated staged files / never-commit files, commit (+co-author trailer), push to `odysseus` |
+| `context <issue>` | 20–35 exploratory `cat`/`sed`/`grep` calls: outlines (declarations + line numbers) of the files, classes and endpoints the issue names, their tests, api-tester cases, recent commits, referenced issues' status |
+| `test <repo> [--changed\|--filter X]` | gaia: phpunit security + utils, prepare-test, api backend,acl,client; prometheus: ember; hermes; dev-tools: unittest. Runs against **this workspace's checkout** (throwaway container when the shared one serves another folder). Failures are `(known)` if in `config.json` or failing on the base commit (name baseline, recorded on demand), else `<-- unexpected`. `--changed` runs only the tests mapped from changed files (`lib/testmap.py`). Full logs in `state/` |
+| `baseline <repo>` | stash-and-rerun on dev to see if a failure is old: records the failing test names on `origin/<base>` |
+| `ship <repo> <issue> ship.json [--dry-run]` | the whole hand-off: refuses unless the last full test run passed on this exact tree, then commit, push, PR (body from the spec + recorded test result), one tracker comment (notes, tests, PR link), time, `in_review`, reviewer |
+| `commit <repo> <issue> -F msg --files …` | branch check, refuse if origin/<base> moved, refuse unrelated staged files / never-commit files, commit (+co-author trailer), push to `odysseus` (works in submodules) |
 | `pr <repo> <issue> --title … --body-file …` | PR as Agent Odysseus (+footer), comment the link on the issue, log time, `in_review`, assign the reviewer |
 | `handoff <repo> <issue> <pr-url>` | the tracker half of `pr` for a PR opened another way |
-| `review <repo> <pr> [--open]` | reviews + inline threads, marks which I already answered |
+| `review <repo> <pr> [--open] [--raw]` | reviews + inline threads, marks answered / resolved (GitHub's thread state); bot boilerplate folded to one line each, findings kept in full (`--raw` shows everything) |
 | `reply <repo> <pr> replies.json` | replies to many threads in one call (`{"<comment id>": "<reply>"}`) |
 | `pr-body <repo> <pr> <file.md>` | replace a PR description |
 | `api-cases client\|acl <cases.json>` | append api-tester cases in the catalog's own style (no re-serialising), duplicate-id check |
@@ -41,12 +44,14 @@ State (timers, test logs): `state/` (local only).
 | agent | `test-runner` (Haiku) | runs `ai test`, returns pass/fail + unexpected failures only |
 | agent | `design-reviewer` (Sonnet) | reviews the diff against the `### Design` rules (Fowler layering, SOLID) and Gaia review rules |
 
+Repos: `gaia`, `prometheus`, `hermes`, `ares` (base `dev`), `dev-tools` and `pr4m` (the workspace root; base `main`).
+
 ## Typical issue, end to end
 
 ```
-/start-issue 3960                      # ai start gaia 3960 + checks
-… implement …
-/ship-issue 3960                       # test-runner, design-reviewer, ai commit, ai pr (after approval)
+/start-issue 3960                      # ai start gaia 3960, ai context 3960, checks
+… implement; ai test gaia --changed while fixing …
+/ship-issue 3960                       # test-runner (full ai test), design-reviewer, ai ship (after approval)
 /address-review gaia 180 3960          # after the reviewer comments
 dev-tools/ai/ai sync gaia              # after merge (start does this too)
 ```

@@ -48,6 +48,9 @@ import webbrowser
 from dataclasses import dataclass
 from pathlib import Path
 
+import dblock
+import testenv
+
 # --------------------------------------------------------------------------- #
 # Configuration
 # --------------------------------------------------------------------------- #
@@ -894,31 +897,36 @@ def fix_eol(quiet: bool = False) -> int:
     Sets core.autocrlf=input in each repo (repo-local config) and rewrites tracked
     *.sh files that contain CRLF, but only when that is the only difference.
     """
-    fixed = 0
-    for repo in REPOS:
-        path = ROOT / repo
-        if not (path / ".git").exists():
-            continue
-        run(["git", "-C", str(path), "config", "core.autocrlf", "input"], quiet=True)
-        files = out(["git", "-C", str(path), "ls-files", "*.sh"]).splitlines()
-        for rel in files:
-            f = path / rel
-            if not f.exists():
-                continue
-            data = f.read_bytes()
-            if b"\r\n" not in data:
-                continue
-            real_change = run(["git", "-C", str(path), "diff", "--quiet", "--ignore-cr-at-eol",
-                               "--", rel], check=False, capture=True).returncode != 0
-            if real_change:
-                warn(f"{repo}/{rel} has CRLF and local edits - left as is")
-                continue
-            f.write_bytes(data.replace(b"\r\n", b"\n"))
-            fixed += 1
-            if not quiet:
-                ok(f"{repo}/{rel} -> LF")
+    fixed = sum(fix_eol_in(ROOT / repo, repo, quiet) for repo in REPOS if (ROOT / repo / ".git").exists())
     if not quiet:
         ok(f"{fixed} file(s) normalised") if fixed else ok("no CRLF shell scripts found")
+    return fixed
+
+
+def fix_eol_in(path: Path, label: str, quiet: bool = True) -> int:
+    """fix_eol for one checkout (also used by `p4m test` on the checkout it tests)."""
+    fixed = 0
+    run(["git", "-C", str(path), "config", "core.autocrlf", "input"], quiet=True)
+    files = out(["git", "-C", str(path), "ls-files", "*.sh"]).splitlines()
+    for rel in files:
+        f = path / rel
+        if not f.exists():
+            continue
+        data = f.read_bytes()
+        if b"\r\n" not in data:
+            continue
+        real_change = run(["git", "-C", str(path), "diff", "--quiet", "--ignore-cr-at-eol",
+                           "--", rel], check=False, capture=True).returncode != 0
+        if real_change:
+            warn(f"{label}/{rel} has CRLF and local edits - left as is")
+            continue
+        f.write_bytes(data.replace(b"\r\n", b"\n"))
+        # Same content as the (LF) blob, so this stages nothing; it refreshes the index entry, which
+        # otherwise keeps showing the file as modified.
+        run(["git", "-C", str(path), "add", "--", rel], check=False, quiet=True)
+        fixed += 1
+        if not quiet:
+            ok(f"{label}/{rel} -> LF")
     return fixed
 
 
@@ -1087,12 +1095,15 @@ def migrate() -> None:
     run(["docker", "exec", "-w", "/var/www/html", "gaia-dev", "php", "cli.php", "migration", "migrate"])
 
 
-def prepare_test_db() -> None:
-    info("Preparing pr4m_test (api-tester fixtures)")
+def prepare_test_db(src: Path | None = None) -> None:
+    """Seed pr4m_test with the api-tester fixtures of `src` (default: the workspace's gaia)."""
+    src = src or ROOT / "gaia"
+    info(f"Preparing pr4m_test (api-tester fixtures from {src})")
     if not is_running(PG_CONTAINER):
         raise P4MError("postgres is not running - `p4m up postgres` first")
+    fix_eol_in(src, src.name)
     script = "tools/api-tester/harness/prepare-test-db.sh"
-    run([find_bash(), script], cwd=ROOT / "gaia")
+    run([find_bash(), script], cwd=src)
 
 
 def ensure_prometheus_deps(force: bool = False) -> None:
@@ -1325,7 +1336,8 @@ def cmd_db(args) -> None:
     if a == "migrate":
         migrate()
     elif a == "prepare-test":
-        prepare_test_db()
+        with test_db_lock():
+            prepare_test_db(Path(args.src).resolve() if args.src else None)
     elif a == "psql":
         db = args.name or PG_DB
         tty = ["-it"] if sys.stdin.isatty() else ["-i"]
@@ -1386,27 +1398,81 @@ def ares_probe_output(model: str) -> str:
     return _cap(["docker", "exec", "ares-dev", "python", "-c", ARES_PROBE, model], timeout=90)
 
 
+def test_db_lock():
+    """Exclusive use of pr4m_test (every api run re-seeds it)."""
+    try:
+        return dblock.held(STATE_DIR / "pr4m_test.lock",
+                           on_wait=lambda p: info(f"waiting for another pr4m_test user to finish ({p})"))
+    except dblock.LockTimeout as e:
+        raise P4MError(str(e))
+
+
+def _test_checkout(args, repo: str) -> Path:
+    """The checkout a suite runs against: --src, else the workspace's repo."""
+    src = Path(getattr(args, "src", None) or ROOT / repo).resolve()
+    if not (src / ".git").exists():
+        raise P4MError(f"{src} is not a git checkout")
+    return src
+
+
+def _test_container(base: str, src: Path, dest: str, wait_port: int | None = None) -> str:
+    """The container to run `src`'s tests in: `base` if it serves `src`, else a throwaway one."""
+    try:
+        name, note = testenv.BindTestContainer(base, src, dest, wait_port).resolve()
+    except testenv.TestEnvError as e:
+        raise P4MError(str(e))
+    if note:
+        info(note)
+    return name
+
+
 def cmd_test(args) -> None:
     ensure_docker(start=False)
     t = args.test_cmd
+    if t == "clean":
+        removed = testenv.clean(getattr(args, "src", None))
+        ok(f"removed {len(removed)} test container(s)" + (f": {', '.join(removed)}" if removed else ""))
+        return
+    if t in ("api", "phpunit"):
+        src = _test_checkout(args, "gaia")
+        fix_eol_in(src, src.name)                 # CRLF scripts break bash in the container
+        name = _test_container("gaia-test", src, "/var/www/html", wait_port=80)
+        run(["docker", "exec", "-w", "/var/www/html", name, "sh", "-c",
+             "mkdir -p logs/tests output && chmod -R 777 logs output"], check=False, quiet=True)
     if t == "api":
-        if not is_running("gaia-test"):
-            raise P4MError("gaia-test is not running - `p4m up test` (and `p4m db prepare-test` once)")
-        cmd = ["docker", "exec", "-w", "/var/www/html", "gaia-test", "bash",
+        cmd = ["docker", "exec", "-w", "/var/www/html", name, "bash",
                "tools/api-tester/harness/run-api-tests.sh", "--base-uri", "http://127.0.0.1",
                "--mode", args.mode]
         if "live" in args.mode:
             cmd += ["--hermes-url", f"https://hermes-test.{domain()}"]
         if args.filter:
             cmd += ["--filter", args.filter]
-        rc = run(cmd, check=False).returncode
-        ok("reports in gaia/output/") if rc == 0 else err("api tests failed - reports in gaia/output/")
+        with test_db_lock():                       # the run (and its seed) owns pr4m_test until it ends
+            if args.prepare:
+                prepare_test_db(src)               # raises on failure: never test a half-seeded DB
+            rc = run(cmd, check=False).returncode
+        ok(f"reports in {src / 'output'}") if rc == 0 else err(f"api tests failed - reports in {src / 'output'}")
         sys.exit(rc)
     if t == "phpunit":
         target = args.path or "tests"
-        rc = run(["docker", "exec", "-w", "/var/www/html", "-e", "DB_NAME=pr4m_test", "gaia-test",
-                  "./vendor/bin/phpunit", "-c", "tests/phpunit.xml", target], check=False).returncode
+        rc = run(["docker", "exec", "-w", "/var/www/html", "-e", "DB_NAME=pr4m_test", "-e", "XDEBUG_MODE=off",
+                  name, "./vendor/bin/phpunit", "-c", "tests/phpunit.xml", "--do-not-cache-result", target],
+                 check=False).returncode
         sys.exit(rc)
+    if t == "ember":
+        src = _test_checkout(args, "prometheus")
+        box = testenv.PrometheusTestContainer(src, STATE_DIR / "test")
+        try:
+            if box.ensure(fresh=args.fresh):
+                info(f"started {box.name} for {src} (the first build takes a few minutes)")
+            changed = box.sync()
+            built, message = box.build(changed)
+        except testenv.TestEnvError as e:
+            raise P4MError(str(e))
+        if not built:
+            raise P4MError(message)
+        info(f"{len(changed)} file(s) synced, {message}")
+        sys.exit(run(box.test_command(args.filter), check=False).returncode)
     if t == "ares":
         if not is_running("ares-dev"):
             raise P4MError("ares is not running - `p4m up ares`")
@@ -1414,7 +1480,8 @@ def cmd_test(args) -> None:
         print(ares_probe_output(args.model))
         return
     if t == "hermes":
-        rc = run(["docker", "exec", "hermes", "npm", "test"], check=False).returncode
+        name = _test_container("hermes", _test_checkout(args, "hermes"), "/app")
+        rc = run(["docker", "exec", name, "npm", "test"], check=False).returncode
         sys.exit(rc)
 
 
@@ -1753,7 +1820,8 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("db", help="database tasks")
     dsub = s.add_subparsers(dest="db_cmd", required=True, metavar="<task>")
     dsub.add_parser("migrate", help="php cli.php migration migrate (pr4m)")
-    dsub.add_parser("prepare-test", help="create + seed pr4m_test for api tests")
+    d = dsub.add_parser("prepare-test", help="create + seed pr4m_test for api tests")
+    d.add_argument("--src", help="gaia checkout whose fixtures to load (default: the workspace's)")
     d = dsub.add_parser("psql", help="interactive psql"); d.add_argument("name", nargs="?")
     d = dsub.add_parser("dump", help="pg_dump to a file"); d.add_argument("name", nargs="?"); d.add_argument("-o", "--out")
     d = dsub.add_parser("reset", help="wipe DB volume, re-import dump, migrate")
@@ -1762,11 +1830,22 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("test", help="run test suites")
     tsub = s.add_subparsers(dest="test_cmd", required=True, metavar="<suite>")
+    src_help = "checkout to test (default: the workspace's repo); a throwaway container is used when the " \
+               "shared one serves another folder"
     t = tsub.add_parser("api", help="gaia api-tester against gaia-test")
     t.add_argument("--mode", default="backend", help="client|backend|acl|live (comma separated)")
     t.add_argument("--filter")
+    t.add_argument("--src", help=src_help)
+    t.add_argument("--prepare", action="store_true", help="seed pr4m_test from --src first (under the same lock)")
     t = tsub.add_parser("phpunit", help="gaia phpunit"); t.add_argument("path", nargs="?")
-    tsub.add_parser("hermes", help="hermes node --test")
+    t.add_argument("--src", help=src_help)
+    t = tsub.add_parser("ember", help="prometheus ember tests (source copied in, incremental test build)")
+    t.add_argument("--filter", help="QUnit filter: text, or /regex/")
+    t.add_argument("--src", help="checkout to test (default: the workspace's prometheus)")
+    t.add_argument("--fresh", action="store_true", help="recreate the test container (full rebuild)")
+    t = tsub.add_parser("hermes", help="hermes node --test"); t.add_argument("--src", help=src_help)
+    t = tsub.add_parser("clean", help="remove the throwaway test containers")
+    t.add_argument("--src", help="only the containers for this checkout")
     t = tsub.add_parser("ares", help="call the Anthropic API from inside ares (shows the real error)")
     t.add_argument("--model", default="claude-sonnet-4-20250514",
                    help="model id to try (default: the one hard-coded in ares)")
@@ -1783,6 +1862,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Piped output on Windows defaults to cp1252, which can't print ✓/✗ and crashed the command.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
     argv = sys.argv[1:] if argv is None else argv
     if argv[:1] == ["configure"]:        # configure.py owns its own options
         return cmd_configure(argparse.Namespace(rest=argv[1:])) or 0

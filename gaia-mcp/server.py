@@ -473,7 +473,10 @@ class Tools:
         if args.get("type") is not None or creating:
             attrs["typeId"] = self.g.pick(p.get("issuetypes") or [], args.get("type") or "Task", "type")["id"]
         if args.get("status") is not None or creating:
-            attrs["statusId"] = self.g.pick(statuses, args.get("status") or "new", "status")["id"]
+            status = self.g.pick(statuses, args.get("status") or "new", "status")
+            # Send the name too, as the UI does: Gaia's status notification and activity entry look for a
+            # change of `status` in the audit; a statusId-only change is copied by a DB trigger after the audit.
+            attrs["statusId"], attrs["status"] = status["id"], status["name"]
         if args.get("priority") is not None or creating:
             prio = str(args.get("priority") or "medium").lower()
             if prio not in PRIORITIES:
@@ -540,10 +543,12 @@ PROJECT_ARG = {"type": "string",
 DESCRIPTION_ARG = {"type": "string",
                    "description": "Issue description as HTML (Prometheus renders HTML), e.g. <p>…</p><ul><li>…</li></ul>."}
 COMPLEXITY_ARG = {"type": "string", "enum": list(COMPLEXITIES),
-                  "description": "Recommended model for the agent that works it. complex (Opus): design decisions, "
-                                 "contract or cross-repo changes, migrations, unclear root cause, several layers. "
-                                 "simple (Sonnet): a clear, local change with a known fix. Stored as a "
-                                 "'Complexity: <value>' line at the end of the description."}
+                  "description": "Recommended model for the agent that works it. complex (Opus) only when the work "
+                                 "itself needs judgement: an open design decision, a contract or cross-repo change, a "
+                                 "migration, or an unclear root cause. simple (Sonnet) when the issue already fixes "
+                                 "the design and contract, even if the change is large or touches several files "
+                                 "(size is not complexity). Stored as a 'Complexity: <value>' line at the end of the "
+                                 "description."}
 FIELD_ARGS = {
     "type": {"type": "string", "description": "Issue type name, e.g. Task, Bug, Story, Epic, Sub Task, Research, Change Request."},
     "status": {"type": "string", "description": "Status name, e.g. new, in_progress, in_review, feedback, pending, deferred, done, wont_fix."},

@@ -25,6 +25,8 @@ def build_command(claude, agent, prompt, model, session_id=None, new_session_id=
            "--append-system-prompt", f"Your reviewer is {agent.reviewer_name}: they assign you work, answer "
                                      f"your questions and review and merge your PRs.\n\n{agent.role_prompt}",
            "--permission-mode", agent.permission_mode]
+    if agent.max_turns:
+        cmd += ["--max-turns", str(agent.max_turns)]
     if agent.allowed_tools:
         cmd += ["--allowedTools", *agent.allowed_tools]
     if session_id:

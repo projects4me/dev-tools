@@ -102,6 +102,12 @@ def read_outcome(result):
     """
     if not isinstance(result, dict):
         return "failed", "no result from Claude", ""
+    if result.get("subtype") == "error_max_turns":
+        turns = result.get("num_turns") or "the"
+        return ("needs_input", f"stopped at the {turns}-turn budget",
+                f"<p>The run stopped at the {turns}-turn budget before finishing, so nothing more is spent "
+                f"without a look. The session is kept: assign the issue back to continue where it stopped, "
+                f"or add a comment that narrows the work first.</p>")
     if result.get("is_error") or result.get("subtype") not in (None, "success"):
         detail = result.get("result") or result.get("subtype") or "unknown error"
         return "failed", f"Claude run ended with {result.get('subtype')}: {str(detail)[:1500]}", ""

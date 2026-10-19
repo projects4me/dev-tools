@@ -17,8 +17,13 @@ STATE_DIR = AI_DIR / "state"
 CONFIG_FILE = AI_DIR / "config.json"
 
 REPOS = {"gaia": "Projects4Me/gaia", "prometheus": "Projects4Me/prometheus",
-         "hermes": "Projects4Me/hermes", "ares": "Projects4Me/ares"}
-PROJECT_FOR_REPO = {"gaia": "A Gaia", "prometheus": "A Prometheus", "hermes": "A Hermes", "ares": "A Ares"}
+         "hermes": "Projects4Me/hermes", "ares": "Projects4Me/ares",
+         "dev-tools": "Projects4Me/dev-tools", "pr4m": "Projects4Me/Pr4M"}
+PROJECT_FOR_REPO = {"gaia": "A Gaia", "prometheus": "A Prometheus", "hermes": "A Hermes", "ares": "A Ares",
+                    "dev-tools": "A Gaia", "pr4m": "A Gaia"}
+# The branch PRs target; the service repos use dev, the tooling and the workspace root use main.
+BASE_BRANCH = {"dev-tools": "main", "pr4m": "main"}
+REPO_PATH = {"pr4m": "."}
 
 
 class AiError(Exception):
@@ -39,7 +44,16 @@ def config():
 def repo_dir(repo):
     if repo not in REPOS:
         raise AiError(f"unknown repo '{repo}' (one of: {', '.join(REPOS)})")
-    return WORKSPACE / repo
+    return (WORKSPACE / REPO_PATH.get(repo, repo)).resolve()
+
+
+def base_branch(repo):
+    return BASE_BRANCH.get(repo, "dev")
+
+
+def git_dir(repo):
+    """The repo's real git directory: in a submodule `.git` is a file pointing elsewhere."""
+    return Path(run(["git", "rev-parse", "--absolute-git-dir"], cwd=repo_dir(repo)))
 
 
 def run(cmd, cwd=None, check=True, capture=True, env=None):

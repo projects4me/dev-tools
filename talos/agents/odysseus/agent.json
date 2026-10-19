@@ -49,6 +49,7 @@
     "escalate": "opus"
   },
   "maxIterations": 10,
+  "maxTurns": 80,
   "resumeMaxIdleMinutes": 55,
   "permissionMode": "auto",
   "allowedTools": [
