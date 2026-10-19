@@ -76,6 +76,7 @@ REPOS: dict[str, tuple[str, str | None]] = {
     "prometheus": ("dev", "docker-compose.yaml"),
     "ares": ("dev", "docker-compose.yml"),
     "docker-images": ("master", None),
+    "dev-tools": ("main", None),
 }
 
 # Start order matters: proxy (CA) first, then postgres/gaia, frontend last.
@@ -832,8 +833,18 @@ def repo_branch(repo: str) -> str:
 
 
 def repos_sync(pull: bool = True) -> None:
+    """Bring the workspace to the latest: the Pr4M root, then every repo on the tip of its branch.
+    In Pr4M the repos are submodules, but nobody works at the pinned commits; this keeps each on its branch."""
     if not have("git"):
         raise P4MError("git is not installed. Run `p4m install`.")
+    if (ROOT / ".git").exists() and pull:
+        info("Pr4M workspace")
+        dirty = bool(out(["git", "-C", str(ROOT), "status", "--porcelain", "--untracked-files=no",
+                          "--ignore-submodules=all"]))
+        if dirty:
+            warn("local changes in the workspace root - skipping pull")
+        elif run(["git", "-C", str(ROOT), "pull", "--ff-only", "--quiet"], check=False).returncode != 0:
+            warn("could not fast-forward the workspace root - resolve manually")
     for repo, (branch, _) in REPOS.items():
         path = ROOT / repo
         info(f"{repo} ({branch})")
