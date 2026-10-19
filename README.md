@@ -29,7 +29,8 @@ Supported on Windows 10/11 (Git Bash + Docker Desktop), macOS and Ubuntu/Debian.
    and starts everything at `https://app.local-projects4.me`. See [installer/P4M-CLI.md](installer/P4M-CLI.md).
 
 3. **Configure your tools:** `dev-tools/installer/p4m configure`. It asks for:
-   - **you:** your name, your Projects4Me login email (used to find your user id), and a timezone label for time
+   - **you:** your name, your Projects4Me login email (used to find your user id on that environment; local and live
+     ids differ, and it asks for the id if the lookup fails), and a timezone label for time
      logs;
    - **service URLs:** Gaia API, Prometheus app, Hermes and Ares. The defaults are the local stack; give the live
      URLs to work against live;

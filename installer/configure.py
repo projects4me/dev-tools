@@ -216,8 +216,11 @@ def gaia_client(a):
     return server, g
 
 
-def resolve_engineer(a):
-    """The engineer's Gaia user id, found by email while signed in as the agent."""
+def resolve_engineer(a, previous, answers):
+    """The engineer's Gaia user id on the configured environment (local and live ids differ): looked up by
+    email while signed in as the agent, or asked for when the lookup finds nothing."""
+    if answers and answers.get("gaiaUserId"):
+        return str(answers["gaiaUserId"])
     server, g = gaia_client(a)
     if not re.fullmatch(r"[\w.+-]+@[\w.-]+", a["email"]):
         raise SystemExit(f"p4m configure: '{a['email']}' doesn't look like an email address")
@@ -225,10 +228,14 @@ def resolve_engineer(a):
         users = g.find("user", f"(User.email : {a['email']})", limit=1)
     except server.GaiaError as e:
         raise SystemExit(f"p4m configure: could not sign in to {a['gaiaUrl']} as {a['agentEmail']}: {e}")
-    if not users:
-        raise SystemExit(f"p4m configure: no Projects4Me user with email {a['email']} on {a['gaiaUrl']}")
-    _ok(f"you are Gaia user {users[0]['id']} ({users[0].get('name')}); signed in as {a['agentEmail']}")
-    return str(users[0]["id"])
+    if users:
+        _ok(f"you are Gaia user {users[0]['id']} ({users[0].get('name')}) on {a['gaiaUrl']}; "
+            f"signed in as {a['agentEmail']}")
+        return str(users[0]["id"])
+    _warn(f"no user with email {a['email']} on {a['gaiaUrl']}")
+    same_env = previous.get("gaiaUrl") == a["gaiaUrl"]
+    return str(ask("Your Projects4Me user id on this environment (an admin can see it in Users)",
+                   previous.get("gaiaUserId") if same_env else None, answers=answers, key="gaiaUserId"))
 
 
 def write_engineer_settings(a, user_id):
@@ -302,7 +309,7 @@ def main(argv=None):
     write_credentials(a)
     install_ssh_key(a)
     add_remotes()
-    user_id = resolve_engineer(a)
+    user_id = resolve_engineer(a, previous, answers)
     write_engineer_settings(a, user_id)
     register_mcp()
     install_talos_deps()
