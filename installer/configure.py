@@ -265,18 +265,57 @@ def write_engineer_settings(a, user_id):
     _ok(f"Talos acts on issues you assign and hands back to you -> {AGENT_LOCAL.relative_to(TOOLS_DIR)}")
 
 
+def find_claude():
+    """The Claude Code CLI: on PATH, else the newest copy inside the VS Code extension (which doesn't add it to PATH)."""
+    found = shutil.which("claude")
+    if found:
+        return found
+    exe = "claude.exe" if os.name == "nt" else "claude"
+    candidates = list((Path.home() / ".vscode" / "extensions").glob(f"anthropic.claude-code-*/resources/native-binary/{exe}"))
+
+    def version(path):  # .../anthropic.claude-code-2.1.300-win32-x64/resources/native-binary/claude.exe
+        parts = path.parents[2].name.split("-")
+        return tuple(int(x) for x in parts[2].split(".") if x.isdigit()) if len(parts) > 2 else ()
+
+    return str(max(candidates, key=version)) if candidates else None
+
+
+def find_bash():
+    """bash for the odysseus wrapper. On Windows that's Git Bash: System32\\bash.exe is WSL, often without a distro."""
+    if os.name != "nt":
+        return shutil.which("bash")
+    candidates = []
+    exec_path = subprocess.run(["git", "--exec-path"], capture_output=True, text=True).stdout.strip()
+    if exec_path:
+        git_root = Path(exec_path).resolve().parents[2]
+        candidates += [git_root / "bin" / "bash.exe", git_root / "usr" / "bin" / "bash.exe"]
+    candidates.append(Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "Git" / "bin" / "bash.exe")
+    return next((str(c) for c in candidates if c.exists()), None)
+
+
 def register_mcp():
-    claude = shutil.which("claude")
+    """Register (or re-point) the gaia MCP server at this workspace's copy. A registration left over from another
+    folder is replaced, since it would serve that folder's settings."""
     server = TOOLS_DIR / "gaia-mcp" / "server.py"
-    cmd = ["claude", "mcp", "add", "--scope", "user", "gaia", "--", sys.executable, str(server)]
+    claude = find_claude()
+    cmd = ["mcp", "add", "--scope", "user", "gaia", "--", sys.executable, str(server)]
     if not claude:
-        _warn("Claude Code CLI not on PATH; register the gaia MCP server yourself:\n        " + " ".join(cmd))
+        _warn("Claude Code CLI not found (not on PATH, no VS Code extension); register the gaia MCP server yourself:\n"
+              "        claude " + " ".join(cmd))
         return
-    if subprocess.run([claude, "mcp", "get", "gaia"], capture_output=True).returncode == 0:
-        _ok("gaia MCP server already registered with Claude Code (`claude mcp remove gaia -s user` to redo)")
-        return
-    subprocess.run([claude, *cmd[1:]], check=False)
-    _ok("gaia MCP server registered with Claude Code (restart Claude Code to load it)")
+    current = subprocess.run([claude, "mcp", "get", "gaia"], capture_output=True, text=True)
+    if current.returncode == 0:
+        if str(server).lower() in current.stdout.lower().replace("/", "\\" if os.name == "nt" else "/"):
+            _ok("gaia MCP server already registered for this workspace")
+            return
+        subprocess.run([claude, "mcp", "remove", "gaia", "-s", "user"], capture_output=True)
+        _ok("removed the gaia MCP registration that pointed at another folder")
+    r = subprocess.run([claude, *cmd], capture_output=True, text=True)
+    if r.returncode == 0:
+        _ok("gaia MCP server registered with Claude Code (restart Claude Code to load it)")
+    else:
+        _warn(f"could not register the gaia MCP server: {(r.stderr or r.stdout).strip()[:200]}\n"
+              f"        run: \"{claude}\" " + " ".join(cmd))
 
 
 def install_talos_deps():
@@ -296,7 +335,7 @@ def install_talos_deps():
 def verify(a):
     _say("\nChecks")
     ody = TOOLS_DIR / "odysseus" / "odysseus"
-    bash = shutil.which("bash")
+    bash = find_bash()
     if bash:
         r = subprocess.run([bash, str(ody), "gh", "api", "user", "--jq", ".login"], capture_output=True, text=True)
         (_ok if r.returncode == 0 else _warn)(f"GitHub API as {r.stdout.strip() or 'agent'}: "
