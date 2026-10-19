@@ -34,8 +34,11 @@ Supported on Windows 10/11 (Git Bash + Docker Desktop), macOS and Ubuntu/Debian.
      logs;
    - **service URLs:** Gaia API, Prometheus app, Hermes and Ares. The defaults are the local stack; give the live
      URLs to work against live;
-   - **Agent Odysseus**, shared by the team lead over a secure channel: its Projects4Me password, the OAuth client
-     secret, its GitHub token and its SSH private key.
+   - **Agent Odysseus**, shared by the team lead over a secure channel: its Projects4Me password, its GitHub token
+     and its SSH private key.
+
+   The OAuth client id and secret are read from `prometheus/config/environment.js` (the same in every
+   environment), so nobody types them.
 
    It then writes the git-ignored credential and settings files, installs the agent's SSH key and `github-odysseus`
    host alias, adds the `odysseus` remote to every repo, registers the gaia MCP server with Claude Code, installs
