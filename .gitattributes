@@ -1,0 +1,6 @@
+# Keep line endings stable on every OS: scripts must stay LF or bash fails on Windows checkouts.
+* text=auto eol=lf
+*.cmd text eol=crlf
+*.bat text eol=crlf
+*.png binary
+*.jpg binary

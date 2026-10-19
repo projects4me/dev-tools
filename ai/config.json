@@ -1,0 +1,22 @@
+{
+  "reviewer": "",
+  "agentLogin": "agent-odysseus",
+  "timezoneLabel": "",
+  "coAuthor": "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>",
+  "prFooter": "🤖 Generated with [Claude Code](https://claude.com/claude-code)",
+  "neverCommit": [
+    "tests/.phpunit.result.cache"
+  ],
+  "knownFailures": {
+    "gaia": {
+      "api": [
+        "post-membership-api-v1-membership"
+      ],
+      "phpunit": []
+    },
+    "prometheus": {
+      "ember": [],
+      "emberBaselineFailCount": 8
+    }
+  }
+}

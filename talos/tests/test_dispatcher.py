@@ -1,0 +1,189 @@
+"""Dispatcher with a stub tracker and runner: iteration limit, model choice, escalation, hand-offs."""
+
+import sys
+import tempfile
+import unittest
+from datetime import timedelta
+from pathlib import Path
+from unittest import mock
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from lib import db, dispatcher as dispatcher_mod, runs as run_log, sessions  # noqa: E402
+from test_policy import AGENT_ID, make_agent, make_issue  # noqa: E402
+
+
+class StubTracker:
+    def __init__(self, issue):
+        self._issue = issue
+        self.comments, self.handoffs, self.statuses = [], [], []
+
+    def user_id(self):
+        return AGENT_ID
+
+    def issue(self, number):
+        return dict(self._issue)
+
+    def comment(self, number, title, body):
+        self.comments.append(title)
+
+    def set_status(self, number, status):
+        self.statuses.append(status)
+        self._issue["status"] = status
+
+    def hand_off(self, number, status, assignee):
+        self.handoffs.append((status, assignee))
+        self._issue["assignee"] = assignee
+
+    def child_env(self):
+        return {}
+
+
+def result(outcome, session="s1"):
+    return {"subtype": "success", "session_id": session,
+            "structured_output": {"outcome": outcome, "summary": outcome, "comment": "<p>why</p>"}}
+
+
+class DispatcherTest(unittest.TestCase):
+    def setUp(self):
+        tmp = Path(tempfile.mkdtemp())
+        self.patches = [mock.patch.object(db, "DB_FILE", tmp / "talos.db"),
+                        mock.patch.object(dispatcher_mod, "log", lambda *a, **k: None)]  # keep talos.log real
+        for p in self.patches:
+            p.start()
+        self.models = []
+        self.calls = []
+
+    def tearDown(self):
+        for p in self.patches:
+            p.stop()
+
+    def dispatch(self, issue, outcomes, **agent_overrides):
+        tracker = StubTracker(issue)
+        replies = iter(outcomes)
+
+        def fake_run(cmd, env, agent, number):
+            self.models.append(cmd[cmd.index("--model") + 1])
+            return next(replies), Path("log.json")
+
+        def fake_build(claude, agent, prompt, model, sid=None, new_session_id=None):
+            self.calls.append({"prompt": prompt, "resume": sid})
+            return ["claude", "--model", model]
+
+        with mock.patch.object(dispatcher_mod.runner, "run", fake_run), \
+                mock.patch.object(dispatcher_mod.runner, "build_command", fake_build):
+            d = dispatcher_mod.Dispatcher(make_agent(**agent_overrides), tracker, "claude")
+            return d.handle(42), tracker
+
+    def feedback_agent(self):
+        return dict(actions={"feedback": make_agent().actions["feedback"]})
+
+    def test_warm_session_is_resumed_and_run_cost_is_incremental(self):
+        recent = dispatcher_mod._iso(dispatcher_mod._now() - timedelta(minutes=10))
+        sessions.update("odysseus", 42, session_id="s1", session_cost_usd=1.46, last_ended_at=recent)
+        reply = result("needs_input", session="s1")
+        reply["total_cost_usd"] = 1.67
+        self.dispatch(make_issue(status="feedback"), [reply], **self.feedback_agent())
+        self.assertEqual(self.calls[0]["resume"], "s1")
+        run = run_log.recent(1)[0]
+        self.assertAlmostEqual(run["cost_usd"], 0.21)
+        self.assertAlmostEqual(run["session_cost_usd"], 1.67)
+        self.assertEqual(run["resumed"], 1)
+        self.assertEqual(sessions.get("odysseus", 42)["session_cost_usd"], 1.67)
+
+    def test_cold_session_starts_fresh_with_catch_up(self):
+        old = dispatcher_mod._iso(dispatcher_mod._now() - timedelta(hours=3))
+        sessions.update("odysseus", 42, session_id="s1", session_cost_usd=1.46, last_ended_at=old)
+        reply = result("needs_input", session="s2")
+        reply["total_cost_usd"] = 0.30
+        self.dispatch(make_issue(status="feedback"), [reply], **self.feedback_agent())
+        self.assertIsNone(self.calls[0]["resume"])
+        self.assertIn("not resumed", self.calls[0]["prompt"])
+        self.assertAlmostEqual(run_log.recent(1)[0]["cost_usd"], 0.30)
+        self.assertEqual(sessions.get("odysseus", 42)["session_id"], "s2")
+
+    def test_new_status_never_gets_catch_up_text(self):
+        self.dispatch(make_issue(status="new"), [result("needs_input")])
+        self.assertNotIn("not resumed", self.calls[0]["prompt"])
+
+    def test_run_is_recorded_and_closed(self):
+        self.dispatch(make_issue(), [result("needs_input")])
+        run = run_log.recent(1)[0]
+        self.assertEqual((run["issue"], run["iteration"], run["model"], run["outcome"]),
+                         (42, 1, "sonnet", "needs_input"))
+        self.assertIsNotNone(run["ended_at"])
+        self.assertEqual(sessions.get("odysseus", 42)["running"], 0)
+
+    def test_runner_exception_becomes_failed_run(self):
+        tracker = StubTracker(make_issue())
+
+        def boom(*a, **k):
+            raise OSError("claude.exe missing")
+
+        with mock.patch.object(dispatcher_mod.runner, "run", boom):
+            outcome = dispatcher_mod.Dispatcher(make_agent(), tracker, "claude").handle(42)
+        self.assertEqual(outcome, "failed")
+        self.assertEqual(run_log.recent(1)[0]["outcome"], "failed")
+        self.assertEqual(tracker.handoffs, [("pending", "1")])
+
+    def test_pickup_moves_new_issue_to_in_progress_before_claude(self):
+        _, tracker = self.dispatch(make_issue(status="new"), [result("needs_input")], pickup_status="in_progress")
+        self.assertEqual(tracker.statuses, ["in_progress"])
+
+    def test_pickup_leaves_in_progress_alone(self):
+        _, tracker = self.dispatch(make_issue(status="in_progress"), [result("needs_input")],
+                                   pickup_status="in_progress",
+                                   actions={"in_progress": make_agent().actions["new"]})
+        self.assertEqual(tracker.statuses, [])
+
+    def test_no_pickup_status_configured(self):
+        _, tracker = self.dispatch(make_issue(status="new"), [result("needs_input")])
+        self.assertEqual(tracker.statuses, [])
+
+    def test_limit_does_not_mark_in_progress(self):
+        sessions.update("odysseus", 42, runs=10)
+        _, tracker = self.dispatch(make_issue(status="new"), [], pickup_status="in_progress")
+        self.assertEqual(tracker.statuses, [])
+
+    def test_complex_issue_runs_on_opus(self):
+        self.dispatch(make_issue(complexity="complex"), [result("needs_input")])
+        self.assertEqual(self.models, ["opus"])
+
+    def test_needs_input_hands_off_as_feedback(self):
+        outcome, tracker = self.dispatch(make_issue(), [result("needs_input")])
+        self.assertEqual(outcome, "needs_input")
+        self.assertEqual(tracker.handoffs, [("feedback", "1")])
+
+    def test_escalation_reruns_on_opus_and_counts_both_runs(self):
+        self.dispatch(make_issue(complexity="simple"), [result("escalate"), result("needs_input")])
+        self.assertEqual(self.models, ["sonnet", "opus"])
+        self.assertEqual(sessions.get("odysseus", 42)["runs"], 2)
+        self.assertTrue(sessions.get("odysseus", 42)["escalated"])
+
+    def test_limit_stops_before_running_claude(self):
+        sessions.update("odysseus", 42, runs=10)
+        outcome, tracker = self.dispatch(make_issue(), [])
+        self.assertEqual(outcome, "limit")
+        self.assertEqual(self.models, [])
+        self.assertEqual(tracker.handoffs, [("pending", "1")])
+        self.assertIn("needs manual intervention", tracker.comments[0])
+
+    def test_tenth_run_is_allowed_eleventh_is_not(self):
+        sessions.update("odysseus", 42, runs=9)
+        self.dispatch(make_issue(), [result("needs_input")])
+        self.assertEqual(len(self.models), 1)
+        outcome, _ = self.dispatch(make_issue(), [])
+        self.assertEqual(outcome, "limit")
+
+    def test_crash_hands_off_as_failed(self):
+        outcome, tracker = self.dispatch(make_issue(), [{"is_error": True, "subtype": "exit 1", "result": "boom"}])
+        self.assertEqual(outcome, "failed")
+        self.assertEqual(tracker.handoffs, [("pending", "1")])
+
+    def test_done_still_assigned_is_flagged(self):
+        outcome, tracker = self.dispatch(make_issue(), [result("done")])
+        self.assertEqual(tracker.handoffs, [("pending", "1")])
+
+
+if __name__ == "__main__":
+    unittest.main()
