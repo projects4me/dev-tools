@@ -10,7 +10,7 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 from lib.common import AiError, REPOS  # noqa: E402
-from lib import apitester, context, review, ship, tests, workflow  # noqa: E402
+from lib import apitester, context, kb, review, ship, tests, workflow  # noqa: E402
 
 
 def build_parser():
@@ -72,6 +72,8 @@ def build_parser():
              "context pack for an issue: outlines of the files/classes/endpoints it names, tests, api cases, deps")
     sp.add_argument("issue", type=int)
     sp.add_argument("--repo", choices=repos)
+
+    kb.add_parser(sub)
 
     sp = add("ship", ship.cmd_ship, "test gate, commit, push, PR, tracker notes, time, in_review: one call "
                                     "from a JSON spec (see lib/ship.py)")

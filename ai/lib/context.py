@@ -10,8 +10,7 @@ import re
 import subprocess
 from pathlib import Path
 
-from .common import PROJECT_FOR_REPO, git, repo_dir, say, tracker_call
-from .workflow import strip_html
+from .common import PROJECT_FOR_REPO, git, repo_dir, say, strip_html, tracker_call
 
 _PHP_DECL = re.compile(r"^\s*(?:abstract\s+|final\s+)?(?:class|interface|trait)\s+\w+"
                        r"|^\s*(?:(?:public|protected|private|static|abstract|final)\s+)*function\s+&?\w+\s*\(")
