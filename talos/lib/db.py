@@ -51,6 +51,16 @@ CREATE TABLE IF NOT EXISTS runs (
     peak_context_tokens INTEGER,
     log_file            TEXT
 );
+CREATE TABLE IF NOT EXISTS ideas (
+    agent               TEXT    NOT NULL,
+    idea                INTEGER NOT NULL,
+    session_id          TEXT,               -- Claude session to resume
+    session_cost_usd    REAL    DEFAULT 0,  -- that session's cumulative cost as Claude reports it
+    note                TEXT,               -- told to the agent at the start of its next turn
+    answered_upto       INTEGER DEFAULT 0,  -- id of the last engineer message a turn has taken in
+    last_ended_at       TEXT,
+    PRIMARY KEY (agent, idea)
+);
 CREATE INDEX IF NOT EXISTS runs_by_issue ON runs (agent, issue);
 CREATE INDEX IF NOT EXISTS runs_by_start ON runs (started_at);
 """

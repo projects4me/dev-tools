@@ -8,7 +8,7 @@ branch being worked on is never touched.
 import json
 import shutil
 
-from .common import AiError, P4M, STATE_DIR, git, run, say
+from .common import AiError, STATE_DIR, git, p4m, run, say
 
 BASELINE_DIR = STATE_DIR / "baseline"
 
@@ -69,5 +69,5 @@ def require(repo, sha, suites, runner):
             say(f"baseline {suite}: {len(result.failures)} failing on {sha[:8]}")
     finally:
         # one-off per base commit: don't leave its test container running
-        run(["sh", str(P4M), "test", "clean", "--src", str(src)], check=False)
+        run(p4m("test", "clean", "--src", str(src)), check=False)
     return load(repo, sha)

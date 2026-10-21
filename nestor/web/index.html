@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Nestor · Projects4Me</title>
+  <link rel="icon" href="img/logo.png">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Source+Sans+Pro:300,400,600,700,300italic,400italic,600italic">
+  <link rel="stylesheet" href="vendor/font-awesome/css/font-awesome.min.css"><!-- Font Awesome 4.7.0 -->
+  <link rel="stylesheet" href="app.css">
+  <script src="vendor/marked.min.js"></script><!-- marked 12.0.2, MIT -->
+  <script src="vendor/purify.min.js"></script><!-- DOMPurify 3.1.6, Apache-2.0/MPL-2.0 -->
+</head>
+<body>
+  <header class="main-header">
+    <a class="logo" href="#">
+      <img src="img/logo.png" alt=""><span><b>Projects</b>4Me</span>
+    </a>
+    <nav class="navbar">
+      <button class="nav-toggle" id="menu-btn" aria-label="Ideas"><i class="fa fa-bars"></i></button>
+      <span class="navbar-title"><i class="fa fa-lightbulb-o"></i> Nestor</span>
+      <div class="navbar-right">
+        <button class="btn btn-primary btn-sm" id="new-btn"><i class="fa fa-plus"></i> New idea</button>
+        <span class="navbar-user"><span class="avatar avatar-sm"><i class="fa fa-user"></i></span><span id="engineer-name"></span></span>
+      </div>
+    </nav>
+  </header>
+
+  <aside class="main-sidebar" id="sidebar">
+    <div class="user-panel">
+      <span class="avatar"><img src="img/logo.png" alt=""></span>
+      <div>
+        <div class="user-name" id="agent-name">Agent Nestor</div>
+        <div class="user-status" id="agent-model"><i class="fa fa-circle text-muted"></i> Connecting…</div>
+      </div>
+    </div>
+    <button class="selector" id="new-side-btn"><span>New idea</span><i class="fa fa-plus"></i></button>
+    <div class="sidebar-header">Ideas</div>
+    <nav class="sidebar-menu" id="idea-list" aria-label="Ideas"></nav>
+  </aside>
+
+  <div class="content-wrapper">
+    <section class="content-header">
+      <h1 id="page-title">Ideas</h1>
+      <ol class="breadcrumb" id="breadcrumb"></ol>
+    </section>
+
+    <section class="content">
+      <!-- Start a new idea (create pattern) -->
+      <div id="new-view" hidden>
+        <div class="row">
+          <div class="col-8">
+            <div class="box box-primary">
+              <div class="box-header with-border"><h3 class="box-title">Start an Idea</h3></div>
+              <form class="box-body" id="new-idea-form">
+                <label class="field-label" for="new-idea-title">Title</label>
+                <input class="field-input" id="new-idea-title" type="text" maxlength="200"
+                       placeholder="What do you want to build? A short name for the idea">
+                <label class="field-label" for="new-idea-text">Describe it</label>
+                <textarea class="field-input" id="new-idea-text" rows="6"
+                          placeholder="What it should do, who uses it, anything you already know about how. Nestor reads the code and the existing issues, then asks what matters."></textarea>
+              </form>
+            </div>
+            <div class="form-actions">
+              <button class="btn btn-primary" form="new-idea-form" type="submit">Start</button>
+              <button class="btn btn-default" type="button" id="new-cancel">Cancel</button>
+            </div>
+          </div>
+          <div class="col-4">
+            <div class="box box-info">
+              <div class="box-header with-border"><h3 class="box-title">How it works</h3></div>
+              <div class="box-body how">
+                <p><i class="fa fa-comments-o"></i> Brainstorm with Agent Nestor. He reads the code and searches the existing issues.</p>
+                <p><i class="fa fa-list-alt"></i> He proposes an implementation plan, split into issues per project. Ask for changes; each revision is a new version.</p>
+                <p><i class="fa fa-check-square-o"></i> Approve a version and its issues are created in Gaia as Agent Nestor, assigned to you, in dependency order.</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- No idea open -->
+      <div id="empty-view">
+        <div class="row">
+          <div class="col-8">
+            <div class="box box-primary">
+              <div class="box-header with-border"><h3 class="box-title">Brainstorm with Agent Nestor</h3></div>
+              <div class="box-body">
+                <p class="no-entry"><i class="fa fa-info-circle"></i> Pick an idea on the left, or start a new one.</p>
+              </div>
+              <div class="box-footer text-center"><a href="#" id="empty-new"><i class="fa fa-plus"></i> Start an idea</a></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- An idea (detail pattern) -->
+      <div id="idea-view" hidden>
+        <div class="row">
+          <div class="col-8">
+            <div class="box box-primary conversation">
+              <div class="box-header with-border">
+                <h3 class="box-title" id="idea-title"></h3>
+                <span class="label" id="idea-status"></span>
+                <div class="box-tools">
+                  <button class="btn btn-box-tool" id="rename-btn" title="Rename"><i class="fa fa-pencil"></i></button>
+                  <button class="btn btn-box-tool" id="archive-btn" title="Archive"><i class="fa fa-archive"></i></button>
+                </div>
+              </div>
+              <div class="box-body thread" id="log" aria-live="polite"></div>
+              <form class="box-footer composer" id="composer">
+                <span class="avatar avatar-sm"><i class="fa fa-user"></i></span>
+                <textarea id="input" rows="3" placeholder="Describe the idea, answer Nestor, or ask for changes to the plan… (Enter to send, Shift+Enter for a new line)"></textarea>
+                <div class="composer-actions">
+                  <button type="submit" class="btn btn-primary" id="send-btn">Send</button>
+                  <button type="button" class="btn btn-default" id="stop-btn" hidden><i class="fa fa-stop"></i> Stop</button>
+                </div>
+              </form>
+            </div>
+          </div>
+          <div class="col-4">
+            <div class="box box-success" id="plan-box">
+              <div class="box-header with-border">
+                <h3 class="box-title">Plan</h3>
+                <span class="label" id="plan-status"></span>
+              </div>
+              <div id="plan-body"></div>
+            </div>
+            <div class="box box-info">
+              <div class="box-header with-border"><h3 class="box-title">Created Issues</h3></div>
+              <div class="box-body" id="created-body"></div>
+            </div>
+            <div class="box box-default">
+              <div class="box-header with-border"><h3 class="box-title">Summary</h3></div>
+              <div class="box-body facts" id="summary-body"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <footer class="main-footer">
+    <span>Copyright © 2026 <b>Projects4Me Inc.</b> All rights reserved.</span>
+    <span class="muted"><i class="fa fa-desktop"></i> Nestor runs on this machine</span>
+  </footer>
+  <script src="app.js"></script>
+</body>
+</html>

@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import baseline, results, testmap
-from .common import P4M, STATE_DIR, WORKSPACE, base_branch, config, git, repo_dir, say
+from .common import STATE_DIR, WORKSPACE, base_branch, config, git, p4m, repo_dir, say
 
 PHPUNIT_FOLDERS = ("tests/libraries/security", "tests/libraries/utils")
 
@@ -43,7 +43,7 @@ def _run_logged(name, cmd, cwd=WORKSPACE):
 
 
 def _p4m(*args):
-    return ["sh", str(P4M), *args]
+    return p4m(*args)
 
 
 def _tag(src):
@@ -123,7 +123,8 @@ def hermes(src):
 
 def devtools(src):
     lines, failures, code, ran_total = [], [], 0, 0
-    for name, folder in (("talos", "talos/tests"), ("ai", "ai/tests"), ("installer", "installer/tests")):
+    for name, folder in (("talos", "talos/tests"), ("ai", "ai/tests"), ("installer", "installer/tests"),
+                         ("nestor", "nestor/tests"), ("sim", "sim/tests")):
         if not (Path(src) / folder).exists():
             continue
         c, out, log = _run_logged(f"dev-tools-{name}", [sys.executable, "-m", "unittest", "discover", "-s", folder,

@@ -4,6 +4,7 @@ import html
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 from datetime import datetime
@@ -13,7 +14,7 @@ AI_DIR = Path(__file__).resolve().parent.parent
 DEV_TOOLS = AI_DIR.parent
 WORKSPACE = DEV_TOOLS.parent
 ODYSSEUS = DEV_TOOLS / "odysseus" / "odysseus"
-P4M = DEV_TOOLS / "installer" / "p4m"
+P4M = DEV_TOOLS / "installer" / "p4m.py"
 GAIA_MCP = DEV_TOOLS / "gaia-mcp"
 STATE_DIR = AI_DIR / "state"
 CONFIG_FILE = AI_DIR / "config.json"
@@ -77,9 +78,31 @@ def git(repo, *args, check=True):
     return run(["git", *args], cwd=repo_dir(repo), check=check)
 
 
+def p4m(*args):
+    """The p4m command line, run with this Python (no shell wrapper, so it works the same on Windows and Linux)."""
+    return [sys.executable, str(P4M), *args]
+
+
+def find_bash():
+    """bash for the odysseus wrapper (a bash script; `sh` is dash on Ubuntu). On Windows that's Git Bash:
+    System32\\bash.exe is WSL, often without a distro. Same lookup as installer/configure.py."""
+    if os.name != "nt":
+        return shutil.which("bash")
+    candidates = []
+    exec_path = subprocess.run(["git", "--exec-path"], capture_output=True, text=True).stdout.strip()
+    if exec_path:
+        git_root = Path(exec_path).resolve().parents[2]
+        candidates += [git_root / "bin" / "bash.exe", git_root / "usr" / "bin" / "bash.exe"]
+    candidates.append(Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "Git" / "bin" / "bash.exe")
+    return next((str(c) for c in candidates if c.exists()), None)
+
+
 def ody(repo, tool, *args, check=True):
     """Run git/gh as Agent Odysseus through dev-tools/odysseus (never the engineer's own identity)."""
-    return run(["sh", str(ODYSSEUS), tool, *args], cwd=repo_dir(repo), check=check)
+    bash = find_bash()
+    if not bash:
+        raise AiError("bash not found (the odysseus wrapper needs it; on Windows, Git for Windows' Git Bash)")
+    return run([bash, str(ODYSSEUS), tool, *args], cwd=repo_dir(repo), check=check)
 
 
 def now():

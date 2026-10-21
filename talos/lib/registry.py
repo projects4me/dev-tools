@@ -3,7 +3,7 @@
 import json
 from dataclasses import dataclass, field
 
-from .config import AGENTS_DIR, DEV_TOOLS, TalosError
+from .config import AGENTS_DIR, DEV_TOOLS, TalosError, log
 
 
 @dataclass
@@ -37,6 +37,10 @@ class Agent:
     pickup_status: str = None           # status set when Talos starts work on an issue (None = leave it)
     resume_max_idle_minutes: int = 55   # resume a session only if its last run ended this recently (0 = always)
     max_turns: int = 0                  # turns per run before Claude stops and the issue goes back (0 = no limit)
+    kind: str = "issues"                # "issues": works assigned issues (Hermes); "ideas": brainstorms ideas (sim)
+    events: list = field(default_factory=list)       # event names to subscribe to (kind ideas)
+    builtin_tools: str = ""             # `claude --tools`: the built-in tools loaded at all (empty = all)
+    denied_tools: list = field(default_factory=list)  # `--disallowedTools`
     extra: dict = field(default_factory=dict)
 
     def action_for(self, status):
@@ -47,6 +51,7 @@ class Agent:
 
 
 REQUIRED = ("name", "gaiaEnv", "projects", "acceptAssignmentsFrom", "handoffTo", "actions", "model", "rolePrompt")
+KINDS = ("issues", "ideas")
 
 
 def load_agent(folder):
@@ -71,6 +76,9 @@ def load_agent(folder):
     env_file = DEV_TOOLS / raw["gaiaEnv"]
     if not env_file.exists():
         raise TalosError(f"{path}: gaiaEnv {env_file} not found")
+    kind = raw.get("kind", "issues")
+    if kind not in KINDS:
+        raise TalosError(f"{path}: kind must be one of {', '.join(KINDS)}")
     actions = {status: Action(prompt=a["prompt"], resume=bool(a.get("resume")))
                for status, a in raw["actions"].items()}
     return Agent(
@@ -97,18 +105,32 @@ def load_agent(folder):
         pickup_status=raw.get("pickupStatus"),
         resume_max_idle_minutes=int(raw.get("resumeMaxIdleMinutes", 55)),
         max_turns=int(raw.get("maxTurns", 0)),
+        kind=kind,
+        events=list(raw.get("events", [])),
+        builtin_tools=raw.get("builtinTools", ""),
+        denied_tools=list(raw.get("deniedTools", [])),
+        extra={k: raw[k] for k in ("knowledgeMap",) if k in raw},
     )
 
 
 def load_agents(only=None):
     """All agents in agents/ (enabled ones unless `only` names one explicitly)."""
+    """An agent that can't load (e.g. not configured on this machine yet) is reported and skipped, so one agent's
+    setup never stops another; naming it with `only` raises the error instead."""
     agents = []
     for folder in sorted(p for p in AGENTS_DIR.iterdir() if (p / "agent.json").exists()):
-        agent = load_agent(folder)
+        if only and folder.name != only:
+            continue
+        try:
+            agent = load_agent(folder)
+        except TalosError as e:
+            if only:
+                raise
+            log(f"skipping agent {folder.name}: {e}")
+            continue
         if only:
-            if agent.name == only:
-                return [agent]
-        elif agent.enabled:
+            return [agent]
+        if agent.enabled:
             agents.append(agent)
     if only:
         raise TalosError(f"no agent named '{only}' in {AGENTS_DIR}")

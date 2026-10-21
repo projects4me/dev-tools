@@ -11,7 +11,9 @@ used inside the **[Pr4M](https://github.com/projects4me/Pr4M)** workspace, which
 | [`gaia-mcp/`](gaia-mcp/README.md) | MCP server that lets Claude Code read and write Projects4Me issues (local or live) |
 | [`odysseus/`](odysseus/README.md) | **Agent Odysseus**, the team's shared agent identity: git and `gh` as the agent, never as you |
 | [`ai/`](ai/README.md) | Workflow CLI for Claude Code: start an issue, log real elapsed time, run suites, commit, open PRs, answer reviews |
-| [`talos/`](talos/README.md) | Listens to Hermes and works on issues assigned to the agent, by running headless Claude Code |
+| [`talos/`](talos/README.md) | Runs the agents with headless Claude Code: Agent Odysseus works issues assigned to it (Hermes); Agent Nestor brainstorms ideas (sim) |
+| [`nestor/`](nestor/README.md) | The UI for brainstorming ideas with **Agent Nestor** (a Talos agent): refine an idea into an implementation plan, approve it, and Talos creates the issues in Gaia |
+| [`sim/`](sim/README.md) | Temporary stand-ins for Gaia's idea resources and Hermes' idea events, until Gaia and Hermes support ideas |
 
 ## Setup
 

@@ -10,6 +10,8 @@ workspace.local.json
 ai/config.local.json
 talos/config.local.json
 talos/agents/*/agent.local.json
+nestor/config.local.json
+sim/config.local.json
 
 # credentials
 gaia-mcp/*.env
@@ -19,6 +21,8 @@ odysseus/odysseus.env
 # runtime state
 ai/state/
 talos/state/
+nestor/state/
+sim/state/
 talos/node_modules/
 
 # Python / OS / editors

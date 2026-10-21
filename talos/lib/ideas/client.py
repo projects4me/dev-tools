@@ -1,0 +1,64 @@
+"""Idea resources as the agent: sim Gaia's REST API today (dev-tools/sim), the gaia MCP's idea tools once Gaia
+has ideas. (Live progress goes through progress.py.)"""
+
+import json
+import urllib.error
+import urllib.request
+
+from ..config import TalosError
+
+
+class IdeasClient:
+    def __init__(self, url, actor_id):
+        self.url, self.actor_id = url.rstrip("/"), str(actor_id)
+
+    def _call(self, method, path, body=None):
+        data = None if body is None else json.dumps(body).encode("utf-8")
+        req = urllib.request.Request(f"{self.url}{path}", data=data, method=method,
+                                     headers={"Content-Type": "application/json", "X-Sim-Actor": self.actor_id})
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                return json.loads(resp.read() or b"{}")
+        except urllib.error.HTTPError as e:
+            detail = e.read().decode("utf-8", "replace")
+            try:
+                detail = json.loads(detail).get("error", detail)
+            except ValueError:
+                pass
+            raise TalosError(f"sim Gaia {method} {path}: {e.code} {detail}")
+        except (urllib.error.URLError, OSError) as e:
+            raise TalosError(f"sim Gaia not reachable at {self.url}: {e}")
+
+    # -- reads --------------------------------------------------------------------------------------------------
+
+    def ideas(self):
+        return self._call("GET", "/api/v1/idea")["data"]
+
+    def idea(self, idea_id):
+        """{idea, messages, plans (each with issues)}."""
+        return self._call("GET", f"/api/v1/idea/{int(idea_id)}")["data"]
+
+    # -- writes -------------------------------------------------------------------------------------------------
+
+    def set_state(self, idea_id, agent_state):
+        return self._call("PATCH", f"/api/v1/idea/{int(idea_id)}", {"agent_state": agent_state})
+
+    def mark_created(self, idea_id):
+        return self._call("PATCH", f"/api/v1/idea/{int(idea_id)}", {"status": "created"})
+
+    def post(self, idea_id, role, body, steps=None, plan_id=None, cost=None):
+        return self._call("POST", "/api/v1/ideamessage", {"idea_id": int(idea_id), "role": role, "body": body,
+                                                          "steps": steps, "plan_id": plan_id, "cost_usd": cost})["data"]
+
+    def add_plan(self, idea_id, body):
+        """(plan id, version)."""
+        d = self._call("POST", "/api/v1/ideaplan", {"idea_id": int(idea_id), "body": body})["data"]
+        return d["id"], d["version"]
+
+    def set_plan_status(self, plan_id, status, error=None):
+        return self._call("PATCH", f"/api/v1/ideaplan/{int(plan_id)}", {"status": status, "error": error})["data"]
+
+    def add_issue(self, plan_id, key, issue):
+        return self._call("POST", "/api/v1/ideaissue", {
+            "plan_id": int(plan_id), "key": key, "number": issue["issueNumber"],
+            "project_code": issue.get("projectShortcode"), "subject": issue.get("subject"), "url": issue.get("url")})
