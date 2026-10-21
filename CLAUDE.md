@@ -27,3 +27,9 @@ possible). A change that works on only one is not done. In practice:
   process bind a port in use, so an old instance keeps answering).
 - **Platform-specific code** goes behind `os.name == "nt"` with both branches written, next to each other.
 - **Tests** don't depend on the OS: temp dirs from `tempfile`, no shell commands, no fixed ports (bind port 0).
+
+## Shared test containers
+- The local `gaia-dev`/`gaia-test` containers can mount another checkout (e.g. `Projects4Me/gaia`, not `Pr4M/gaia`),
+  so `p4m test` / `ai test` may not test the branch. Check the mount (`docker inspect`) before trusting a result;
+  never touch the other checkout. To test a Pr4M branch, run a throwaway container from image `gaia-gaia-test` with
+  `--network backend`, the env file from `docker inspect gaia-test`, and `-v <Pr4M>/gaia:/var/www/html`, then remove it.
