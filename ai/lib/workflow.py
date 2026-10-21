@@ -3,29 +3,18 @@
 Each command is a fixed sequence of steps that used to be separate tool calls.
 """
 
-import html
-import re
 from datetime import datetime
 from pathlib import Path
 
 import sys
 
 from .common import (AiError, PROJECT_FOR_REPO, REPOS, base_branch, config, git, git_dir, issue_repo,
-                     load_timers, now, ody, repo_dir, save_timers, say, start_timer, succeeds, tracker_call)
+                     load_timers, now, ody, repo_dir, save_timers, say, start_timer, strip_html, succeeds,
+                     tracker_call)
 
 
 def branch_name(issue):
     return f"claude-issue-{issue}"
-
-
-def strip_html(text, limit=None):
-    text = re.sub(r"<(br|/p|/li|/h\d)\s*/?>", "\n", text or "", flags=re.I)
-    text = re.sub(r"<li[^>]*>", "- ", text, flags=re.I)
-    text = html.unescape(re.sub(r"<[^>]+>", "", text))
-    text = re.sub(r"\n{3,}", "\n\n", text).strip()
-    if limit and len(text) > limit:
-        text = text[:limit].rstrip() + " …"
-    return text
 
 
 # --- sync / start ---------------------------------------------------------------------------

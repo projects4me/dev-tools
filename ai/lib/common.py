@@ -1,7 +1,9 @@
 """Shared paths, process helpers and the Projects4Me tracker client for dev-tools/ai."""
 
+import html
 import json
 import os
+import re
 import subprocess
 import sys
 from datetime import datetime
@@ -86,6 +88,17 @@ def now():
 
 def say(msg=""):
     print(msg, flush=True)
+
+
+def strip_html(text, limit=None):
+    """Tracker HTML (descriptions, comments) as plain text: paragraphs and list items on their own lines."""
+    text = re.sub(r"<(br|/p|/li|/h\d)\s*/?>", "\n", text or "", flags=re.I)
+    text = re.sub(r"<li[^>]*>", "- ", text, flags=re.I)
+    text = html.unescape(re.sub(r"<[^>]+>", "", text))
+    text = re.sub(r"\n{3,}", "\n\n", text).strip()
+    if limit and len(text) > limit:
+        text = text[:limit].rstrip() + " …"
+    return text
 
 
 # --- Tracker (reuses the gaia MCP server's client, same credentials and logic) ---------------
