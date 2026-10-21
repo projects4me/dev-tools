@@ -41,6 +41,14 @@ for d in /proc/[0-9]*; do
   [ -n "$kg" ] && [ "$g" = "$kg" ] && continue
   echo $p
 done"""
+# The recorded watch build is alive and still ember. Its title is plain `ember` (it renames itself), so
+# `pgrep -f 'ember build'` only finds builds started the old way (under `sh -c '... ember build ...'`).
+RECORDED_BUILDER = (f"p=$(cat {BUILD_PID} 2>/dev/null); [ -n \"$p\" ] && kill -0 \"$p\" 2>/dev/null "
+                    f"&& tr '\\0' ' ' < /proc/$p/cmdline 2>/dev/null | grep -q ember")
+# [e]mber: the pattern must not match the sh -c command line running it
+BUILDER_RUNNING_SCRIPT = f"{{ {RECORDED_BUILDER}; }} || pgrep -f '[e]mber build' >/dev/null"
+STOP_BUILDER_SCRIPT = (f"{{ {RECORDED_BUILDER} && kill \"$p\"; }}; pkill -f '[e]mber build'; "
+                       f"rm -f {BUILD_PID}; sleep 1")
 TEST_TIMEOUT = 900        # seconds for one `ember test`
 STUCK_GRACE = 20          # seconds after a hang marker before the run is stopped (the other tests may still finish)
 # Output after which testem never reports completion: no test matched, or QUnit/TestLoader failed globally.
@@ -263,9 +271,11 @@ class PrometheusTestContainer:
         return len(BUILD_DONE.findall(self._build_log()))
 
     def _builder_running(self):
-        # [e]mber: the pattern must not match this sh -c command line itself
-        r = _docker("exec", self.name, "sh", "-c", "pgrep -f '[e]mber build' >/dev/null", check=False)
+        r = _docker("exec", self.name, "sh", "-c", BUILDER_RUNNING_SCRIPT, check=False)
         return r.returncode == 0
+
+    def _stop_builder(self):
+        _docker("exec", self.name, "sh", "-c", STOP_BUILDER_SCRIPT, check=False)
 
     def stale_builders(self):
         """Pids of processes holding the build log open that are not p4m's own watch build (its process group)."""
@@ -286,7 +296,7 @@ class PrometheusTestContainer:
         """
         self.kill_stale_builders()
         if any(c in RESTART_ON for c in changed) and self._builder_running():
-            _docker("exec", self.name, "sh", "-c", "pkill -f '[e]mber build'; sleep 1", check=False)
+            self._stop_builder()
         if before is None:
             before = self.build_count()
         if not self._builder_running():
