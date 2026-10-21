@@ -41,6 +41,9 @@ class Agent:
     events: list = field(default_factory=list)       # event names to subscribe to (kind ideas)
     builtin_tools: str = ""             # `claude --tools`: the built-in tools loaded at all (empty = all)
     denied_tools: list = field(default_factory=list)  # `--disallowedTools`
+    limits_by_model: dict = field(default_factory=dict)  # model -> {"maxTurns", "maxBudgetUsd"} for that model's runs
+    ship_prompt: str = ""               # fresh session that ships after a ready_to_ship outcome ("" = not offered)
+    env: dict = field(default_factory=dict)          # extra environment for the Claude process
     extra: dict = field(default_factory=dict)
 
     def action_for(self, status):
@@ -76,6 +79,9 @@ def load_agent(folder):
     env_file = DEV_TOOLS / raw["gaiaEnv"]
     if not env_file.exists():
         raise TalosError(f"{path}: gaiaEnv {env_file} not found")
+    reserved = [k for k in raw.get("env", {}) if str(k).upper().startswith("GAIA_")]
+    if reserved:
+        raise TalosError(f"{path}: env may not set {', '.join(reserved)} (the agent's credentials come from gaiaEnv)")
     kind = raw.get("kind", "issues")
     if kind not in KINDS:
         raise TalosError(f"{path}: kind must be one of {', '.join(KINDS)}")
@@ -109,6 +115,9 @@ def load_agent(folder):
         events=list(raw.get("events", [])),
         builtin_tools=raw.get("builtinTools", ""),
         denied_tools=list(raw.get("deniedTools", [])),
+        limits_by_model=dict(raw.get("limitsByModel", {})),
+        ship_prompt=raw.get("shipPrompt", ""),
+        env={str(k): str(v) for k, v in raw.get("env", {}).items()},
         extra={k: raw[k] for k in ("knowledgeMap",) if k in raw},
     )
 

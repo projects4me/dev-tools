@@ -73,9 +73,9 @@ class Dispatcher:
         model = policy.choose_model(self.agent, issue, escalated=bool(state.get("escalated")))
         prompt = policy.render_prompt(decision.action, issue, decision.repo, catch_up=catch_up,
                                      reviewer=self.agent.reviewer_name)
-        return self._run(issue, prompt, model, session_id, why=why)
+        return self._run(issue, prompt, model, session_id, why=why, repo=decision.repo)
 
-    def _run(self, issue, prompt, model, session_id, escalated=False, why=None):
+    def _run(self, issue, prompt, model, session_id, escalated=False, why=None, repo=None, shipping=False):
         number = issue["number"]
         state = sessions.get(self.agent.name, number)
         done_runs = state.get("runs") or 0
@@ -83,13 +83,14 @@ class Dispatcher:
         if left == 0:
             return self._iteration_limit(number, done_runs)
         live_id = session_id or str(uuid.uuid4())
+        limits = policy.run_limits(self.agent, model)
         cmd = runner.build_command(self.claude, self.agent, prompt, model, session_id,
-                                   new_session_id=None if session_id else live_id)
+                                   new_session_id=None if session_id else live_id, limits=limits)
         mode = why or (f"resume {session_id[:8]}" if session_id else "new session")
         if not session_id:
             mode += f", session {live_id[:8]}"
         limit = f"{done_runs + 1}/{self.agent.max_iterations}" if left is not None else f"{done_runs + 1}"
-        log(f"#{number} iteration {limit} on {model} ({mode}; status '{issue['status']}', "
+        log(f"#{number} iteration {limit} on {model} ({mode}; {limits.describe()}; status '{issue['status']}', "
             f"complexity {issue.get('complexity') or 'not set'})", self.agent.name)
         if self.dry_run:
             log(f"#{number} dry run, not starting Claude: {prompt}", self.agent.name)
@@ -102,7 +103,8 @@ class Dispatcher:
                         live_session_id=live_id, started_at=_iso(started))
         self._mark_picked_up(issue)
         try:
-            result, log_path = runner.run(cmd, self.tracker.child_env(), self.agent.name, number)
+            result, log_path = runner.run(cmd, {**self.tracker.child_env(), **self.agent.env},
+                                          self.agent.name, number)
         except Exception as e:  # e.g. the Claude binary vanished; still close the run and hand off
             result, log_path = {"is_error": True, "subtype": "talos error", "result": str(e)}, None
         ended = _now()
@@ -113,7 +115,7 @@ class Dispatcher:
         stats = runner.usage_since(runner.transcript(new_session), started)
         sessions.update(self.agent.name, number, running=False, last_ended_at=_iso(ended),
                         session_id=new_session, session_cost_usd=reported)
-        outcome, summary, comment = policy.read_outcome(result)
+        outcome, summary, comment, handoff = policy.read_outcome(result)
         log_name = log_path.name if log_path else "none"
         run_log.finish(run_id, _iso(ended), round((ended - started).total_seconds(), 1), outcome, summary,
                        cost, reported, stats, log_path.name if log_path else None)
@@ -129,10 +131,19 @@ class Dispatcher:
                          f"escalated. Re-check where the work stands, then carry on. "
                          f"End with the same structured outcome.")
             return self._run(issue, follow_up, self.agent.model_escalate,
-                             (result or {}).get("session_id"), escalated=True)
+                             (result or {}).get("session_id"), escalated=True, repo=repo, shipping=shipping)
         if outcome == "escalate":
             outcome = "needs_input"
             comment = comment or f"<p>Escalation was requested on {model}, which is already the top model.</p>"
+
+        if outcome == "ready_to_ship" and self.agent.ship_prompt and repo and not shipping:
+            # Ship in a fresh session: the implementing session's context would be re-read on every ship call.
+            log(f"#{number} ready to ship, starting a fresh ship session", self.agent.name)
+            return self._run(issue, policy.render_ship_prompt(self.agent, issue, repo, handoff), model, None,
+                             escalated=escalated, why="fresh ship session", repo=repo, shipping=True)
+        if outcome == "ready_to_ship":
+            outcome = "failed"
+            summary = f"reported ready_to_ship where it can't be used: {summary}"
 
         if outcome == "done":
             self._check_handed_back(number, log_name)

@@ -97,10 +97,15 @@ class ReadOutcomeTest(unittest.TestCase):
     def test_structured_outcome(self):
         r = {"subtype": "success", "session_id": "s",
              "structured_output": {"outcome": "needs_input", "summary": "q", "comment": "<p>?</p>"}}
-        self.assertEqual(policy.read_outcome(r), ("needs_input", "q", "<p>?</p>"))
+        self.assertEqual(policy.read_outcome(r), ("needs_input", "q", "<p>?</p>", ""))
+
+    def test_ready_to_ship_carries_the_handoff_note(self):
+        r = {"subtype": "success", "structured_output": {"outcome": "ready_to_ship", "summary": "s",
+                                                         "handoff": "branch claude-issue-42"}}
+        self.assertEqual(policy.read_outcome(r), ("ready_to_ship", "s", "", "branch claude-issue-42"))
 
     def test_error_result_is_failure(self):
-        self.assertEqual(policy.read_outcome({"is_error": True, "subtype": "error_max_budget_usd"})[0], "failed")
+        self.assertEqual(policy.read_outcome({"is_error": True, "subtype": "error_during_execution"})[0], "failed")
 
     def test_missing_structured_output_is_failure(self):
         self.assertEqual(policy.read_outcome({"subtype": "success", "result": "hi"})[0], "failed")
@@ -113,11 +118,43 @@ class ReadOutcomeTest(unittest.TestCase):
         self.assertEqual(policy.read_outcome(None)[0], "failed")
 
     def test_turn_budget_hands_back_for_input(self):
-        outcome, summary, comment = policy.read_outcome(
+        outcome, summary, comment, _ = policy.read_outcome(
             {"is_error": True, "subtype": "error_max_turns", "num_turns": 80, "session_id": "s"})
         self.assertEqual(outcome, "needs_input")
         self.assertIn("80-turn budget", summary)
         self.assertIn("assign the issue back", comment)
+
+    def test_cost_budget_hands_back_for_input(self):
+        outcome, summary, comment, _ = policy.read_outcome(
+            {"is_error": True, "subtype": "error_max_budget_usd", "total_cost_usd": 15.2, "session_id": "s"})
+        self.assertEqual(outcome, "needs_input")
+        self.assertIn("$15.20 cost budget", summary)
+        self.assertIn("assign the issue back", comment)
+
+
+class RunLimitsTest(unittest.TestCase):
+    def test_agent_turn_cap_without_model_limits(self):
+        self.assertEqual(policy.run_limits(make_agent(max_turns=80), "opus"), (80, 0.0))
+
+    def test_model_limits_replace_the_turn_cap(self):
+        agent = make_agent(max_turns=80, limits_by_model={"opus": {"maxTurns": 150, "maxBudgetUsd": 15}})
+        self.assertEqual(policy.run_limits(agent, "opus"), (150, 15.0))
+        self.assertEqual(policy.run_limits(agent, "sonnet"), (80, 0.0))
+
+    def test_budget_only_keeps_the_turn_cap(self):
+        agent = make_agent(max_turns=80, limits_by_model={"opus": {"maxBudgetUsd": 10}})
+        self.assertEqual(policy.run_limits(agent, "opus"), (80, 10.0))
+
+
+class ShipPromptTest(unittest.TestCase):
+    def test_handoff_note_and_tracker_values(self):
+        agent = make_agent(ship_prompt="Ship #{issue} in {repo}: {handoff}")
+        self.assertEqual(policy.render_ship_prompt(agent, make_issue(), "gaia", " note {x} "),
+                         "Ship #42 in gaia: note {x}")
+
+    def test_empty_handoff_note_is_named(self):
+        agent = make_agent(ship_prompt="{handoff}")
+        self.assertIn("no handoff note", policy.render_ship_prompt(agent, make_issue(), "gaia", ""))
 
 
 class ModelChoiceTest(unittest.TestCase):
@@ -196,6 +233,20 @@ class BuildCommandTest(unittest.TestCase):
         self.assertNotIn("--max-turns", runner.build_command("claude", make_agent(), "x", "sonnet"))
         cmd = runner.build_command("claude", make_agent(max_turns=80), "x", "sonnet")
         self.assertEqual(cmd[cmd.index("--max-turns") + 1], "80")
+
+    def test_run_limits_override_turns_and_add_a_budget(self):
+        cmd = runner.build_command("claude", make_agent(max_turns=80), "x", "opus", limits=(150, 15.0))
+        self.assertEqual(cmd[cmd.index("--max-turns") + 1], "150")
+        self.assertEqual(cmd[cmd.index("--max-budget-usd") + 1], "15.0")
+        self.assertNotIn("--max-budget-usd", runner.build_command("claude", make_agent(), "x", "sonnet",
+                                                                  limits=(80, 0.0)))
+
+    def test_tool_policy(self):
+        self.assertNotIn("--tools", runner.build_command("claude", make_agent(), "x", "sonnet"))
+        cmd = runner.build_command("claude", make_agent(builtin_tools="Bash,Read", denied_tools=["PowerShell"]),
+                                   "x", "sonnet")
+        self.assertEqual(cmd[cmd.index("--tools") + 1], "Bash,Read")
+        self.assertEqual(cmd[cmd.index("--disallowedTools") + 1], "PowerShell")
 
 
 if __name__ == "__main__":

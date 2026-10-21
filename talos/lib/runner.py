@@ -11,11 +11,13 @@ from pathlib import Path
 from .config import LOG_DIR, OUTCOME_SCHEMA, WORKSPACE, now_stamp
 
 
-def build_command(claude, agent, prompt, model, session_id=None, new_session_id=None):
+def build_command(claude, agent, prompt, model, session_id=None, new_session_id=None, limits=None):
     """The `claude -p` argv. Kept separate so it can be checked without running anything.
 
     A new session gets its id up front (new_session_id) so its live transcript can be found while it runs.
+    `limits` is the run's (max turns, max budget USD) from policy.run_limits; None = the agent's maxTurns only.
     """
+    max_turns, max_budget = limits or (agent.max_turns, 0)
     with open(OUTCOME_SCHEMA, encoding="utf-8") as f:
         schema = json.dumps(json.load(f), separators=(",", ":"))
     cmd = [claude, "-p", prompt,
@@ -25,10 +27,16 @@ def build_command(claude, agent, prompt, model, session_id=None, new_session_id=
            "--append-system-prompt", f"Your reviewer is {agent.reviewer_name}: they assign you work, answer "
                                      f"your questions and review and merge your PRs.\n\n{agent.role_prompt}",
            "--permission-mode", agent.permission_mode]
-    if agent.max_turns:
-        cmd += ["--max-turns", str(agent.max_turns)]
+    if max_turns:
+        cmd += ["--max-turns", str(max_turns)]
+    if max_budget:
+        cmd += ["--max-budget-usd", str(max_budget)]
+    if agent.builtin_tools:
+        cmd += ["--tools", agent.builtin_tools]
     if agent.allowed_tools:
         cmd += ["--allowedTools", *agent.allowed_tools]
+    if agent.denied_tools:
+        cmd += ["--disallowedTools", *agent.denied_tools]
     if session_id:
         cmd += ["--resume", session_id]
     elif new_session_id:

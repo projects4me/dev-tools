@@ -23,19 +23,19 @@
   },
   "actions": {
     "new": {
-      "prompt": "Work Projects4Me issue #{issue} ({project}, repo {repo}) end to end: run /start-issue {issue}, implement it, then /ship-issue {issue}."
+      "prompt": "Work Projects4Me issue #{issue} ({project}, repo {repo}) end to end: run /start-issue {issue}, and implement it. When it is ready to ship, end with outcome ready_to_ship and a handoff note; Talos ships it in a fresh session."
     },
     "in_progress": {
       "resume": true,
-      "prompt": "Continue Projects4Me issue #{issue} ({project}, repo {repo}). See where it stands (dev-tools/ai/ai issue {issue}, git status on branch claude-issue-{issue} in {repo}; dev-tools/ai/ai start {repo} {issue} if the branch isn't checked out), restart the timer with dev-tools/ai/ai timer {issue}, finish the work, then /ship-issue {issue}."
+      "prompt": "Continue Projects4Me issue #{issue} ({project}, repo {repo}). See where it stands (dev-tools/ai/ai issue {issue}, git status on branch claude-issue-{issue} in {repo}; dev-tools/ai/ai start {repo} {issue} if the branch isn't checked out), restart the timer with dev-tools/ai/ai timer {issue}, finish the work. When it is ready to ship, end with outcome ready_to_ship and a handoff note; Talos ships it in a fresh session."
     },
     "feedback": {
       "resume": true,
-      "prompt": "{reviewer} answered on Projects4Me issue #{issue} ({project}, repo {repo}) and assigned it back to you. Read the latest comments (dev-tools/ai/ai issue {issue}), make sure branch claude-issue-{issue} is checked out in {repo} (dev-tools/ai/ai start {repo} {issue} if not), restart the timer with dev-tools/ai/ai timer {issue}, then continue the work and /ship-issue {issue} when it is done."
+      "prompt": "{reviewer} answered on Projects4Me issue #{issue} ({project}, repo {repo}) and assigned it back to you. Read the latest comments (dev-tools/ai/ai issue {issue}), make sure branch claude-issue-{issue} is checked out in {repo} (dev-tools/ai/ai start {repo} {issue} if not), restart the timer with dev-tools/ai/ai timer {issue}, then continue the work. When it is ready to ship, end with outcome ready_to_ship and a handoff note; Talos ships it in a fresh session."
     },
     "pending": {
       "resume": true,
-      "prompt": "The blocker on Projects4Me issue #{issue} ({project}, repo {repo}) should be resolved and {reviewer} assigned it back to you. Read the latest comments (dev-tools/ai/ai issue {issue}), make sure branch claude-issue-{issue} is checked out in {repo} (dev-tools/ai/ai start {repo} {issue} if not), restart the timer with dev-tools/ai/ai timer {issue}, then continue the work and /ship-issue {issue} when it is done."
+      "prompt": "The blocker on Projects4Me issue #{issue} ({project}, repo {repo}) should be resolved and {reviewer} assigned it back to you. Read the latest comments (dev-tools/ai/ai issue {issue}), make sure branch claude-issue-{issue} is checked out in {repo} (dev-tools/ai/ai start {repo} {issue} if not), restart the timer with dev-tools/ai/ai timer {issue}, then continue the work. When it is ready to ship, end with outcome ready_to_ship and a handoff note; Talos ships it in a fresh session."
     },
     "in_review": {
       "prompt": "{reviewer} reviewed the PR for Projects4Me issue #{issue} ({project}, repo {repo}) and assigned it back to you. Find the PR number in the issue's comments (dev-tools/ai/ai issue {issue}), restart the timer with dev-tools/ai/ai timer {issue}, then run /address-review {repo} <pr> {issue}."
@@ -51,6 +51,20 @@
   },
   "maxIterations": 10,
   "maxTurns": 80,
+  "limitsByModel": {
+    "sonnet": {
+      "maxTurns": 80
+    },
+    "opus": {
+      "maxTurns": 150,
+      "maxBudgetUsd": 15
+    }
+  },
+  "shipPrompt": "Ship Projects4Me issue #{issue} ({project}, repo {repo}). A previous session implemented it on branch claude-issue-{issue} and left this handoff note:\n\n{handoff}\n\nRestart the timer with dev-tools/ai/ai timer {issue}, check the branch (in {repo}: git status, git diff --stat origin/dev...claude-issue-{issue}), then run /ship-issue {issue}. Read only the files the suite or the design review points at.",
+  "builtinTools": "Bash,Read,Edit,Write,Grep,Glob,Agent,Skill,ToolSearch",
+  "env": {
+    "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "1"
+  },
   "resumeMaxIdleMinutes": 55,
   "permissionMode": "auto",
   "allowedTools": [
