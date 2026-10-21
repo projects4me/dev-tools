@@ -1,0 +1,9 @@
+{
+  "host": "127.0.0.1",
+  "port": 4790,
+  "simUrl": "http://127.0.0.1:4791",
+  "engineerUserId": "",
+  "engineerName": "",
+  "agentUserId": "",
+  "agentName": "Agent Nestor"
+}

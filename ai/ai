@@ -1,4 +1,8 @@
 #!/usr/bin/env sh
 # Projects4Me workflow automation for Claude Code: see README.md
 DIR="$(cd "$(dirname "$0")" && pwd)"
-exec python3 "$DIR/ai.py" "$@"
+# Python: `python` on Windows (Git Bash; `python3` there may be the Microsoft Store stub, which hangs),
+# `python3` elsewhere (often the only one on Linux); whichever exists if that one doesn't.
+case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) PY=python ;; *) PY=python3 ;; esac
+command -v "$PY" >/dev/null 2>&1 || { [ "$PY" = python ] && PY=python3 || PY=python; }
+exec "$PY" "$DIR/ai.py" "$@"

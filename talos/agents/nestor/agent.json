@@ -1,0 +1,73 @@
+{
+  "name": "nestor",
+  "displayName": "Agent Nestor",
+  "role": "planning",
+  "kind": "ideas",
+  "enabled": true,
+  "gaiaEnv": "gaia-mcp/nestor.env",
+  "projects": {
+    "A Gaia": "gaia",
+    "A Prometheus": "prometheus",
+    "A Hermes": "hermes",
+    "A Ares": "ares",
+    "A Dev Tool": "dev-tools"
+  },
+  "acceptAssignmentsFrom": [],
+  "handoffTo": "",
+  "events": [
+    "idea.message.created",
+    "idea.plan.status.changed",
+    "idea.updated"
+  ],
+  "actions": {},
+  "model": {
+    "default": "opus"
+  },
+  "maxTurns": 40,
+  "knowledgeMap": "dev-tools/talos/state/nestor/map.md",
+  "permissionMode": "dontAsk",
+  "builtinTools": "Read,Grep,Glob,Bash,Edit",
+  "allowedTools": [
+    "Read",
+    "Grep",
+    "Glob",
+    "Bash(dev-tools/ai/ai kb:*)",
+    "Bash(dev-tools/ai/ai context:*)",
+    "Bash(dev-tools/ai/ai issue:*)",
+    "mcp__gaia__gaia_get_issue",
+    "mcp__gaia__gaia_list_projects",
+    "mcp__gaia__gaia_project_options",
+    "mcp__gaia__gaia_whoami",
+    "Edit(dev-tools/talos/state/nestor/map.md)"
+  ],
+  "deniedTools": [
+    "Write",
+    "NotebookEdit",
+    "PowerShell",
+    "Bash(git:*)",
+    "mcp__gaia__gaia_create_issue",
+    "mcp__gaia__gaia_update_issue",
+    "mcp__gaia__gaia_add_comment",
+    "mcp__gaia__gaia_log_time",
+    "mcp__gaia__gaia_attach_file",
+    "mcp__gaia__gaia_list_issues",
+    "Read(**/*.env)",
+    "Read(**/*.local.json)",
+    "Read(**/.env*)",
+    "Read(dev-tools/gaia-mcp/**)",
+    "Read(dev-tools/odysseus/**)",
+    "Read(dev-tools/installer/.p4m/**)",
+    "Read(dev-tools/ai/state/**)",
+    "Read(dev-tools/talos/state/*.db)",
+    "Read(dev-tools/talos/state/logs/**)",
+    "Read(dev-tools/sim/state/**)",
+    "Read(dev-tools/sim/config*.json)",
+    "Read(dev-tools/talos/config*.json)",
+    "Read(~/.ssh/**)",
+    "Read(~/.claude/**)",
+    "Read(~/.claude.json)",
+    "Read(~/.config/gh/**)",
+    "Read(~/.git-credentials)"
+  ],
+  "rolePrompt": "role.md"
+}

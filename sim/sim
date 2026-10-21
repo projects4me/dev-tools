@@ -1,0 +1,8 @@
+#!/usr/bin/env sh
+# Stand-ins for Gaia idea resources and Hermes idea events: see README.md
+DIR="$(cd "$(dirname "$0")" && pwd)"
+# Python: `python` on Windows (Git Bash; `python3` there may be the Microsoft Store stub, which hangs),
+# `python3` elsewhere (often the only one on Linux); whichever exists if that one doesn't.
+case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) PY=python ;; *) PY=python3 ;; esac
+command -v "$PY" >/dev/null 2>&1 || { [ "$PY" = python ] && PY=python3 || PY=python; }
+exec "$PY" "$DIR/sim.py" "$@"

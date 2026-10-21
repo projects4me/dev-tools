@@ -96,6 +96,17 @@ class Tracker:
         return self._call(self.tools.update_issue,
                           {"issue_number": number, "status": status, "assignee": assignee})
 
+    def create_issue(self, project, subject, description, type_, priority, complexity, assignee):
+        """Create an issue as this agent; returns gaia-mcp's summary (issueNumber, projectShortcode, url, ...)."""
+        return self._call(self.tools.create_issue, {
+            "project": project, "subject": subject, "description": description, "type": type_,
+            "priority": priority, "complexity": complexity, "assignee": assignee})["created"]
+
+    def project_codes(self):
+        """Project name -> short code for the agent's configured projects."""
+        visible = {p["name"]: p["shortCode"] for p in self._call(self.tools.list_projects, {})["projects"]}
+        return {name: visible[name] for name in self.agent.projects if name in visible}
+
     # -- for child processes ----------------------------------------------------------------
 
     def child_env(self):

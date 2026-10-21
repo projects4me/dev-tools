@@ -2,5 +2,10 @@
   "hermesUrl": "https://hermes.local-projects4.me",
   "claudeBin": "",
   "nodeBin": "node",
-  "reconnectSeconds": 10
+  "reconnectSeconds": 10,
+  "sim": {
+    "url": "http://127.0.0.1:4791",
+    "secretFile": "dev-tools/sim/state/hermes-secret"
+  },
+  "kbMaxAgeMinutes": 10
 }

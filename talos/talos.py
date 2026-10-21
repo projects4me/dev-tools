@@ -15,6 +15,7 @@ from lib import db, runner, sessions
 from lib import runs as run_log
 from lib.config import LISTENER, TALOS_DIR, TalosError, claude_bin, log, settings
 from lib.dispatcher import Dispatcher
+from lib.ideas import setup as ideas_setup
 from lib.hermes import Listener
 from lib.registry import load_agents
 from lib.tracker import Tracker
@@ -30,6 +31,15 @@ def cmd_run(args):
         log(f"imported {imported} issue state(s) from sessions.json into talos.db")
     log(f"starting with {len(agents)} agent(s): {', '.join(a.name for a in agents)}; claude {claude}")
     for agent in agents:
+        if agent.kind == "ideas":
+            if args.dry_run:
+                log("dry run: ideas agents are not started", agent.name)
+                continue
+            try:
+                ideas_setup.start(agent, cfg, claude)
+            except Exception as e:      # one agent's setup never keeps the others from running
+                log(f"not started: {e}", agent.name)
+            continue
         tracker = Tracker(agent)
         dispatcher = Dispatcher(agent, tracker, claude, dry_run=args.dry_run)
         dispatcher.recover_interrupted()
@@ -158,7 +168,14 @@ def cmd_check(args):
                                     context=ssl.create_default_context()) as r:
             return json.loads(r.read()).get("ok")
     report("hermes", hermes)
-    for agent in load_agents(args.agent):
+    agents = load_agents(args.agent)
+    if any(a.kind == "ideas" for a in agents):
+        def sim():
+            url = ideas_setup.sim_settings(cfg)["url"].rstrip("/")
+            with urllib.request.urlopen(url + "/health", timeout=5) as r:
+                return f"{url} ok={json.loads(r.read()).get('ok')}"
+        report("sim (ideas)", sim)
+    for agent in agents:
         report(f"agent {agent.name}", lambda a=agent: f"Gaia user {Tracker(a).user_id()}")
     return 0 if ok else 1
 
@@ -172,7 +189,7 @@ def build_parser():
     sp.add_argument("--dry-run", action="store_true", help="decide and log, but don't start Claude")
     sp.set_defaults(func=cmd_run)
 
-    sp = sub.add_parser("dispatch", help="work one issue now, as if it had just been assigned")
+    sp = sub.add_parser("dispatch", help="work one issue now, as if it had just been assigned (issue agents)")
     sp.add_argument("agent")
     sp.add_argument("issue", type=int)
     sp.add_argument("--dry-run", action="store_true")

@@ -10,6 +10,9 @@ Gaia ──publish──▶ Hermes ──issue.assignee.changed──▶ Talos �
                                                        └── re-reads issue ◀──┴── comments / PR / hand-off
 ```
 
+Agents come in two kinds (`kind` in agent.json): **issues** (the default; Odysseus), described below, and
+**ideas** (Nestor), which brainstorm ideas with an engineer; see [Ideas agents](#ideas-agents-agent-nestor).
+
 ## Run
 
 ```bash
@@ -97,6 +100,42 @@ act only on the issues *its* engineer assigns. `agents/<name>/agent.local.json` 
 `dev-tools/installer/p4m configure`) sets `acceptAssignmentsFrom` and `handoffTo` to that engineer's Gaia user id and
 `reviewerName` to their name (used in the prompts as `{reviewer}`). Talos refuses to start an agent without them.
 
+## Ideas agents (Agent Nestor)
+
+An ideas agent talks with an engineer about an idea (the [Nestor UI](../nestor/README.md)), proposes an
+implementation plan, and creates the approved plan's issues. Ideas live in Gaia and their events come through
+Hermes; until those exist, in the [`dev-tools/sim`](../sim/README.md) stand-ins with the same contract.
+
+```
+UI ─▶ (sim) Gaia ─publish─▶ (sim) Hermes ─idea.message.created──────▶ Talos ─claude -p (streamed)─▶ agent
+                                          ─idea.plan.status.changed─▶   │  ├─ progress ─▶ (sim) Hermes ─▶ UI
+                                          ─idea.updated (stopping)───▶   │  └─ reply / plan ─▶ (sim) Gaia
+                                                                         └─ approved plan ─gaia MCP─▶ Gaia issues
+```
+
+- **Events** (agent.json `events`, user-scoped intents `user:<agent id>`; lib/ideas/policy.py): a message from the
+  engineer starts a turn, a plan set to `approved` starts the issue creation, `agent_state: stopping` stops the
+  running turn. Only from users in `acceptAssignmentsFrom`; the worker re-reads the idea (events are hints).
+- **A turn** (lib/ideas/conversation.py): takes in every engineer message since the last turn (also ones sent
+  while the agent was answering), resumes the idea's Claude session (or replays the conversation when there is
+  none), syncs the `ai kb` issue index (at most every `kbMaxAgeMinutes`), runs `claude -p --output-format
+  stream-json`, publishes `idea.agent.progress` (text in small batches, steps, turns), then posts the reply. A
+  fenced `nestor-plan` JSON block in it is validated (lib/ideas/plan.py; descriptions reduced to plain HTML by
+  sanitize.py) and posted as a new plan version; an invalid block gets one correction round.
+- **Approval** (lib/ideas/approval.py): no LLM. The approved version's issues are created through the gaia MCP
+  client as the agent, assigned to the idea's owner, in dependency order, each with a "Depends on" line; each is
+  recorded on the idea at once, so approving a failed plan again creates only the missing ones. The agent is told
+  the numbers at the start of its next turn.
+- **One job at a time** per agent (lib/ideas/worker.py); after each (re)connect it reconciles: unanswered
+  messages and approved plans are queued, a plan left `creating` by a stopped Talos is marked failed.
+- **Tool policy** in agent.json: `builtinTools` (`--tools`: only these are loaded, which keeps the context small),
+  `allowedTools` with `permissionMode: dontAsk`, and `deniedTools` (beats any settings allow rule; Nestor's deny
+  Write, git, the gaia write tools and reading credentials). MCP is only the gaia server
+  (`--strict-mcp-config`, state/<agent>/mcp.json). `knowledgeMap`: the one file the agent may edit.
+- **State**: the conversation lives in (sim) Gaia; Talos keeps the agent's own memory in the `ideas` table.
+
+Config: `sim.url` and `sim.secret` in config.json; `kbMaxAgeMinutes`.
+
 ## State: `state/talos.db` (SQLite)
 
 Readable by other tools while Talos runs (WAL mode), e.g. a future Projects4Me UI panel.
@@ -108,6 +147,8 @@ Readable by other tools while Talos runs (WAL mode), e.g. a future Projects4Me U
   `session_cost_usd` (Claude reports a resumed session's cumulative cost; Talos subtracts what the session had
   already cost), plus turns, input/cache-read/cache-write/output tokens and peak context from the session
   transcript (main session; subagents are in the cost but not the token counts).
+- `ideas`: one row per ideas agent and idea: session to resume and its cumulative cost, the note for the next turn,
+  the last engineer message a turn has taken in, `last_ended_at`.
 
 The pre-SQLite `state/sessions.json` is imported when `talos run`/`dispatch` starts, then renamed
 `sessions.json.imported`. `state/talos.log` and the raw JSON per run in `state/logs/` stay as they were.
@@ -126,3 +167,5 @@ The pre-SQLite `state/sessions.json` is imported when `talos run`/`dispatch` sta
 | `lib/db.py` | SQLite connection, schema, one-time import of `sessions.json` |
 | `lib/sessions.py` | issue state (`issues` table): session, run count, escalation, in-flight flag |
 | `lib/runs.py` | run records (`runs` table) and the per-run cost calculation |
+| `lib/simbus.py` | sim Hermes connection (SSE): the event source for ideas agents until Hermes carries idea events |
+| `lib/ideas/` | ideas agents: `setup` (wiring), `policy` (events, what waits), `worker` (queue, stop, reconcile), `conversation` (a turn), `approval` (plan → issues), `stream` (streamed run, command), `client` (idea resources), `plan`, `sanitize`, `steps`, `kb`, `state` |
