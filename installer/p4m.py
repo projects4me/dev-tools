@@ -1450,6 +1450,13 @@ def cmd_test(args) -> None:
         with test_db_lock():                       # the run (and its seed) owns pr4m_test until it ends
             if args.prepare:
                 prepare_test_db(src)               # raises on failure: never test a half-seeded DB
+            if args.regenerate_backend:            # backend.json is generated from the metadata and routes
+                gen = run(["docker", "exec", "-w", "/var/www/html", name, "php",
+                           "tools/api-tester/bin/generate-backend-apis.php"], check=False, capture=True)
+                if gen.returncode != 0:
+                    raise P4MError("generate-backend-apis.php failed: " + ((gen.stdout or "") + (gen.stderr or ""))[-400:])
+                print(next((l for l in (gen.stdout or "").splitlines() if l.startswith("Wrote ")), "").replace(
+                    "Wrote ", "regenerated backend.json (").split(" to ")[0] + ")")
             rc = run(cmd, check=False).returncode
         ok(f"reports in {src / 'output'}") if rc == 0 else err(f"api tests failed - reports in {src / 'output'}")
         sys.exit(rc)
@@ -1836,6 +1843,8 @@ def build_parser() -> argparse.ArgumentParser:
     t.add_argument("--mode", default="backend", help="client|backend|acl|live (comma separated)")
     t.add_argument("--filter")
     t.add_argument("--src", help=src_help)
+    t.add_argument("--regenerate-backend", action="store_true",
+                   help="regenerate api-tester backend.json from the metadata and routes first")
     t.add_argument("--prepare", action="store_true", help="seed pr4m_test from --src first (under the same lock)")
     t = tsub.add_parser("phpunit", help="gaia phpunit"); t.add_argument("path", nargs="?")
     t.add_argument("--src", help=src_help)

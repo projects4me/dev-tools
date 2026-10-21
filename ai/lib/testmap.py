@@ -138,3 +138,8 @@ def gaia_api_filter(checkout, base_ref, changed):
         else:
             unmapped.append(f)
     return ("|".join(sorted(terms)) if terms else None), sorted(terms), unmapped
+
+
+def backend_catalog_stale(changed):
+    """True when a changed file feeds the generated api-tester backend.json (metadata or routes)."""
+    return any(f.startswith("app/metadata/model/") or f == "core/config/routes.php" for f in changed)

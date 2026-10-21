@@ -82,6 +82,9 @@ def parse_phpunit_counts(summary):
 
 def api(src, api_filter=None):
     cmd = _p4m("test", "api", "--prepare", "--mode", "backend,acl,client", "--src", str(src))
+    if not _tag(src) and testmap.backend_catalog_stale(
+            testmap.changed_files(src, f"origin/{base_branch('gaia')}")):
+        cmd += ["--regenerate-backend"]
     if api_filter:
         cmd += ["--filter", api_filter]
     code, out, log = _run_logged(f"gaia-api{_tag(src)}", cmd)
