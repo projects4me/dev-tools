@@ -10,7 +10,8 @@ from .conversation import Conversation
 from .kb import KbSync, sync_as
 from .progress import ProgressPublisher
 from .render import Renderer
-from .stream import Launcher, mcp_config
+from ..mcp import mcp_config
+from .stream import Launcher
 from .worker import IdeaWorker
 
 MAP_TEMPLATE = """# Knowledge map

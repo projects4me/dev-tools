@@ -224,6 +224,12 @@ class BuildCommandTest(unittest.TestCase):
         cmd = runner.build_command("claude", make_agent(), "go on", "opus", session_id="abc", new_session_id="x")
         self.assertNotIn("--session-id", cmd)
 
+    def test_mcp_config_is_strict(self):
+        self.assertNotIn("--mcp-config", runner.build_command("claude", make_agent(), "x", "sonnet"))
+        cmd = runner.build_command("claude", make_agent(), "x", "sonnet", mcp=Path("m.json"))
+        self.assertEqual(cmd[cmd.index("--mcp-config") + 1], "m.json")
+        self.assertIn("--strict-mcp-config", cmd)
+
     def test_resume(self):
         cmd = runner.build_command("claude", make_agent(), "go on", "opus", session_id="abc")
         self.assertEqual(cmd[cmd.index("--resume") + 1], "abc")

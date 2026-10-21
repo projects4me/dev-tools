@@ -16,23 +16,12 @@ import json
 import os
 import signal
 import subprocess
-import sys
 import threading
 from datetime import datetime
 from pathlib import Path
 
-from ..config import GAIA_MCP, LOG_DIR, WORKSPACE
+from ..config import LOG_DIR, WORKSPACE
 from .steps import describe
-
-
-def mcp_config(path):
-    """The agent's own MCP config: only the gaia server from this checkout (--strict-mcp-config), so nothing
-    else the engineer registered is loaded. The server inherits the agent's GAIA_* environment."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({"mcpServers": {"gaia": {"type": "stdio", "command": sys.executable,
-                                                        "args": [str(GAIA_MCP / "server.py")]}}}, indent=2),
-                    encoding="utf-8")
-    return path
 
 
 def build_command(claude, agent, model, system_prompt, mcp=None, session_id=None, new_session_id=None):

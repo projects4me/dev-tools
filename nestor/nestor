@@ -8,4 +8,8 @@ case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) PY=python ;; *) PY=python3 ;; esac
 command -v "$PY" >/dev/null 2>&1 || { [ "$PY" = python ] && PY=python3 || PY=python; }
 # Git Bash rewrites an argument that starts with / (a /regex/ filter) into a Windows path before a native program gets it.
 export MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*'
+# The runtime copy of dev-tools (`p4m runtime`) runs main's tooling while this checkout is worked;
+# P4M_RUNTIME=off runs this copy.
+RT="$DIR/../../.dev-tools-runtime/nestor"
+[ "${P4M_RUNTIME:-}" = off ] || [ ! -f "$RT/nestor.py" ] || DIR="$RT"
 exec "$PY" "$DIR/nestor.py" "$@"

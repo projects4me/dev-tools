@@ -25,8 +25,14 @@ class RegistryTest(unittest.TestCase):
         env = Path(tempfile.mkdtemp()) / "agent.env"
         env.write_text("GAIA_EMAIL=x\n", encoding="utf-8")
         raw = json.loads((self.folder / "agent.json").read_text(encoding="utf-8"))
-        raw["gaiaEnv"] = str(env)   # absolute path wins over DEV_TOOLS / gaiaEnv
+        raw["gaiaEnv"] = str(env)   # absolute path wins over LOCAL_DIR / gaiaEnv
         (self.folder / "agent.json").write_text(json.dumps(raw), encoding="utf-8")
+        local_dir = Path(tempfile.mkdtemp())     # the dev-tools checkout holding agent.local.json
+        self.local = local_dir / "talos" / "agents" / "odysseus"
+        self.local.mkdir(parents=True)
+        patcher = mock.patch.object(registry, "LOCAL_DIR", local_dir)
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def test_tracked_agent_json_has_no_reviewer(self):
         with self.assertRaises(TalosError) as e:
@@ -34,7 +40,7 @@ class RegistryTest(unittest.TestCase):
         self.assertIn("p4m configure", str(e.exception))
 
     def test_local_overlay_supplies_reviewer(self):
-        (self.folder / "agent.local.json").write_text(json.dumps(
+        (self.local / "agent.local.json").write_text(json.dumps(
             {"acceptAssignmentsFrom": ["7"], "handoffTo": "7", "reviewerName": "Ayesha"}), encoding="utf-8")
         agent = registry.load_agent(self.folder)
         self.assertEqual((agent.accept_from, agent.handoff_to, agent.reviewer_name), (["7"], "7", "Ayesha"))
@@ -43,7 +49,7 @@ class RegistryTest(unittest.TestCase):
         self.assertTrue(prompt.startswith("Ayesha answered on Projects4Me issue #5"))
 
     def test_odysseus_run_policy(self):
-        (self.folder / "agent.local.json").write_text(json.dumps(
+        (self.local / "agent.local.json").write_text(json.dumps(
             {"acceptAssignmentsFrom": ["7"], "handoffTo": "7"}), encoding="utf-8")
         agent = registry.load_agent(self.folder)
         self.assertEqual(policy.run_limits(agent, "opus"), (150, 15.0))
@@ -52,7 +58,7 @@ class RegistryTest(unittest.TestCase):
         self.assertIn("{handoff}", agent.ship_prompt)
 
     def test_env_may_not_override_credentials(self):
-        (self.folder / "agent.local.json").write_text(json.dumps(
+        (self.local / "agent.local.json").write_text(json.dumps(
             {"acceptAssignmentsFrom": ["7"], "handoffTo": "7", "env": {"GAIA_EMAIL": "x"}}), encoding="utf-8")
         with self.assertRaises(TalosError) as e:
             registry.load_agent(self.folder)

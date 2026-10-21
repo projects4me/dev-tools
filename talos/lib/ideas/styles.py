@@ -17,7 +17,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-from ..config import DEV_TOOLS, WORKSPACE, log
+from ..config import LOCAL_DIR, WORKSPACE, log
 
 KIT = Path(__file__).resolve().parent / "screen_kit"
 PROMETHEUS_CSS = ("prometheus/vendor/AdminLTE/bootstrap/css/bootstrap.min.css",
@@ -38,7 +38,7 @@ def app_url(configured=None):
     """Where a running Prometheus is: config `prometheusUrl`, else `appUrl` in workspace.local.json."""
     if configured:
         return configured
-    local = DEV_TOOLS / "workspace.local.json"
+    local = LOCAL_DIR / "workspace.local.json"
     if local.exists():
         try:
             return json.loads(local.read_text(encoding="utf-8")).get("appUrl") or None

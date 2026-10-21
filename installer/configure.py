@@ -25,8 +25,9 @@ import sys
 from pathlib import Path
 
 INSTALLER_DIR = Path(__file__).resolve().parent
-TOOLS_DIR = INSTALLER_DIR.parent                 # <workspace>/dev-tools
-ROOT = TOOLS_DIR.parent                          # <workspace> (Pr4M)
+ROOT = INSTALLER_DIR.parent.parent              # <workspace> (Pr4M)
+# The settings live in the dev-tools checkout, also when this runs from the runtime copy (`p4m runtime`).
+TOOLS_DIR = ROOT / "dev-tools"
 ANSWERS = TOOLS_DIR / "workspace.local.json"
 GAIA_ENV = TOOLS_DIR / "gaia-mcp" / "gaia-mcp.env"
 ODYSSEUS_ENV = TOOLS_DIR / "odysseus" / "odysseus.env"

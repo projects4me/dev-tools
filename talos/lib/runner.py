@@ -11,11 +11,12 @@ from pathlib import Path
 from .config import LOG_DIR, OUTCOME_SCHEMA, WORKSPACE, now_stamp
 
 
-def build_command(claude, agent, prompt, model, session_id=None, new_session_id=None, limits=None):
+def build_command(claude, agent, prompt, model, session_id=None, new_session_id=None, limits=None, mcp=None):
     """The `claude -p` argv. Kept separate so it can be checked without running anything.
 
     A new session gets its id up front (new_session_id) so its live transcript can be found while it runs.
     `limits` is the run's (max turns, max budget USD) from policy.run_limits; None = the agent's maxTurns only.
+    `mcp` is the agent's MCP config file (mcp.mcp_config); None = whatever the engineer registered.
     """
     max_turns, max_budget = limits or (agent.max_turns, 0)
     with open(OUTCOME_SCHEMA, encoding="utf-8") as f:
@@ -37,6 +38,8 @@ def build_command(claude, agent, prompt, model, session_id=None, new_session_id=
         cmd += ["--allowedTools", *agent.allowed_tools]
     if agent.denied_tools:
         cmd += ["--disallowedTools", *agent.denied_tools]
+    if mcp:
+        cmd += ["--strict-mcp-config", "--mcp-config", str(mcp)]
     if session_id:
         cmd += ["--resume", session_id]
     elif new_session_id:

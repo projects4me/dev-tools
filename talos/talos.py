@@ -13,10 +13,11 @@ import urllib.request
 
 from lib import db, runner, sessions
 from lib import runs as run_log
-from lib.config import LISTENER, TALOS_DIR, TalosError, claude_bin, log, settings
+from lib.config import LISTENER, STATE_DIR, TALOS_DIR, TalosError, claude_bin, log, settings
 from lib.dispatcher import Dispatcher
 from lib.ideas import setup as ideas_setup
 from lib.hermes import Listener
+from lib.mcp import mcp_config
 from lib.registry import load_agents
 from lib.tracker import Tracker
 
@@ -41,7 +42,8 @@ def cmd_run(args):
                 log(f"not started: {e}", agent.name)
             continue
         tracker = Tracker(agent)
-        dispatcher = Dispatcher(agent, tracker, claude, dry_run=args.dry_run)
+        dispatcher = Dispatcher(agent, tracker, claude, dry_run=args.dry_run,
+                                mcp=mcp_config(STATE_DIR / agent.name / "mcp.json"))
         dispatcher.recover_interrupted()
         dispatcher.start()
         Listener(agent, tracker, dispatcher, cfg["hermesUrl"], cfg.get("nodeBin", "node"),
@@ -60,7 +62,8 @@ def cmd_dispatch(args):
     agent = load_agents(args.agent)[0]
     db.import_legacy()
     tracker = Tracker(agent)
-    dispatcher = Dispatcher(agent, tracker, claude_bin(cfg.get("claudeBin")), dry_run=args.dry_run)
+    dispatcher = Dispatcher(agent, tracker, claude_bin(cfg.get("claudeBin")), dry_run=args.dry_run,
+                            mcp=mcp_config(STATE_DIR / agent.name / "mcp.json"))
     outcome = dispatcher.handle(args.issue)
     print(outcome or "skipped")
     return 0

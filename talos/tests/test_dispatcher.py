@@ -69,7 +69,7 @@ class DispatcherTest(unittest.TestCase):
             self.envs.append(env)
             return next(replies), Path("log.json")
 
-        def fake_build(claude, agent, prompt, model, sid=None, new_session_id=None, limits=None):
+        def fake_build(claude, agent, prompt, model, sid=None, new_session_id=None, limits=None, mcp=None):
             self.calls.append({"prompt": prompt, "resume": sid, "limits": limits})
             return ["claude", "--model", model]
 

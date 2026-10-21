@@ -5,9 +5,12 @@ from pathlib import Path
 
 NESTOR_DIR = Path(__file__).resolve().parent.parent
 DEV_TOOLS = NESTOR_DIR.parent
+# This machine's settings and state live in the dev-tools checkout, also when the code runs from the runtime copy
+# (<workspace>/.dev-tools-runtime, see `p4m runtime`), so their paths don't depend on which copy is running.
+LOCAL_DIR = DEV_TOOLS.parent / "dev-tools"
 WEB_DIR = NESTOR_DIR / "web"
 CONFIG_FILE = NESTOR_DIR / "config.json"
-WORKSPACE_LOCAL = DEV_TOOLS / "workspace.local.json"
+WORKSPACE_LOCAL = LOCAL_DIR / "workspace.local.json"
 
 
 class NestorError(Exception):
@@ -19,7 +22,7 @@ def settings():
     `p4m configure` wrote in workspace.local.json."""
     with open(CONFIG_FILE, encoding="utf-8") as f:
         cfg = json.load(f)
-    local = CONFIG_FILE.with_name("config.local.json")
+    local = LOCAL_DIR / "nestor" / "config.local.json"
     if local.exists():
         with open(local, encoding="utf-8") as f:
             cfg.update(json.load(f))
