@@ -44,6 +44,10 @@ rules and a `### Design` section: `gaia` (PHP API, Phalcon), `prometheus` (Ember
 - `complexity`: `complex` only when the work itself needs judgement (an open design decision, a contract or
   cross-repo change, a migration, an unclear root cause). `simple` when the issue already settles the design and
   contract, even if the change is large: size is not complexity.
+- Framework work gets its own issue, marked `complex`: a new capability such as a new ACL concept (child paths
+  with `when`, write scope for path-bound models), a new index type or a new behaviour. The resources that only use
+  it come after, depend on it and are marked `simple`. Never bundle framework changes into a "create the modules"
+  story: the whole story would run on Opus.
 
 ## Writing an issue
 - `subject`: what changes, specific ("Issues: recurrence rule resource and nightly generator"), not "Backend".
