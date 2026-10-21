@@ -1,6 +1,7 @@
 """Idea resources as the agent: sim Gaia's REST API today (dev-tools/sim), the gaia MCP's idea tools once Gaia
 has ideas. (Live progress goes through progress.py.)"""
 
+import base64
 import json
 import urllib.error
 import urllib.request
@@ -12,13 +13,14 @@ class IdeasClient:
     def __init__(self, url, actor_id):
         self.url, self.actor_id = url.rstrip("/"), str(actor_id)
 
-    def _call(self, method, path, body=None):
+    def _call(self, method, path, body=None, raw=False):
         data = None if body is None else json.dumps(body).encode("utf-8")
         req = urllib.request.Request(f"{self.url}{path}", data=data, method=method,
                                      headers={"Content-Type": "application/json", "X-Sim-Actor": self.actor_id})
         try:
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                return json.loads(resp.read() or b"{}")
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                content = resp.read()
+                return content if raw else json.loads(content or b"{}")
         except urllib.error.HTTPError as e:
             detail = e.read().decode("utf-8", "replace")
             try:
@@ -46,9 +48,20 @@ class IdeasClient:
     def mark_created(self, idea_id):
         return self._call("PATCH", f"/api/v1/idea/{int(idea_id)}", {"status": "created"})
 
-    def post(self, idea_id, role, body, steps=None, plan_id=None, cost=None):
+    def post(self, idea_id, role, body, steps=None, plan_id=None, cost=None, screens=None):
         return self._call("POST", "/api/v1/ideamessage", {"idea_id": int(idea_id), "role": role, "body": body,
-                                                          "steps": steps, "plan_id": plan_id, "cost_usd": cost})["data"]
+                                                          "steps": steps, "plan_id": plan_id, "cost_usd": cost,
+                                                          "screens": screens or None})["data"]
+
+    def add_screen(self, idea_id, screen, png):
+        """A rendered screen (screens.py dict + its PNG bytes); returns (id, version)."""
+        d = self._call("POST", "/api/v1/ideascreen", {
+            "idea_id": int(idea_id), "key": screen["key"], "title": screen["title"], "width": screen["width"],
+            "height": screen["height"], "png_base64": base64.b64encode(png).decode("ascii")})["data"]
+        return d["id"], d["version"]
+
+    def screen_png(self, screen_id):
+        return self._call("GET", f"/api/v1/ideascreen/{int(screen_id)}", raw=True)
 
     def add_plan(self, idea_id, body):
         """(plan id, version)."""

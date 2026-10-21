@@ -50,6 +50,7 @@
     "mcp__gaia__gaia_add_comment",
     "mcp__gaia__gaia_log_time",
     "mcp__gaia__gaia_attach_file",
+    "mcp__gaia__gaia_create_milestone",
     "mcp__gaia__gaia_list_issues",
     "Read(**/*.env)",
     "Read(**/*.local.json)",

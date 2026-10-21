@@ -4,7 +4,10 @@ import html
 import os
 import ssl
 import sys
+import tempfile
 import threading
+import time
+from pathlib import Path
 
 from .config import GAIA_MCP, TalosError
 
@@ -42,6 +45,7 @@ class Tracker:
         self.gaia = g
         self.tools = gaia_mcp.Tools(g)
         self._lock = threading.RLock()
+        self._milestones = {}            # project -> (names, read at)
 
     def _call(self, fn, *args, **kwargs):
         with self._lock:
@@ -96,11 +100,30 @@ class Tracker:
         return self._call(self.tools.update_issue,
                           {"issue_number": number, "status": status, "assignee": assignee})
 
-    def create_issue(self, project, subject, description, type_, priority, complexity, assignee):
+    def create_issue(self, project, subject, description, type_, priority, complexity, assignee, milestone):
         """Create an issue as this agent; returns gaia-mcp's summary (issueNumber, projectShortcode, url, ...)."""
         return self._call(self.tools.create_issue, {
             "project": project, "subject": subject, "description": description, "type": type_,
-            "priority": priority, "complexity": complexity, "assignee": assignee})["created"]
+            "priority": priority, "complexity": complexity, "assignee": assignee, "milestone": milestone})["created"]
+
+    MILESTONES_TTL = 600
+
+    def milestones(self, project):
+        """The project's milestone names, re-read at most every 10 minutes (a new one shows up without a restart)."""
+        with self._lock:
+            names, at = self._milestones.get(project, (None, 0))
+            if names is None or time.monotonic() - at > self.MILESTONES_TTL:
+                options = self._call(self.tools.project_options, {"project": project})
+                names = [m["name"] for m in options["milestones"]]
+                self._milestones[project] = (names, time.monotonic())
+            return names
+
+    def attach_png(self, number, name, png):
+        """Attach PNG bytes to an issue as `name` (it shows in the issue's Files box)."""
+        with tempfile.TemporaryDirectory(prefix="talos-attach-") as tmp:
+            path = Path(tmp) / name
+            path.write_bytes(png)
+            return self._call(self.tools.attach_file, {"issue_number": number, "file_path": str(path)})
 
     def project_codes(self):
         """Project name -> short code for the agent's configured projects."""

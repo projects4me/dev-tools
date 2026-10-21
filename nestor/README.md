@@ -41,6 +41,9 @@ sent while Talos is down are answered when it starts (it reconciles on connect).
   user-scoped intents for you), the way a Prometheus page uses Gaia and Hermes. Its server only serves the page
   and forwards `/sim/*` as you (Prometheus' OAuth token will play that part); it forwards nothing else, refuses
   other `Host` headers and needs `X-Nestor: 1` on writes.
+- Ask Nestor for a UI screen and its PNG (rendered by Talos in the Projects4Me look) appears under his reply;
+  click it for full size. Each plan issue shows its milestone (Claude-v1 unless you asked for another) and the
+  screens that get attached to it.
 - Sending a message creates an `ideamessage`; Stop sets the idea's `agent_state` to `stopping`; Approve sets the
   plan's status to `approved`. Talos hears each as an event and acts. Nestor's text and steps appear live from
   the `idea.agent.progress` events Talos publishes.

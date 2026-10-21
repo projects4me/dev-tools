@@ -8,18 +8,21 @@ from datetime import date, datetime
 from .. import runs as run_log
 from ..config import log
 from . import plan as plans
-from . import policy, state
+from . import policy, screens, state
 
-FIX_PLAN = ("The nestor-plan block in your last reply could not be used: {error}. Reply again with the same answer "
-            "and a corrected nestor-plan block.")
+FIX_PLAN = ("The nestor-plan block in your last reply could not be used: {error}. Reply with only the corrected "
+            "nestor-plan block (your answer and screens were kept).")
 HISTORY = 20                 # earlier messages replayed when there is no session to resume
 FLUSH_SECONDS = 0.3          # text is published in small batches, not per token
 
 
 class Conversation:
-    def __init__(self, agent, client, progress, launcher, kb, project_codes, map_path):
+    def __init__(self, agent, client, progress, launcher, kb, project_codes, map_path, milestones=None,
+                 renderer=None):
         self.agent, self.client, self.progress, self.launcher, self.kb = agent, client, progress, launcher, kb
         self.project_codes, self.map_path = project_codes, map_path
+        self.milestones = milestones          # project name -> its milestone names (None: not checked)
+        self.renderer = renderer              # render.Renderer: screens -> PNG
 
     def system_prompt(self):
         projects = "\n".join(f"- {name} (short code {code})" for name, code in self.project_codes().items())
@@ -63,35 +66,86 @@ class Conversation:
 
     # -- one run --------------------------------------------------------------------------------------------------
 
-    def _converse(self, idea, prompt, session_id, session_cost, on_run, attempt=1):
-        """Run the agent once (plus one correction round for an invalid plan). True if it answered; either way a
-        reply or an error has been posted."""
+    def _converse(self, idea, prompt, session_id, session_cost, on_run):
+        """Run the agent, render the screens it designed, store the plan it proposed, post the reply. An invalid
+        plan gets one correction round (asking only for the plan block). True if it answered; either way a reply or
+        an error has been posted."""
+        result, steps, session, cost = self._run(idea, prompt, session_id, session_cost, on_run)
+        if result["is_error"]:
+            self.client.post(idea["id"], "error", self._error_text(result), steps=steps, cost=cost)
+            log(f"idea #{idea['id']}: {result.get('subtype')}", self.agent.name)
+            return False
+        text, raw = plans.extract(result["text"])
+        text, designed, problems = screens.extract(text)
+        screen_ids, failed = self._render(idea, designed, problems)
+        plan_id = None
+        if raw is not None:
+            plan_id, error = self._add_plan(idea, raw, failed, problems)
+            if error:
+                self.progress.publish(idea, {"phase": "step", "text": "The plan block had problems; correcting it"})
+                fix, fix_steps, session, fix_cost = self._run(idea, FIX_PLAN.format(error=error), session,
+                                                              result.get("cost") or session_cost, on_run)
+                steps, cost = steps + fix_steps, cost + fix_cost
+                fixed = None if fix["is_error"] else plans.extract(fix["text"])[1]
+                if fixed is not None:
+                    plan_id, error = self._add_plan(idea, fixed, failed, problems)
+                if error:
+                    problems.append(f"The plan in this reply could not be used: {error}")
+        body = (text or "(no reply)") + "".join(f"\n\n> {p}" for p in problems)
+        self.client.post(idea["id"], "agent", body, steps=steps, plan_id=plan_id, cost=cost, screens=screen_ids)
+        log(f"idea #{idea['id']}: replied (${cost:.2f})" + (" with a plan" if plan_id else "")
+            + (f", {len(screen_ids)} screen(s)" if screen_ids else ""), self.agent.name)
+        return True
+
+    def _run(self, idea, prompt, session_id, session_cost, on_run):
+        """One `claude -p` run, streamed. Returns (result, steps, session, this run's cost)."""
         run = self.launcher.start(prompt, self.agent.model_default, self.system_prompt(), session_id=session_id,
                                   new_session_id=None if session_id else str(uuid.uuid4()),
                                   label=f"{self.agent.name}-idea{idea['id']}")
         on_run(run)
         steps, result = self._stream(idea, run)
         session, cost = self._account(idea, result, session_id, session_cost)
-        if result["is_error"]:
-            self.client.post(idea["id"], "error", self._error_text(result), steps=steps, cost=cost)
-            log(f"idea #{idea['id']}: {result.get('subtype')}", self.agent.name)
-            return False
-        reply, raw = plans.extract(result["text"])
-        plan_id, plan_error = None, None
-        if raw is not None:
+        return result, steps, session, cost
+
+    def _render(self, idea, designed, problems):
+        """Render each screen to PNG and store it on the idea; failures become notes in the reply.
+        Returns (stored screen ids, keys of the screens that failed)."""
+        ids, failed = [], set()
+        for screen in designed:
+            self.progress.publish(idea, {"phase": "step", "text": f"Rendering the screen \u201c{screen['title']}\u201d"})
             try:
-                plan_id, _ = self.client.add_plan(idea["id"], plans.parse(raw, self.project_codes()))
-            except ValueError as e:
-                plan_error = str(e)
-        if plan_error and attempt == 1:
-            self.progress.publish(idea, {"phase": "step", "text": "The plan block had problems; correcting it"})
-            return self._converse(idea, FIX_PLAN.format(error=plan_error), session,
-                                  result.get("cost") or session_cost, on_run, attempt=2)
-        if plan_error:
-            reply += f"\n\n> The plan in this reply could not be used: {plan_error}"
-        self.client.post(idea["id"], "agent", reply or "(no reply)", steps=steps, plan_id=plan_id, cost=cost)
-        log(f"idea #{idea['id']}: replied (${cost:.2f})" + (" with a plan" if plan_id else ""), self.agent.name)
-        return True
+                png = self.renderer.render(screen)
+            except Exception as e:
+                problems.append(f"The screen \u201c{screen['title']}\u201d could not be rendered: {e}")
+                failed.add(screen["key"])
+                continue
+            ids.append(self.client.add_screen(idea["id"], screen, png)[0])
+        return ids, failed
+
+    def _add_plan(self, idea, raw, failed=frozenset(), problems=None):
+        """(plan id, None) or (None, the problems). Screens that failed to render this turn are accepted and then
+        left out of the plan (with a note), so a failed render doesn't cost a correction round."""
+        keys = {s["key"] for s in self.client.idea(idea["id"]).get("screens") or []}
+        try:
+            body = plans.parse(raw, self.project_codes(), self._milestones_or_none, keys | set(failed))
+        except ValueError as e:
+            return None, str(e)
+        dropped = sorted({k for i in body["issues"] for k in i["screens"] if k in failed and k not in keys})
+        for issue in body["issues"]:
+            issue["screens"] = [k for k in issue["screens"] if k not in dropped]
+        if dropped and problems is not None:
+            problems.append(f"The plan's issues won't get {', '.join(dropped)} attached (not rendered).")
+        return self.client.add_plan(idea["id"], body)[0], None
+
+    def _milestones_or_none(self, project):
+        """The project's milestones, or None (not checked) when they can't be read right now."""
+        if self.milestones is None:
+            return None
+        try:
+            return self.milestones(project)
+        except Exception as e:
+            log(f"milestones of {project} not readable ({e}); not checked", self.agent.name)
+            return None
 
     def _stream(self, idea, run):
         """Consume the run: publish text (batched), turns and steps as progress. Returns (steps, result)."""

@@ -9,6 +9,7 @@ from .client import IdeasClient
 from .conversation import Conversation
 from .kb import KbSync, sync_as
 from .progress import ProgressPublisher
+from .render import Renderer
 from .stream import Launcher, mcp_config
 from .worker import IdeaWorker
 
@@ -62,7 +63,9 @@ def start(agent, cfg, claude):
 
     launcher = Launcher(claude, agent, env, mcp=mcp_config(STATE_DIR / agent.name / "mcp.json"))
     kb = KbSync(sync_as(env), int(cfg.get("kbMaxAgeMinutes", 10)))
-    conversation = Conversation(agent, client, progress, launcher, kb, project_codes, knowledge_map(agent))
+    conversation = Conversation(agent, client, progress, launcher, kb, project_codes, knowledge_map(agent),
+                                milestones=tracker.milestones, renderer=Renderer(cfg.get("browserBin"), agent.reviewer_name,
+                                                  cfg.get("prometheusUrl")))
     worker = IdeaWorker(agent, client, progress, conversation, Approval(agent, client, tracker), user_id)
     worker.start()
     SimSource(sim["url"], user_id, policy.intents(agent, user_id), worker.on_event, worker.reconcile,

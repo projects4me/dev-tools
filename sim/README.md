@@ -22,10 +22,11 @@ from the OAuth token; this is local only, on 127.0.0.1). An idea has an **owner*
 | `ideamessage` | `role: user` | `role: agent/system/error` (with `steps`, `plan_id`, `cost_usd`) |
 | `ideaplan` | `status: approved` (latest version, from proposed/failed) | create (supersedes the proposed one); `creating`, `failed`, `created` |
 | `ideaissue` | | record an issue created in Gaia |
+| `ideascreen` | view the PNG (`GET /api/v1/ideascreen/<id>`) | add a rendered UI screen (PNG); the same key again is its next version |
 
 Every change publishes a domain event to both participants (user-scoped `projectId: "user:<id>"`, like
 `notification.created`): `idea.created`, `idea.updated`, `idea.message.created`, `idea.plan.created`,
-`idea.plan.status.changed`, `idea.issue.created`. When Gaia gets these, they go in `EventNames.php` and a
+`idea.plan.status.changed`, `idea.issue.created`, `idea.screen.created`. When Gaia gets these, they go in `EventNames.php` and a
 LiveEvents component.
 
 ## Sim Hermes: the same contract as hermes/

@@ -9,12 +9,16 @@ Sim Gaia (CRUD, JSON; the caller is the Gaia user id in X-Sim-Actor, which Gaia 
     POST  /api/v1/ideaplan             {idea_id, body}
     PATCH /api/v1/ideaplan/<id>        {status, error?}
     POST  /api/v1/ideaissue            {plan_id, key, number, project_code, subject, url}
+    POST  /api/v1/ideascreen           {idea_id, key, title, width, height, png_base64} (the agent)
+    GET   /api/v1/ideascreen/<id>      the PNG (owner or agent)
 Sim Hermes:
     POST  /publish                     an envelope, with X-Hermes-Secret (as hermes/src/http/routes/publish.js)
     GET   /hermes/events?intents=JSON  SSE: `ready` {accepted, rejected}, then `domain:event` envelopes
     GET   /hermes/presence?user=<id>   {online}: is anyone listening as that user
 """
 
+import base64
+import binascii
 import hmac
 import json
 import queue
@@ -27,6 +31,7 @@ from .bus import InvalidEnvelope
 from .ideas import Forbidden, NotFound
 
 MAX_BODY = 1_000_000
+MAX_SCREEN_BODY = 12_000_000   # a base64 PNG screen (ideas.MAX_PNG) and its fields
 KEEPALIVE_SECONDS = 15
 LOOPBACK = ("127.0.0.1", "localhost", "::1")
 
@@ -41,6 +46,8 @@ def make_handler(ideas, bus, secret, allowed_hosts):
         ("POST", r"/api/v1/ideaplan", "create_plan"),
         ("PATCH", r"/api/v1/ideaplan/(\d+)", "update_plan"),
         ("POST", r"/api/v1/ideaissue", "create_issue"),
+        ("POST", r"/api/v1/ideascreen", "create_screen"),
+        ("GET", r"/api/v1/ideascreen/(\d+)", "get_screen"),
         ("POST", r"/publish", "publish"),
         ("GET", r"/hermes/events", "events"),
         ("GET", r"/hermes/presence", "presence"),
@@ -85,12 +92,12 @@ def make_handler(ideas, bus, secret, allowed_hosts):
                 raise Forbidden("missing X-Sim-Actor (the caller's Gaia user id)")
             return actor
 
-        def _body(self):
+        def _body(self, limit=MAX_BODY):
             try:
                 length = int(self.headers.get("Content-Length") or 0)
             except ValueError:
                 raise ValueError("bad Content-Length")
-            if length < 0 or length > MAX_BODY:
+            if length < 0 or length > limit:
                 raise ValueError("bad or too large Content-Length")
             try:
                 body = json.loads(self.rfile.read(length) or b"{}")
@@ -130,7 +137,8 @@ def make_handler(ideas, bus, secret, allowed_hosts):
         def create_message(self, *_):
             b = self._body()
             mid = ideas.add_message(self._actor(), int(b.get("idea_id") or 0), b.get("role"), b.get("body"),
-                                    steps=b.get("steps"), plan_id=b.get("plan_id"), cost=b.get("cost_usd"))
+                                    steps=b.get("steps"), plan_id=b.get("plan_id"), cost=b.get("cost_usd"),
+                                    screens=b.get("screens"))
             self._json(201, {"data": {"id": mid}})
 
         def create_plan(self, *_):
@@ -147,6 +155,25 @@ def make_handler(ideas, bus, secret, allowed_hosts):
             iid = ideas.add_issue(self._actor(), int(b.get("plan_id") or 0), b.get("key"), b.get("number"),
                                   b.get("project_code"), b.get("subject"), b.get("url"))
             self._json(201, {"data": {"id": iid}})
+
+        def create_screen(self, *_):
+            b = self._body(MAX_SCREEN_BODY)
+            try:
+                png = base64.b64decode(b.get("png_base64") or "", validate=True)
+            except (binascii.Error, ValueError):
+                raise ValueError("png_base64 is not base64")
+            sid, version = ideas.add_screen(self._actor(), int(b.get("idea_id") or 0), b.get("key"), b.get("title"),
+                                            b.get("width"), b.get("height"), png)
+            self._json(201, {"data": {"id": sid, "version": version}})
+
+        def get_screen(self, screen_id):
+            data = ideas.screen_png(screen_id, self._actor())
+            self.send_response(200)
+            self.send_header("Content-Type", "image/png")
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "private, max-age=3600")
+            self.end_headers()
+            self.wfile.write(data)
 
         # -- sim Hermes -------------------------------------------------------------------------------------------
 

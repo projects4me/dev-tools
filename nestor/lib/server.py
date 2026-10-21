@@ -5,7 +5,7 @@ stream); the server adds who the engineer is, as Prometheus' OAuth token would. 
 agent runs in Talos.
 
     GET  /api/info                  who the engineer and the agent are
-    *    /sim/api/v1/idea…          sim Gaia's idea resources (GET, POST, PATCH)
+    *    /sim/api/v1/idea…          sim Gaia's idea resources (GET, POST, PATCH; ideascreen/<id> is a PNG)
     GET  /sim/hermes/events?…       sim Hermes' event stream (SSE), passed through as it arrives
     GET  /sim/hermes/presence?…     whether the agent is listening (Talos running)
 
@@ -24,7 +24,7 @@ from urllib.parse import urlparse
 
 from .config import WEB_DIR
 
-FORWARD = re.compile(r"^/sim(/api/v1/(idea|ideamessage|ideaplan)(/\d+)?|/hermes/(events|presence))$")
+FORWARD = re.compile(r"^/sim(/api/v1/(idea|ideamessage|ideaplan|ideascreen)(/\d+)?|/hermes/(events|presence))$")
 MAX_BODY = 1_000_000
 LOOPBACK = ("127.0.0.1", "localhost", "::1")
 CSP = ("default-src 'self'; script-src 'self'; style-src 'self' https://fonts.googleapis.com; "
@@ -104,7 +104,9 @@ def make_handler(cfg, allowed_hosts):
             with resp:
                 self.send_response(resp.status)
                 self.send_header("Content-Type", resp.headers.get("Content-Type", "application/json"))
-                self.send_header("Cache-Control", "no-store")
+                # screen PNGs never change (a revision is a new id): let the browser keep them
+                self.send_header("Cache-Control", resp.headers.get("Cache-Control") if "/ideascreen/" in path
+                                 else "no-store")
                 if stream:
                     self.end_headers()
                     try:
