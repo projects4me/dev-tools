@@ -33,9 +33,6 @@ class PathTest(unittest.TestCase):
         self.assertNotEqual(testenv._key("D:/x/gaia"), testenv._key("D:/y/gaia"))
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 class RunTestsTest(unittest.TestCase):
     """run_tests stops a run that testem would never finish, and always cleans the container up."""
@@ -65,3 +62,49 @@ class RunTestsTest(unittest.TestCase):
     def test_normal_run_returns_exit_code(self):
         box = self._box("print('# pass 1');raise SystemExit(0)")
         self.assertEqual(box.run_tests(), 0)
+
+
+class BuildWaitTest(unittest.TestCase):
+    """build() sees a rebuild that finished before it started, and kills stale watchers."""
+
+    def _box(self, log, stale=()):
+        box = testenv.PrometheusTestContainer(".", Path("."))
+        box.log, box.calls = log, []
+        box._build_log = lambda: box.log
+        box._builder_running = lambda: True
+        box.stale_builders = lambda: list(stale)
+        box.run_docker = None
+        return box
+
+    def test_rebuild_finished_before_build_starts(self):
+        # before=0 was taken ahead of the sync; the log already shows the rebuild when build() runs
+        box = self._box("Build successful (6000ms)\n")
+        ok, message = box.build(["app/a.js"], before=0, timeout=10, progress=0)
+        self.assertTrue(ok, message)
+
+    def test_no_new_build_times_out(self):
+        box = self._box("Build successful (6000ms)\n")
+        ok, message = box.build(["app/a.js"], before=1, timeout=1, progress=0)
+        self.assertFalse(ok)
+        self.assertIn("did not finish", message)
+
+    def test_stale_watcher_is_killed(self):
+        box = self._box("Build successful\n", stale=[2214])
+        old = testenv._docker
+        testenv._docker = lambda *a, **k: box.calls.append(a)
+        try:
+            self.assertEqual(box.kill_stale_builders(), [2214])
+        finally:
+            testenv._docker = old
+        self.assertIn(("exec", box.name, "kill", "-9", "2214"), box.calls)
+
+    def test_build_cleans_stale_watchers_first(self):
+        box = self._box("Build successful\n", stale=[7])
+        killed = []
+        box.kill_stale_builders = lambda: killed.append(1) or []
+        box.build([], before=1, progress=0)
+        self.assertEqual(killed, [1])
+
+
+if __name__ == "__main__":
+    unittest.main()

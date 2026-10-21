@@ -1472,8 +1472,9 @@ def cmd_test(args) -> None:
         try:
             if box.ensure(fresh=args.fresh):
                 info(f"started {box.name} for {src} (the first build takes a few minutes)")
+            before = box.build_count()      # before the copy: a fast rebuild would otherwise be missed
             changed = box.sync()
-            built, message = box.build(changed)
+            built, message = box.build(changed, before)
         except testenv.TestEnvError as e:
             raise P4MError(str(e))
         if not built:
