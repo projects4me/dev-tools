@@ -174,3 +174,15 @@ class ShipTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BadFilterTest(unittest.TestCase):
+    def test_converted_windows_path_is_rejected(self):
+        from lib import tests
+        self.assertTrue(tests.bad_filter("C:/Program Files/Git/idea/i"))
+        self.assertTrue(tests.bad_filter("c:\\x"))
+
+    def test_plain_and_regex_filters_pass(self):
+        from lib import tests
+        self.assertIsNone(tests.bad_filter("/idea/i"))
+        self.assertIsNone(tests.bad_filter("idea"))

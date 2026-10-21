@@ -35,3 +35,33 @@ class PathTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RunTestsTest(unittest.TestCase):
+    """run_tests stops a run that testem would never finish, and always cleans the container up."""
+
+    def _box(self, script):
+        box = testenv.PrometheusTestContainer(".", Path("."))
+        box.kills = 0
+        box.kill_tests = lambda: setattr(box, "kills", box.kills + 1)
+        box.test_command = lambda flt=None: [sys.executable, "-c", script]
+        return box
+
+    def test_unmatched_filter_is_stopped_and_cleaned_up(self):
+        script = "import time;print('No tests matched the filter',flush=True);time.sleep(60)"
+        box = self._box(script)
+        old = testenv.STUCK_GRACE
+        testenv.STUCK_GRACE = 1
+        try:
+            self.assertEqual(box.run_tests("x"), 1)
+        finally:
+            testenv.STUCK_GRACE = old
+        self.assertEqual(box.kills, 2)
+
+    def test_timeout_is_stopped(self):
+        box = self._box("import time;time.sleep(60)")
+        self.assertEqual(box.run_tests(timeout=1), 1)
+
+    def test_normal_run_returns_exit_code(self):
+        box = self._box("print('# pass 1');raise SystemExit(0)")
+        self.assertEqual(box.run_tests(), 0)

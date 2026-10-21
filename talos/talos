@@ -1,8 +1,11 @@
 #!/usr/bin/env sh
 # Talos: dispatch Projects4Me issues to headless Claude Code agents. See README.md
-DIR="$(cd "$(dirname "$0")" && pwd)"
+# pwd -W: a Windows path, because the script path is no longer converted for python (see MSYS_NO_PATHCONV below)
+DIR="$(cd "$(dirname "$0")" && { pwd -W 2>/dev/null || pwd; })"
 # Python: `python` on Windows (Git Bash; `python3` there may be the Microsoft Store stub, which hangs),
 # `python3` elsewhere (often the only one on Linux); whichever exists if that one doesn't.
 case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) PY=python ;; *) PY=python3 ;; esac
 command -v "$PY" >/dev/null 2>&1 || { [ "$PY" = python ] && PY=python3 || PY=python; }
+# Git Bash rewrites an argument that starts with / (a /regex/ filter) into a Windows path before a native program gets it.
+export MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*'
 exec "$PY" "$DIR/talos.py" "$@"

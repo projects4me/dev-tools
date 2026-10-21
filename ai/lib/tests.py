@@ -34,12 +34,26 @@ class SuiteResult:
 
 
 def _run_logged(name, cmd, cwd=WORKSPACE):
+    """Run cmd, writing its output to the log as it arrives (a hung run still leaves a readable log)."""
     STATE_DIR.mkdir(exist_ok=True)
     log = STATE_DIR / f"test-{name}.log"
-    result = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, encoding="utf-8", errors="replace")
-    output = (result.stdout or "") + (result.stderr or "")
-    log.write_text(output, encoding="utf-8")
-    return result.returncode, output, log
+    chunks = []
+    with open(log, "w", encoding="utf-8") as f, subprocess.Popen(
+            cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+            encoding="utf-8", errors="replace", bufsize=1) as proc:
+        for line in proc.stdout:
+            chunks.append(line)
+            f.write(line)
+            f.flush()
+    return proc.returncode, "".join(chunks), log
+
+
+def bad_filter(value):
+    """Why a filter looks like a Git Bash-converted Windows path (so it would match nothing), or None."""
+    if re.match(r"^[A-Za-z]:[/\\]", value) or "Program Files" in value:
+        return (f"--filter {value!r} looks like a Windows path: Git Bash rewrote the leading / of a /regex/ "
+                "filter. Run it through dev-tools/ai/ai (which turns that off) or use a plain-text filter.")
+    return None
 
 
 def _p4m(*args):
@@ -224,6 +238,10 @@ def cmd_test(args):
     src = repo_dir(repo)
     targets, notes = (targets_for(repo, src) if args.changed else ({}, []))
     if args.filter:
+        bad = bad_filter(args.filter)
+        if bad:
+            say(bad)
+            return 2
         targets = {"ember" if repo == "prometheus" else "api": args.filter}
         notes = [f"filter: {args.filter}"]
     for n in notes:

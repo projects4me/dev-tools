@@ -1479,7 +1479,7 @@ def cmd_test(args) -> None:
         if not built:
             raise P4MError(message)
         info(f"{len(changed)} file(s) synced, {message}")
-        sys.exit(run(box.test_command(args.filter), check=False).returncode)
+        sys.exit(box.run_tests(args.filter))
     if t == "ares":
         if not is_running("ares-dev"):
             raise P4MError("ares is not running - `p4m up ares`")
