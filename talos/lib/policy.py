@@ -2,9 +2,19 @@
 
 from dataclasses import dataclass
 from datetime import datetime
+from typing import NamedTuple
 
 ASSIGNEE_EVENT = "issue.assignee.changed"
-OUTCOMES = ("done", "needs_input", "blocked", "escalate")
+OUTCOMES = ("done", "ready_to_ship", "needs_input", "blocked", "escalate")
+
+
+class RunLimits(NamedTuple):
+    max_turns: int          # 0 = no turn cap
+    max_budget_usd: float   # 0 = no cost budget
+
+    def describe(self):
+        return f"{self.max_turns or 'no'} turn cap" + (f", ${self.max_budget_usd:g} budget"
+                                                       if self.max_budget_usd else "")
 
 
 @dataclass
@@ -59,6 +69,13 @@ def choose_model(agent, issue, escalated=False):
     return agent.model_by_complexity.get(issue.get("complexity")) or agent.model_default
 
 
+def run_limits(agent, model):
+    """(max turns, max budget USD) for one run on `model`: the agent's limitsByModel entry, else its maxTurns
+    and no budget. A budget lets an expensive model run longer without a turn cap cutting it off early."""
+    limits = agent.limits_by_model.get(model) or {}
+    return RunLimits(int(limits.get("maxTurns", agent.max_turns) or 0), float(limits.get("maxBudgetUsd", 0) or 0))
+
+
 def iterations_left(agent, runs):
     """How many more Claude runs this issue may have (None = unlimited)."""
     if agent.max_iterations <= 0:
@@ -95,23 +112,35 @@ def render_prompt(action, issue, repo, catch_up=False, reviewer="your reviewer")
     return prompt + CATCH_UP.format(**values) if catch_up else prompt
 
 
+def render_ship_prompt(agent, issue, repo, handoff):
+    """The fresh ship session's prompt: the agent's shipPrompt with the implementing session's handoff note."""
+    return agent.ship_prompt.format(issue=issue["number"], repo=repo, project=issue["project"],
+                                    reviewer=agent.reviewer_name,
+                                    handoff=handoff.strip() or "(no handoff note was written)")
+
+
 def read_outcome(result):
-    """(outcome, summary, comment) from a `claude -p --output-format json` result dict.
+    """(outcome, summary, comment, handoff) from a `claude -p --output-format json` result dict.
 
     Missing or malformed structured output counts as a failure, never as success.
     """
     if not isinstance(result, dict):
-        return "failed", "no result from Claude", ""
-    if result.get("subtype") == "error_max_turns":
-        turns = result.get("num_turns") or "the"
-        return ("needs_input", f"stopped at the {turns}-turn budget",
-                f"<p>The run stopped at the {turns}-turn budget before finishing, so nothing more is spent "
+        return "failed", "no result from Claude", "", ""
+    if result.get("subtype") in ("error_max_turns", "error_max_budget_usd"):
+        if result.get("subtype") == "error_max_turns":
+            limit = f"{result.get('num_turns') or 'the'}-turn budget"
+        else:
+            cost = result.get("total_cost_usd")
+            limit = f"${cost:.2f} cost budget" if isinstance(cost, (int, float)) else "cost budget"
+        return ("needs_input", f"stopped at the {limit}",
+                f"<p>The run stopped at the {limit} before finishing, so nothing more is spent "
                 f"without a look. The session is kept: assign the issue back to continue where it stopped, "
-                f"or add a comment that narrows the work first.</p>")
+                f"or add a comment that narrows the work first.</p>", "")
     if result.get("is_error") or result.get("subtype") not in (None, "success"):
         detail = result.get("result") or result.get("subtype") or "unknown error"
-        return "failed", f"Claude run ended with {result.get('subtype')}: {str(detail)[:1500]}", ""
+        return "failed", f"Claude run ended with {result.get('subtype')}: {str(detail)[:1500]}", "", ""
     out = result.get("structured_output")
     if not isinstance(out, dict) or out.get("outcome") not in OUTCOMES:
-        return "failed", "Claude finished without a valid outcome", str(result.get("result") or "")[:1500]
-    return out["outcome"], str(out.get("summary") or ""), str(out.get("comment") or "")
+        return "failed", "Claude finished without a valid outcome", str(result.get("result") or "")[:1500], ""
+    return (out["outcome"], str(out.get("summary") or ""), str(out.get("comment") or ""),
+            str(out.get("handoff") or ""))

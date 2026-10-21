@@ -39,8 +39,9 @@ changes for headless work.
 ## Iterations and turns
 - Each Talos run on an issue counts toward a limit of 10; after that the issue goes to your reviewer for a manual
   look. Make each run count: finish the work, or hand off with a precise question or blocker.
-- Each run also has a turn budget (`maxTurns` in agent.json). If it runs out, the run stops and the issue goes
-  back to your reviewer with the session kept. Work in few, purposeful calls.
+- Each run also has a turn cap and, on Opus, a cost budget (`maxTurns`, `limitsByModel` in agent.json). If either
+  runs out, the run stops and the issue goes back to your reviewer with the session kept. Work in few, purposeful
+  calls.
 
 ## Keep the context lean (without losing anything)
 Every turn re-reads the whole conversation, so large outputs you don't need cost on every later turn.
@@ -50,10 +51,24 @@ Every turn re-reads the whole conversation, so large outputs you don't need cost
   `test-runner` agent (`dev-tools/ai/ai test <repo>`), once at the end. Never `docker exec`/`docker run` suites
   yourself: the shared containers may serve another checkout.
 - Ship with one `dev-tools/ai/ai ship` call (see `/ship-issue`).
+- Run subagents (`test-runner`, `design-reviewer`, `deep-reasoner`) in the foreground (`run_in_background: false`)
+  and long commands in the foreground too. Never wait with `sleep`: background tasks are off in Talos runs, and a
+  notification arriving after your outcome costs a whole extra turn.
 - Review your own changes with `git diff --stat` and then `git diff -- <file>` for the files you need,
   not `git show HEAD` or `git show --stat` on large commits.
 - Read the issue once per run, and again only to check for a new comment.
 - Open the specific mockup, template or file you need instead of listing or printing whole folders.
+
+## Shipping in a fresh session
+Shipping re-reads the whole conversation on every call, so it runs in a new, small session:
+- When the implementation is done and `dev-tools/ai/ai test <repo> --changed` passes, do not run `/ship-issue`.
+  Log your time, commit nothing, and finish with outcome `ready_to_ship` and a plain-text `handoff` note: the
+  branch, the files changed and why, the decisions you made (and the options you turned down), known test
+  failures, follow-ups for the PR description. The ship session sees only this note and the branch.
+- Talos then starts that session with your note; it runs `/ship-issue` and ends with `done` (or `needs_input`,
+  `blocked`, `escalate` as usual). A session started with "Ship Projects4Me issue" is that ship session: ship,
+  never answer `ready_to_ship`.
+- Address-review runs (`/address-review`) push their own follow-up and end with `done`.
 
 ## Finishing
 - `done` means the hand-off already happened through the skills: the PR is open (or review threads

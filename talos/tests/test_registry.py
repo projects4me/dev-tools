@@ -42,6 +42,22 @@ class RegistryTest(unittest.TestCase):
         prompt = policy.render_prompt(agent.actions["feedback"], issue, "gaia", reviewer=agent.reviewer_name)
         self.assertTrue(prompt.startswith("Ayesha answered on Projects4Me issue #5"))
 
+    def test_odysseus_run_policy(self):
+        (self.folder / "agent.local.json").write_text(json.dumps(
+            {"acceptAssignmentsFrom": ["7"], "handoffTo": "7"}), encoding="utf-8")
+        agent = registry.load_agent(self.folder)
+        self.assertEqual(policy.run_limits(agent, "opus"), (150, 15.0))
+        self.assertEqual(agent.env, {"CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "1"})
+        self.assertIn("ToolSearch", agent.builtin_tools.split(","))
+        self.assertIn("{handoff}", agent.ship_prompt)
+
+    def test_env_may_not_override_credentials(self):
+        (self.folder / "agent.local.json").write_text(json.dumps(
+            {"acceptAssignmentsFrom": ["7"], "handoffTo": "7", "env": {"GAIA_EMAIL": "x"}}), encoding="utf-8")
+        with self.assertRaises(TalosError) as e:
+            registry.load_agent(self.folder)
+        self.assertIn("GAIA_EMAIL", str(e.exception))
+
     def test_shipped_prompts_name_no_person(self):
         raw = (ODYSSEUS / "agent.json").read_text(encoding="utf-8") + (ODYSSEUS / "role.md").read_text(encoding="utf-8")
         self.assertNotIn("Hammad", raw)

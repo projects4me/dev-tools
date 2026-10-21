@@ -5,8 +5,8 @@
   "properties": {
     "outcome": {
       "type": "string",
-      "enum": ["done", "needs_input", "blocked", "escalate"],
-      "description": "done: the work for this hand-off is finished and you already handed the issue back (e.g. PR opened, in_review, assigned to the reviewer). needs_input: a decision or answer is needed. blocked: a tool, permission, environment or dependency stops you. escalate: the issue needs a stronger model to continue."
+      "enum": ["done", "ready_to_ship", "needs_input", "blocked", "escalate"],
+      "description": "done: the work for this hand-off is finished and you already handed the issue back (e.g. PR opened, in_review, assigned to the reviewer). ready_to_ship: the implementation is done and the changed tests pass; Talos starts a fresh session that ships it (only when your role says so). needs_input: a decision or answer is needed. blocked: a tool, permission, environment or dependency stops you. escalate: the issue needs a stronger model to continue."
     },
     "summary": {
       "type": "string",
@@ -15,6 +15,10 @@
     "comment": {
       "type": "string",
       "description": "HTML for the issue thread. Required for needs_input (the question, options and your recommended option), blocked (what is blocking and what would unblock it) and escalate (why). Empty for done."
+    },
+    "handoff": {
+      "type": "string",
+      "description": "Plain text for ready_to_ship: the note the fresh ship session starts from (branch, files changed, decisions, follow-ups, known test failures). Empty otherwise."
     }
   }
 }

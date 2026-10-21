@@ -39,9 +39,10 @@ class StubTracker:
         return {}
 
 
-def result(outcome, session="s1"):
+def result(outcome, session="s1", handoff=""):
     return {"subtype": "success", "session_id": session,
-            "structured_output": {"outcome": outcome, "summary": outcome, "comment": "<p>why</p>"}}
+            "structured_output": {"outcome": outcome, "summary": outcome, "comment": "<p>why</p>",
+                                  "handoff": handoff}}
 
 
 class DispatcherTest(unittest.TestCase):
@@ -53,6 +54,7 @@ class DispatcherTest(unittest.TestCase):
             p.start()
         self.models = []
         self.calls = []
+        self.envs = []
 
     def tearDown(self):
         for p in self.patches:
@@ -64,10 +66,11 @@ class DispatcherTest(unittest.TestCase):
 
         def fake_run(cmd, env, agent, number):
             self.models.append(cmd[cmd.index("--model") + 1])
+            self.envs.append(env)
             return next(replies), Path("log.json")
 
-        def fake_build(claude, agent, prompt, model, sid=None, new_session_id=None):
-            self.calls.append({"prompt": prompt, "resume": sid})
+        def fake_build(claude, agent, prompt, model, sid=None, new_session_id=None, limits=None):
+            self.calls.append({"prompt": prompt, "resume": sid, "limits": limits})
             return ["claude", "--model", model]
 
         with mock.patch.object(dispatcher_mod.runner, "run", fake_run), \
@@ -179,6 +182,40 @@ class DispatcherTest(unittest.TestCase):
         outcome, tracker = self.dispatch(make_issue(), [{"is_error": True, "subtype": "exit 1", "result": "boom"}])
         self.assertEqual(outcome, "failed")
         self.assertEqual(tracker.handoffs, [("pending", "1")])
+
+    def ship_agent(self):
+        return dict(ship_prompt="Ship #{issue} in {repo}. Note: {handoff}")
+
+    def test_ready_to_ship_starts_a_fresh_ship_session(self):
+        outcome, _ = self.dispatch(make_issue(), [result("ready_to_ship", handoff="files a, b"),
+                                                  result("needs_input", session="s2")], **self.ship_agent())
+        self.assertEqual(outcome, "needs_input")
+        self.assertEqual(self.calls[1], {"prompt": "Ship #42 in gaia. Note: files a, b", "resume": None,
+                                         "limits": (0, 0.0)})
+        self.assertEqual(self.models, ["sonnet", "sonnet"])
+        state = sessions.get("odysseus", 42)
+        self.assertEqual((state["runs"], state["session_id"]), (2, "s2"))
+
+    def test_ship_session_may_not_ask_to_ship_again(self):
+        outcome, tracker = self.dispatch(make_issue(), [result("ready_to_ship"), result("ready_to_ship")],
+                                         **self.ship_agent())
+        self.assertEqual(outcome, "failed")
+        self.assertEqual(len(self.models), 2)
+        self.assertEqual(tracker.handoffs, [("pending", "1")])
+
+    def test_ready_to_ship_without_ship_prompt_is_failed(self):
+        outcome, _ = self.dispatch(make_issue(), [result("ready_to_ship")])
+        self.assertEqual(outcome, "failed")
+        self.assertEqual(len(self.models), 1)
+
+    def test_limits_follow_the_model(self):
+        self.dispatch(make_issue(complexity="complex"), [result("needs_input")], max_turns=80,
+                      limits_by_model={"opus": {"maxTurns": 150, "maxBudgetUsd": 15}})
+        self.assertEqual(self.calls[0]["limits"], (150, 15.0))
+
+    def test_agent_env_reaches_claude(self):
+        self.dispatch(make_issue(), [result("needs_input")], env={"CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "1"})
+        self.assertEqual(self.envs[0]["CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"], "1")
 
     def test_done_still_assigned_is_flagged(self):
         outcome, tracker = self.dispatch(make_issue(), [result("done")])
