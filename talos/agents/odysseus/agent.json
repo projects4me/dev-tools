@@ -6,7 +6,10 @@
   "gaiaEnv": "gaia-mcp/gaia-mcp.env",
   "projects": {
     "A Gaia": "gaia",
-    "A Prometheus": "prometheus"
+    "A Prometheus": "prometheus",
+    "A Hermes": "hermes",
+    "A Ares": "ares",
+    "A Dev Tool": "dev-tools"
   },
   "milestones": [],
   "acceptAssignmentsFrom": [],

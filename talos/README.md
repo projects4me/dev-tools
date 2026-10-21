@@ -79,7 +79,7 @@ their events), and an env file with its `GAIA_*` credentials.
 |---|---|
 | `name`, `displayName`, `role`, `enabled` | identity; disabled agents are skipped by `run` |
 | `gaiaEnv` | env file with the agent's `GAIA_*` credentials, relative to `dev-tools/` |
-| `projects` | project name → repo folder (the `{repo}` placeholder) |
+| `projects` | project name → repo folder (the `{repo}` placeholder). Odysseus: A Gaia, A Prometheus, A Hermes, A Ares and A Dev Tool. A dev-tools issue changes the checkout Talos itself runs from, so restart `talos run` after merging one |
 | `milestones` | only work issues in these (empty = any; Odysseus: any, so an issue from any milestone assigned to it is worked. Issues the agents *create* still go in Claude-v1 by default) |
 | `acceptAssignmentsFrom`, `handoffTo` | Gaia user ids that may hand it work / that get questions and failures |
 | `pickupStatus` | status set when Talos starts a run (e.g. `in_progress`); empty leaves it alone |

@@ -162,7 +162,9 @@ class ShipTest(unittest.TestCase):
 
     def test_issue_ref(self):
         self.assertEqual(ship.issue_ref("prometheus", 7), "aprom-7")
-        self.assertEqual(ship.issue_ref("dev-tools", 7), "agaia-7")
+        self.assertEqual(ship.issue_ref("dev-tools", 7), "adt-7")
+        self.assertEqual(ship.issue_ref("hermes", 7), "ah-7")
+        self.assertEqual(ship.issue_ref("ares", 7), "aa-7")
 
 
 if __name__ == "__main__":

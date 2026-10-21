@@ -57,7 +57,7 @@ def build_parser():
 
     sp = add("test", tests.cmd_test, "run the repo's suites on the workspace checkout; print summaries and "
                                      "failures marked known (config or failing on the base commit) / unexpected")
-    sp.add_argument("repo", choices=list(tests.SUITES))
+    sp.add_argument("repo", choices=[*tests.SUITES, "ares"])
     sp.add_argument("--changed", action="store_true",
                     help="only the tests mapped from the branch's changed files (fast; ship needs a full run)")
     sp.add_argument("--filter", help="explicit filter: QUnit text or /regex/ (prometheus), case id/path a|b (gaia api)")
