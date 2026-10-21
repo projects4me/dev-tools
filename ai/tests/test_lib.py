@@ -52,6 +52,11 @@ class PrometheusMappingTest(unittest.TestCase):
 
 
 class GaiaMappingTest(unittest.TestCase):
+    def test_metadata_or_routes_change_makes_backend_catalog_stale(self):
+        self.assertTrue(testmap.backend_catalog_stale(["app/metadata/model/Idea.php"]))
+        self.assertTrue(testmap.backend_catalog_stale(["core/config/routes.php"]))
+        self.assertFalse(testmap.backend_catalog_stale(["app/api/v1/models/Idea.php"]))
+
     def test_controllers_and_models_map_to_resource_terms(self):
         flt, terms, unmapped = testmap.gaia_api_filter(".", "origin/dev", [
             "app/api/v1/controllers/SettingController.php", "app/metadata/model/Issue.php",
