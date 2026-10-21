@@ -495,19 +495,60 @@ class Tools:
             attrs["parentId"] = self.g.issue_by_number(args["parent_issue_number"])["id"]
         return attrs
 
+    def _ensure_milestone(self, p, name):
+        """(the project's milestone `name` or with that id, whether it was just created). A missing one is created:
+        in progress, from today for 30 days."""
+        key = str(name).strip().lower()
+        for m in p.get("milestones") or []:
+            if key in ((m.get("name") or "").strip().lower(), str(m.get("id") or "").lower()):
+                return m, False
+        today = date.today()
+        attrs = {"name": str(name).strip(), "description": f"Created by {self.g.me().get('name') or 'an agent'} "
+                                                           f"for new issues.",
+                 "startDate": today.isoformat(), "endDate": (today + timedelta(days=30)).isoformat(),
+                 "status": "in_progress", "milestoneType": "milestone", "projectId": p["id"]}
+        payload = self.g.request("POST", "milestone", body={"data": {"type": "milestone", "attributes": attrs}})
+        created = self.g.flatten(payload)
+        if not created or not created[0].get("id"):
+            raise GaiaError(f"Gaia did not confirm the new milestone: {json.dumps(payload)[:1000]}")
+        return created[0], True
+
+    def create_milestone(self, args):
+        p = self.g.project(args["project"], rels="milestones")
+        name = str(args.get("name") or "").strip()
+        if not name:
+            raise GaiaError("A milestone needs a name.")
+        milestone, created = self._ensure_milestone(p, name)
+        if created and (args.get("start_date") or args.get("end_date") or args.get("description")):
+            changes = {}
+            for src, dst in (("start_date", "startDate"), ("end_date", "endDate")):
+                if args.get(src):
+                    date.fromisoformat(args[src])  # reject anything that isn't YYYY-MM-DD
+                    changes[dst] = args[src]
+            if args.get("description"):
+                changes["description"] = args["description"]
+            self.g.request("PATCH", f"milestone/{milestone['id']}",
+                           body={"data": {"type": "milestone", "id": milestone["id"], "attributes": changes}})
+            milestone.update(changes)
+        return {"milestone": {"name": milestone.get("name"), "id": milestone.get("id"),
+                              "startDate": milestone.get("startDate"), "endDate": milestone.get("endDate")},
+                "created": created, "project": p.get("name")}
+
     def create_issue(self, args):
         p, statuses = self.g.project_options(args["project"])
         me = self.g.me()
-        attrs = self._resolve_fields(p, statuses, args, creating=True)
+        # House rule: Claude's issues go in the project's Claude milestone unless told otherwise. A milestone that
+        # doesn't exist yet (the default or a named one) is created; "" means the backlog.
+        wanted = args.get("milestone")
+        if wanted is None:
+            wanted = os.environ.get("GAIA_DEFAULT_MILESTONE", "Claude-v1")
+        milestone, made = (None, False) if wanted == "" else self._ensure_milestone(p, wanted)
+        attrs = self._resolve_fields(p, statuses, {k: v for k, v in args.items() if k != "milestone"}, creating=True)
+        attrs["milestoneId"] = milestone["id"] if milestone else ""
         attrs["description"] = with_complexity(attrs.get("description"), args.get("complexity"))
         attrs.setdefault("startDate", date.today().isoformat())
         # Prometheus requires an end date and shows "Invalid date" without one.
         attrs.setdefault("endDate", (date.fromisoformat(attrs["startDate"]) + timedelta(days=7)).isoformat())
-        if "milestoneId" not in attrs:
-            # House rule: Claude's issues go in the project's Claude milestone unless told otherwise.
-            default = os.environ.get("GAIA_DEFAULT_MILESTONE", "Claude-v1")
-            match = [m for m in p.get("milestones") or [] if (m.get("name") or "").lower() == default.lower()]
-            attrs["milestoneId"] = match[0]["id"] if match else ""
         attrs.update({"projectId": p["id"], "projectShortcode": p.get("shortCode"),
                       "owner": me["id"], "reportedUser": me["id"]})
         payload = self.g.request("POST", "issue", body={"data": {"type": "issue", "attributes": attrs}})
@@ -515,7 +556,10 @@ class Tools:
         if not created or not created[0].get("issueNumber"):
             raise GaiaError(f"Gaia did not confirm the new issue: {json.dumps(payload)[:1500]}")
         issue = self.g.issue_by_number(created[0]["issueNumber"])
-        return {"created": summarize_issue(issue, self.ui)}
+        out = {"created": summarize_issue(issue, self.ui)}
+        if made:
+            out["milestoneCreated"] = milestone.get("name")
+        return out
 
     def update_issue(self, args):
         issue = self.g.issue_by_number(args["issue_number"])
@@ -601,12 +645,21 @@ TOOLS = [
      {"type": "object", "properties": {"issue_number": {"type": "integer"}}, "required": ["issue_number"]}),
     ("gaia_create_issue", "create_issue",
      "Create an issue in a Projects4Me project. Defaults: type Task, status new, priority medium, assignee me, "
-     "start date today, end date a week later, milestone Claude-v1 (backlog if the project has none). "
+     "start date today, end date a week later, milestone Claude-v1. A milestone the project doesn't have yet "
+     "(Claude-v1 or the one you name) is created; an empty milestone means the backlog. "
      "Always judge its complexity: it picks the model the agent works it with.",
      {"type": "object", "properties": dict({"project": PROJECT_ARG, "subject": {"type": "string"},
                                             "description": DESCRIPTION_ARG, "complexity": COMPLEXITY_ARG},
                                            **FIELD_ARGS),
       "required": ["project", "subject", "complexity"]}),
+    ("gaia_create_milestone", "create_milestone",
+     "Create a milestone in a project (or return the existing one with that name). Defaults: in progress, from today "
+     "for 30 days.",
+     {"type": "object", "properties": {"project": PROJECT_ARG, "name": {"type": "string"},
+                                       "start_date": {"type": "string", "description": "YYYY-MM-DD"},
+                                       "end_date": {"type": "string", "description": "YYYY-MM-DD"},
+                                       "description": {"type": "string"}},
+      "required": ["project", "name"]}),
     ("gaia_update_issue", "update_issue",
      "Update an existing issue by number: status, priority, type, subject, description, complexity, assignee, "
      "milestone, dates or parent.",

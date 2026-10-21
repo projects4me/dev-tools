@@ -2,6 +2,7 @@
 with an in-memory idea client (sim Gaia's contract), a fake launcher and a fake tracker."""
 
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -11,10 +12,10 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from lib import db  # noqa: E402
-from lib.ideas import plan, policy, state, stream  # noqa: E402
+from lib.ideas import browser, page, plan, policy, screens, state, stream, styles  # noqa: E402
 from lib.ideas.approval import Approval  # noqa: E402
 from lib.ideas.conversation import Conversation  # noqa: E402
-from lib.ideas.sanitize import clean_html  # noqa: E402
+from lib.ideas.sanitize import SCREEN, clean_html  # noqa: E402
 from lib.ideas.worker import IdeaWorker  # noqa: E402
 from lib.registry import Agent  # noqa: E402
 from lib.simbus import parse_sse  # noqa: E402
@@ -150,6 +151,96 @@ class RegistryTest(unittest.TestCase):
                 registry.load_agents("aaa")
 
 
+class ScreensTest(unittest.TestCase):
+    def test_blocks_are_parsed_and_validated(self):
+        reply = ('Intro\n```nestor-screen key="a" title="A" size="1200x700" shell="none"\n<p>x</p>\n```\n'
+                 '```nestor-screen key="Bad Key" title="B"\n<p>y</p>\n```\n'
+                 '```nestor-screen key="c" size="9x9"\n<script>only()</script>\n```\nOutro')
+        text, found, problems = screens.extract(reply)
+        self.assertEqual(text, "Intro\n\n\n\nOutro")
+        self.assertEqual([(f["key"], f["width"], f["height"], f["shell"], f["body"]) for f in found],
+                         [("a", 1200, 700, "none", "")])                         # bad body classes dropped
+        self.assertEqual(len(problems), 2)
+
+    def test_screen_html_keeps_layout_and_drops_anything_active(self):
+        html = clean_html('<div class="box box-primary" style="x" onclick="y()"><a href="https://evil/x">l</a>'
+                          '<a href="#top" class="btn">ok</a><img src="https://evil/i.png"><img src="data:image/png;base64,iVBORw0K">'
+                          '<input class="form-control" placeholder="Name" onfocus="z()"><script>s()</script>'
+                          '<link rel="stylesheet" href="https://evil/c.css"><style>body{}</style></div>', SCREEN)
+        self.assertEqual(html, '<div class="box box-primary"><a>l</a><a href="#top" class="btn">ok</a><img>'
+                               '<img src="data:image/png;base64,iVBORw0K"><input class="form-control" '
+                               'placeholder="Name"></div>')
+
+    def test_page_and_command(self):
+        screen = {"key": "a", "title": "A", "width": 1440, "height": 900, "shell": "app", "html": "<p>x</p>",
+                  "body": "notifications-sidebar-open", "project": 'A "Gaia" <b>'}
+        html_page = page.build(screen, ["http://prom/x.css?a=1&b=2"], "Hammad <Hassan>")
+        self.assertIn('class="skin-black-light sidebar-mini notifications-sidebar-open"', html_page)
+        self.assertIn("A &quot;Gaia&quot; &lt;b&gt;", html_page)                  # escaped once, in the page
+        self.assertIn("Hammad &lt;Hassan&gt;", html_page)
+        self.assertIn('href="http://prom/x.css?a=1&amp;b=2"', html_page)
+        self.assertNotIn("main-header", page.build(dict(screen, shell="none"), []))
+        cmd = browser.command("edge", Path("s.html"), Path("s.png"), 1440, 900, Path("prof"), as_root=False)
+        self.assertIn("--window-size=1440,900", cmd)
+        self.assertIn("--disable-dev-shm-usage", cmd)
+        self.assertTrue(any(c.startswith("--user-data-dir=") for c in cmd))      # never the engineer's profile
+        self.assertNotIn("--no-sandbox", cmd)
+        self.assertIn("--no-sandbox", browser.command("chromium", Path("s.html"), Path("s.png"), 1, 1, Path("p"),
+                                                      as_root=True))
+        with self.assertRaises(browser.RenderError):
+            browser.find("/no/such/browser")
+
+    def test_kill_tree_ends_a_running_process_and_reaps_it(self):
+        import subprocess
+        proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"],
+                                start_new_session=os.name != "nt")
+        browser.kill_tree(proc)
+        self.assertIsNotNone(proc.poll())
+
+    def test_a_browser_that_writes_no_image_is_an_error(self):
+        class Proc:
+            pid, returncode = 1, 0
+
+            def wait(self, timeout=None):
+                return 0
+
+            def poll(self):
+                return 0
+        with tempfile.TemporaryDirectory() as tmp, mock.patch("subprocess.Popen", return_value=Proc()), \
+                mock.patch.object(browser, "kill_tree"):
+            with self.assertRaisesRegex(browser.RenderError, "no image"):
+                browser.screenshot("edge", Path(tmp) / "s.html", Path(tmp) / "s.png", 800, 600, tmp)
+
+    def test_stylesheets_prefer_the_built_css_same_origin_only(self):
+        built = styles.stylesheets(["http://prom/assets/prometheus.css"])
+        self.assertIn("http://prom/assets/prometheus.css", built)
+        self.assertFalse([c for c in built if c.endswith("projects4me.css")])   # the overlay is only the fallback
+        self.assertTrue([c for c in styles.stylesheets([]) if c.endswith("projects4me.css")])
+        index = ('<link integrity="" rel="stylesheet" href="/assets/vendor-1.css">'
+                 '<link rel="stylesheet" href="/assets/prometheus-2.css"><link rel="icon" href="/favicon.css">'
+                 '<link rel="stylesheet" href="https://elsewhere.example/x.css">')
+        with mock.patch("urllib.request.urlopen", mock.mock_open(read_data=index.encode())):
+            self.assertEqual(styles.built_css("http://prom"), ["http://prom/assets/vendor-1.css",
+                                                              "http://prom/assets/prometheus-2.css"])
+
+    def test_stylesheets_are_looked_up_again_after_a_while(self):
+        calls = []
+        sheets = styles.Stylesheets("http://prom", fetch=lambda url: calls.append(url) or [])
+        sheets.current()
+        sheets.current()
+        self.assertEqual(len(calls), 1)
+        sheets._at -= styles.REFRESH_SECONDS + 1
+        sheets.current()
+        self.assertEqual(len(calls), 2)
+
+    def test_sanitiser_edge_cases(self):
+        out = clean_html('<a href="JaVaScRiPt:alert(1)">a</a><a href="#ok">b</a><img src="DATA:image/png;base64,AAAA">'
+                         '<frame src="x"><p data-x="1" aria-label="l">kept</p><title>t</title><textarea>t&lt;</textarea>'
+                         '<p bad"name="1">p</p>', SCREEN)
+        self.assertEqual(out, '<a>a</a><a href="#ok">b</a><img><p data-x="1" aria-label="l">kept</p>'
+                              '<textarea>t&lt;</textarea><p>p</p>')
+
+
 class StreamTest(unittest.TestCase):
     def test_events(self):
         delta = {"type": "stream_event", "event": {"type": "content_block_delta",
@@ -178,7 +269,7 @@ class FakeClient:
     """Sim Gaia's idea resources in memory, as the agent sees them."""
 
     def __init__(self):
-        self.ideas_, self.messages, self.plans, self.issues = {}, [], [], []
+        self.ideas_, self.messages, self.plans, self.issues, self.screens = {}, [], [], [], []
         self.states = []
 
     def add_idea(self, idea_id=7, title="Recurring issues"):
@@ -195,7 +286,7 @@ class FakeClient:
         plans = [dict(p, issues=[i for i in self.issues if i["plan_id"] == p["id"]])
                  for p in self.plans if p["idea_id"] == idea_id]
         return {"idea": self.ideas_[idea_id], "messages": [m for m in self.messages if m["idea_id"] == idea_id],
-                "plans": plans}
+                "plans": plans, "screens": [dict(x, png=None) for x in self.screens if x["idea_id"] == idea_id]}
 
     def set_state(self, idea_id, s):
         self.states.append(s)
@@ -204,9 +295,18 @@ class FakeClient:
     def mark_created(self, idea_id):
         self.ideas_[idea_id]["status"] = "created"
 
-    def post(self, idea_id, role, body, steps=None, plan_id=None, cost=None):
+    def post(self, idea_id, role, body, steps=None, plan_id=None, cost=None, screens=None):
         self.messages.append({"id": len(self.messages) + 1, "idea_id": idea_id, "role": role, "body": body,
-                              "steps": steps, "plan_id": plan_id, "cost_usd": cost})
+                              "steps": steps, "plan_id": plan_id, "cost_usd": cost, "screens": screens or []})
+
+    def add_screen(self, idea_id, screen, png):
+        version = 1 + sum(1 for x in self.screens if x["idea_id"] == idea_id and x["key"] == screen["key"])
+        self.screens.append({"id": 900 + len(self.screens), "idea_id": idea_id, "key": screen["key"],
+                             "title": screen["title"], "version": version, "png_bytes": png})
+        return self.screens[-1]["id"], version
+
+    def screen_png(self, screen_id):
+        return next(x["png_bytes"] for x in self.screens if x["id"] == screen_id)
 
     def add_plan(self, idea_id, body):
         for p in self.plans:
@@ -268,15 +368,35 @@ class FakeKb:
 
 class FakeTracker:
     def __init__(self, fail_on=None):
-        self.created, self.fail_on, self.next = [], fail_on, 5000
+        self.created, self.fail_on, self.next, self.milestones, self.attached = [], fail_on, 5000, [], []
 
-    def create_issue(self, project, subject, description, type_, priority, complexity, assignee):
+    def create_issue(self, project, subject, description, type_, priority, complexity, assignee, milestone):
         if self.fail_on and self.fail_on in subject:
             raise RuntimeError("Gaia said no")
         self.next += 1
         self.created.append((subject, description, assignee))
+        self.milestones.append(milestone)
         return {"issueNumber": self.next, "projectShortcode": {"A Gaia": "agaia"}.get(project, "aprom"),
                 "subject": subject, "url": f"http://prom/{self.next}"}
+
+    def attach_png(self, number, name, png):
+        if getattr(self, "attach_fails", False):
+            raise RuntimeError("upload refused")
+        self.attached.append((number, name, png))
+
+
+class FakeRenderer:
+    def __init__(self, fail=False):
+        self.rendered, self.fail = [], fail
+
+    def render(self, screen):
+        if self.fail:
+            raise RuntimeError("no browser")
+        self.rendered.append(screen["key"])
+        return b"PNG:" + screen["key"].encode()
+
+
+MILESTONES = {"A Gaia": ["Claude-v1", "Agents"], "A Prometheus": ["Claude-v1", "v0.6.2"]}
 
 
 class IdeasFlowTest(TempDb):
@@ -286,8 +406,9 @@ class IdeasFlowTest(TempDb):
         self.client, self.launcher, self.tracker = FakeClient(), FakeLauncher(), FakeTracker()
         self.progress = FakeProgress()
         self.client.add_idea()
+        self.renderer = FakeRenderer()
         self.conv = Conversation(self.agent, self.client, self.progress, self.launcher, FakeKb(), lambda: PROJECTS,
-                                 Path("map.md"))
+                                 Path("map.md"), milestones=MILESTONES.get, renderer=self.renderer)
         self.worker = IdeaWorker(self.agent, self.client, self.progress, self.conv,
                                  Approval(self.agent, self.client, self.tracker), AGENT_ID)
 
@@ -318,9 +439,11 @@ class IdeasFlowTest(TempDb):
         self.assertEqual(len(self.launcher.calls), 1)
 
     def test_an_invalid_plan_gets_one_correction_round(self):
-        self.turn("go", block(issue("a", depends=["nope"])), "Fixed\n" + block(issue("a")))
-        self.assertIn("could not be used", self.launcher.calls[1][0])
+        self.turn("go", "My answer\n" + block(issue("a", depends=["nope"])), block(issue("a")))
+        self.assertIn("Reply with only the corrected", self.launcher.calls[1][0])
         self.assertEqual(len(self.client.plans), 1)
+        reply = self.replies()[-1]
+        self.assertEqual((reply["body"], reply["plan_id"], reply["cost_usd"]), ("My answer", self.client.plans[0]["id"], 0.5))
 
     def test_approval_creates_in_order_and_tells_the_agent(self):
         self.turn("go", block(issue("ui", "A Prometheus", ["api", "adt-4061"]), issue("api")))
@@ -407,6 +530,72 @@ class IdeasFlowTest(TempDb):
         self.client.say(7, "hi")
         self.worker.handle(("turn", 7))
         self.assertEqual(self.launcher.calls, [])
+
+    def test_milestone_defaults_to_claude_v1_and_new_ones_are_marked(self):
+        self.turn("go", block(issue("a"), issue("b", milestone="agents"), issue("c", milestone="Sprint 9")))
+        body = self.client.plans[0]["body"]
+        self.assertEqual([(i["milestone"], i["newMilestone"]) for i in body["issues"]],
+                         [("Claude-v1", False), ("Agents", False), ("Sprint 9", True)])   # exact spelling kept
+        self.assertEqual(len(self.launcher.calls), 1)                          # not an error: no correction run
+        plan_id = self.client.plans[0]["id"]
+        self.client.set_plan_status(plan_id, "approved")
+        self.worker.handle(("approve", 7, plan_id))
+        self.assertEqual(self.tracker.milestones, ["Claude-v1", "Agents", "Sprint 9"])   # created by gaia-mcp
+
+    def test_screens_are_rendered_stored_and_attached(self):
+        shot = ('```nestor-screen key="list" title="Grouped list"\n<section class="content">'
+                '<div class="box box-primary" onclick="x()">Hi</div></section>\n```')
+        self.turn("show me", "Here it is.\n" + shot + "\n" + block(issue("ui", "A Prometheus", screens=["list"]),
+                                                                    issue("api")))
+        self.assertEqual(self.renderer.rendered, ["list"])
+        reply = self.replies()[-1]
+        self.assertEqual((reply["body"], reply["screens"]), ("Here it is.", [900]))
+        self.assertEqual(self.client.plans[0]["body"]["issues"][0]["screens"], ["list"])
+        self.turn("tweak it", shot)                                              # same key: the next version
+        self.assertEqual([x["version"] for x in self.client.screens], [1, 2])
+        plan_id = self.client.plans[0]["id"]
+        self.client.set_plan_status(plan_id, "approved")
+        self.worker.handle(("approve", 7, plan_id))
+        number = next(i["number"] for i in self.client.issues if i["key"] == "ui")
+        self.assertEqual(self.tracker.attached, [(number, "list.png", b"PNG:list")])     # the latest version
+        self.assertIn("<strong>Screens:</strong> list.png</p>", self.tracker.created[0][1])
+
+    def test_an_attachment_that_fails_is_reported(self):
+        shot = '```nestor-screen key="list" title="List"\n<p>x</p>\n```'
+        self.turn("show me", "Here.\n" + shot + "\n" + block(issue("ui", screens=["list"])))
+        self.tracker.attach_fails = True
+        plan_id = self.client.plans[0]["id"]
+        self.client.set_plan_status(plan_id, "approved")
+        self.worker.handle(("approve", 7, plan_id))
+        self.assertEqual(self.client.plans[0]["status"], "created")              # the issue itself is fine
+        self.assertIn("could not be attached", self.client.messages[-1]["body"])
+        self.assertNotIn("(attached)", self.tracker.created[0][1])
+
+    def test_a_failed_render_doesnt_cost_a_correction_round(self):
+        self.conv.renderer = FakeRenderer(fail=True)
+        shot = '```nestor-screen key="list" title="List"\n<p>x</p>\n```'
+        self.turn("show me", "Here.\n" + shot + "\n" + block(issue("ui", screens=["list"])))
+        self.assertEqual(len(self.launcher.calls), 1)                            # no correction run
+        self.assertEqual(self.client.plans[0]["body"]["issues"][0]["screens"], [])
+        self.assertIn("won't get list attached", self.replies()[-1]["body"])
+
+    def test_unreadable_milestones_are_not_checked(self):
+        def broken(project):
+            raise RuntimeError("Gaia down")
+        self.conv.milestones = broken
+        self.turn("go", block(issue("a", milestone="Whatever")))
+        self.assertEqual(self.client.plans[0]["body"]["issues"][0]["milestone"], "Whatever")
+
+    def test_a_screen_that_cant_render_is_a_note_not_a_failure(self):
+        self.conv.renderer = FakeRenderer(fail=True)
+        self.turn("show me", 'Look.\n```nestor-screen key="x" title="X"\n<p>hi</p>\n```')
+        reply = self.replies()[-1]
+        self.assertIn("could not be rendered: no browser", reply["body"])
+        self.assertEqual(reply["screens"], [])
+
+    def test_a_plan_may_only_list_screens_the_idea_has(self):
+        self.turn("go", block(issue("ui", screens=["nope"])), block(issue("ui", screens=["nope"])))
+        self.assertIn("no screen with key 'nope'", self.launcher.calls[-1][0])
 
     def test_a_lost_session_replays_the_conversation(self):
         self.turn("first", "one")

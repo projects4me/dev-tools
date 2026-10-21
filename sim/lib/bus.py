@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 SCHEMA_VERSION = 1
 ALLOWLIST = (
     "idea.created", "idea.updated", "idea.message.created", "idea.plan.created", "idea.plan.status.changed",
-    "idea.issue.created", "idea.agent.progress",
+    "idea.issue.created", "idea.screen.created", "idea.agent.progress",
 )
 ENVELOPE_KEYS = {"schemaVersion", "eventId", "eventName", "occurredAt", "projectId", "resource", "actorId",
                  "changes", "meta"}

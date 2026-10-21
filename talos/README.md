@@ -80,7 +80,7 @@ their events), and an env file with its `GAIA_*` credentials.
 | `name`, `displayName`, `role`, `enabled` | identity; disabled agents are skipped by `run` |
 | `gaiaEnv` | env file with the agent's `GAIA_*` credentials, relative to `dev-tools/` |
 | `projects` | project name → repo folder (the `{repo}` placeholder) |
-| `milestones` | only work issues in these (empty = any) |
+| `milestones` | only work issues in these (empty = any; Odysseus: any, so an issue from any milestone assigned to it is worked. Issues the agents *create* still go in Claude-v1 by default) |
 | `acceptAssignmentsFrom`, `handoffTo` | Gaia user ids that may hand it work / that get questions and failures |
 | `pickupStatus` | status set when Talos starts a run (e.g. `in_progress`); empty leaves it alone |
 | `handoffStatuses` | status for `needs_input`, `blocked`, `failed`, `limit` (defaults `feedback`, `pending`, `pending`, `pending`) |
@@ -122,6 +122,16 @@ UI ─▶ (sim) Gaia ─publish─▶ (sim) Hermes ─idea.message.created──
   stream-json`, publishes `idea.agent.progress` (text in small batches, steps, turns), then posts the reply. A
   fenced `nestor-plan` JSON block in it is validated (lib/ideas/plan.py; descriptions reduced to plain HTML by
   sanitize.py) and posted as a new plan version; an invalid block gets one correction round.
+- **Milestone**: every plan issue goes in **Claude-v1** unless the engineer asked for another; Nestor then names
+  it (`milestone` in the plan block). Talos uses the project's exact spelling, marks a milestone the project
+  doesn't have as new (the plan card shows it), and the gaia MCP client creates it when the issue is created.
+- **UI screens** (lib/ideas/screens.py, render.py): when asked, the agent writes `nestor-screen` blocks of HTML in
+  Prometheus' markup; Talos sanitises them (no scripts, styles or external URLs), renders each to a PNG with a
+  headless Chromium (Edge or Chrome on Windows; Chromium, Chrome or Edge on Linux; `browserBin` to choose) and
+  stores it on the idea (`ideascreen`), where the UI shows it. The page uses Prometheus' real built CSS from the
+  running app (`prometheusUrl`, else `appUrl` from `p4m configure`), falling back to the checkout's
+  Bootstrap/AdminLTE plus screen_kit/projects4me.css. Plan issues list `screens`; on approval their latest PNGs
+  are attached to the created issues (a failed attachment is reported in the idea). No browser, or a screen that fails to render: the reply says so and the plan simply doesn't attach it.
 - **Approval** (lib/ideas/approval.py): no LLM. The approved version's issues are created through the gaia MCP
   client as the agent, assigned to the idea's owner, in dependency order, each with a "Depends on" line; each is
   recorded on the idea at once, so approving a failed plan again creates only the missing ones. The agent is told
@@ -134,7 +144,7 @@ UI ─▶ (sim) Gaia ─publish─▶ (sim) Hermes ─idea.message.created──
   (`--strict-mcp-config`, state/<agent>/mcp.json). `knowledgeMap`: the one file the agent may edit.
 - **State**: the conversation lives in (sim) Gaia; Talos keeps the agent's own memory in the `ideas` table.
 
-Config: `sim.url` and `sim.secret` in config.json; `kbMaxAgeMinutes`.
+Config: `sim.url` and `sim.secretFile` (or `sim.secret` in config.local.json); `kbMaxAgeMinutes`; `browserBin` and `prometheusUrl` for screens (empty: found automatically).
 
 ## State: `state/talos.db` (SQLite)
 
@@ -168,4 +178,4 @@ The pre-SQLite `state/sessions.json` is imported when `talos run`/`dispatch` sta
 | `lib/sessions.py` | issue state (`issues` table): session, run count, escalation, in-flight flag |
 | `lib/runs.py` | run records (`runs` table) and the per-run cost calculation |
 | `lib/simbus.py` | sim Hermes connection (SSE): the event source for ideas agents until Hermes carries idea events |
-| `lib/ideas/` | ideas agents: `setup` (wiring), `policy` (events, what waits), `worker` (queue, stop, reconcile), `conversation` (a turn), `approval` (plan → issues), `stream` (streamed run, command), `client` (idea resources), `plan`, `sanitize`, `steps`, `kb`, `state` |
+| `lib/ideas/` | ideas agents: `setup` (wiring), `policy` (events, what waits), `worker` (queue, stop, reconcile), `conversation` (a turn), `approval` (plan → issues), `stream` (streamed run, command), `client` (idea resources), `progress` (live progress), `plan`, `screens` (blocks) + `render` (= `styles` + `page` + `browser`) + `screen_kit/` (UI screens → PNG), `sanitize`, `steps`, `kb`, `state` |

@@ -4,8 +4,13 @@ Nestor ends a reply with one fenced block
 
     ```nestor-plan
     {"summary": "...", "issues": [{"key": "api", "project": "A Gaia", "subject": "...", "description": "<p>..</p>",
-      "type": "Task", "priority": "medium", "complexity": "simple", "dependsOn": []}, ...]}
+      "type": "Task", "priority": "medium", "complexity": "simple", "dependsOn": [],
+      "milestone": "Claude-v1", "screens": ["grouped-list"]}, ...]}
     ```
+
+`milestone` is optional (Claude-v1 unless the engineer asked for another; one the project doesn't have is
+marked `newMilestone` and created on approval); `screens` lists keys of UI screens
+(screens.py) to attach to the issue.
 
 The block is data: approval creates exactly what it says, so it is validated strictly here.
 """
@@ -24,6 +29,7 @@ COMPLEXITIES = ("simple", "complex")
 TYPES = ("Task", "Bug", "Story", "Epic", "Sub Task", "Research", "Change Request")
 KEY = re.compile(r"^[a-z0-9][a-z0-9-]{0,39}$")
 EXISTING = re.compile(r"^[a-z]+-\d+$")      # an issue that already exists, e.g. "adt-4061"
+DEFAULT_MILESTONE = "Claude-v1"
 
 
 def internal(depends, keys):
@@ -41,10 +47,12 @@ def extract(reply):
     return text, last.group(1)
 
 
-def parse(raw, projects):
+def parse(raw, projects, milestones=None, screen_keys=()):
     """The plan as a normalised dict, or raise ValueError listing every problem.
 
-    `projects`: project name -> short code, of the projects issues may go to."""
+    `projects`: project name -> short code, of the projects issues may go to. `milestones(project name)`: that
+    project's milestone names, to use their exact spelling and mark new ones (None: not looked up).
+    `screen_keys`: the UI screens this idea has."""
     try:
         plan = json.loads(raw)
     except ValueError as e:
@@ -102,9 +110,27 @@ def parse(raw, projects):
             errors.append(f"{where}.dependsOn: a list of keys")
             depends = []
         subject = " ".join(issue["subject"].split()) if isinstance(issue.get("subject"), str) else None
+        milestone = str(issue.get("milestone") or DEFAULT_MILESTONE).strip()
+        names = milestones(name) if name and milestones is not None else None
+        new_milestone = False
+        if names is not None:                   # None: not checked (e.g. Gaia unreachable just now)
+            known = {m.strip().lower(): m.strip() for m in names}
+            if milestone.lower() in known:
+                milestone = known[milestone.lower()]   # the project's exact spelling
+            else:
+                new_milestone = True                   # created in the project when the plan is approved
+        screens = issue.get("screens") or []
+        if not isinstance(screens, list) or not all(isinstance(k, str) for k in screens):
+            errors.append(f"{where}.screens: a list of screen keys")
+            screens = []
+        for k in screens:
+            if k not in screen_keys:
+                errors.append(f"{where}.screens: no screen with key '{k}' in this idea")
         out.append({"key": key, "project": name, "projectCode": projects.get(name), "subject": subject,
                     "description": description, "type": type_, "priority": priority,
-                    "complexity": complexity, "dependsOn": depends})
+                    "complexity": complexity, "dependsOn": depends, "milestone": milestone,
+                    "newMilestone": new_milestone,
+                    "screens": list(dict.fromkeys(screens))})
     for issue in out:
         for d in issue["dependsOn"]:
             if d not in keys and not EXISTING.match(d):

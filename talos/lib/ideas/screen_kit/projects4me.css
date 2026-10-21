@@ -1,0 +1,68 @@
+/* Projects4Me on top of Bootstrap 3 + AdminLTE 2 + skin-black-light, for rendering UI screens.
+   What Prometheus' own SCSS adds (prometheus/docs/ui/design-system.md; app/styles/variables.scss, document.scss).
+   Keep in step with those when the design system changes. */
+
+body, h1, h2, h3, h4, h5, h6, .h1, .h2, .h3, .h4, .h5, .h6, .main-header .logo {
+  font-family: "Source Sans Pro", "Helvetica Neue", Helvetica, Arial, sans-serif;
+}
+body { color: #333; font-size: 14px; }
+a { color: #1b7bba; }
+
+/* square edges everywhere, except avatars and dots */
+.box, .box-body, .btn, .form-control, .label, .badge, .dropdown-menu, .modal-content, .nav-tabs > li > a, .breadcrumb,
+.input-group-addon, .alert, .callout, .info-box, .small-box, .popover, .panel, .progress, .select2-container--default .select2-selection {
+  border-radius: 0 !important;
+}
+.img-circle, .user-image, .user-panel > .image > img, .direct-chat-img { border-radius: 50% !important; }
+
+/* boxes: no AdminLTE top border; a 4px gradient bar instead, every gradient ending in plum */
+.box { border-top: 0; margin-top: 4px; box-shadow: 0 1px 1px rgba(0, 0, 0, .1); }
+.box::after { content: ""; position: absolute; left: 0; right: 0; top: -4px; height: 4px; }
+.box.box-primary::after { background: linear-gradient(to right, #b3244f 0, #640c44 100%); }
+.box.box-info::after { background: linear-gradient(to right, #00c0ef 0, #640c44 100%); }
+.box.box-warning::after { background: linear-gradient(to right, #f39c12 0, #640c44 100%); }
+.box.box-success::after { background: linear-gradient(to right, #00a65a 0, #640c44 100%); }
+.box.box-danger::after { background: linear-gradient(to right, #dd4b39 0, #640c44 100%); }
+.box.box-default::after { background: linear-gradient(to right, #d2d6de 0, #640c44 100%); }
+.box-header.with-border { border-bottom: 1px solid #f4f4f4; }
+.box-header .box-title { font-size: 18px; font-weight: 500; color: #444; }
+.content-header > h1 { font-size: 24px; font-weight: 500; }
+.content-header > h1 > small, .content-header > h1 small a { color: #b3244f; font-size: 15px; }
+
+/* buttons */
+.btn-primary { background: #b3244f; border-color: #b3244f; color: #fff; }
+.btn-primary:hover, .btn-primary:focus, .btn-primary:active { background: #640c44; border-color: #640c44; }
+.btn-default { background: #f4f4f4; border-color: #ddd; color: #444; }
+
+/* forms: crimson labels, underline fields */
+.form-group > label, label.control-label { color: #b3244f; font-weight: 400; }
+.form-control { border: 0; border-bottom: 1px solid #999; box-shadow: none; padding: 10px; background: transparent; }
+.form-control:focus { border-bottom-color: #b3244f; box-shadow: none; }
+select.form-control { border: 1px solid #aaa; }
+
+/* issue status labels (styles/issue/issue-status.scss) */
+.label.new, .label.in_review { background: #80b5d3; }
+.label.in_progress { background: #b3244f; }
+.label.feedback, .label.pending, .label.deferred { background: #f7bf65; }
+.label.done { background: #5ac594; }
+.label.closed { background: #e98a7e; }
+
+/* app shell: white header, light sidebar with the crimson project selector and active bar */
+.skin-black-light .main-header .logo { background: #fff; color: #333; border-right: 1px solid #eee; font-size: 20px; }
+.skin-black-light .main-header .logo img { width: 30px; height: 30px; margin: -4px 6px 0 0; }
+.skin-black-light .main-header .navbar { background: #fff; }
+.skin-black-light .main-sidebar, .skin-black-light .left-side { background: #f9fafc; }
+.skin-black-light .sidebar-menu > li.active > a, .skin-black-light .sidebar-menu > li:hover > a {
+  border-left: 3px solid #b3244f; background: #f4f4f5;
+}
+.sidebar-form { border: 0 !important; margin: 0 10px 10px !important; }
+.sidebar-form .input-group { display: block; width: 100%; }
+.sidebar-form .ember-power-select-trigger { display: block; padding: 8px 10px; background: #b3244f; color: #fff;
+  font-size: 17px; border: 0; height: auto; }
+.sidebar-form .ember-power-select-status-icon::after { content: "\f0d7"; font-family: FontAwesome; float: right; }
+.global-search { display: inline-block; margin: 10px; width: 375px; }
+.global-search .ember-power-select-trigger { border: 1px solid #aaa; padding: 3px 8px; color: #999; background: #fff; }
+.create-module-btn { margin: 9px 12px; }
+.toggle-notifications-sidebar { background: none; border: 0; padding: 15px; color: #b3244f; }
+.user-panel .image .fa { color: #ccc; }
+.main-footer { font-size: 14px; }

@@ -26,6 +26,13 @@ class StubSim(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length") or 0)
         StubSim.seen.append((self.command, self.path, self.headers.get("X-Sim-Actor"),
                              self.rfile.read(length) if length else b""))
+        if self.path.startswith("/api/v1/ideascreen/"):
+            self.send_response(200)
+            self.send_header("Content-Type", "image/png")
+            self.send_header("Content-Length", "4")
+            self.end_headers()
+            self.wfile.write(b"\x89PNG")
+            return
         if self.path.startswith("/hermes/events"):
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
@@ -82,6 +89,11 @@ class NestorServerTest(unittest.TestCase):
         method, path, actor, sent = StubSim.seen[-1]
         self.assertEqual((method, path, actor), ("POST", "/api/v1/ideamessage", "1"))
         self.assertEqual(json.loads(sent)["body"], "hi")
+
+    def test_screen_images_are_forwarded(self):
+        status, body = self.call("GET", "/sim/api/v1/ideascreen/3")
+        self.assertEqual((status, body), (200, b"\x89PNG"))
+        self.assertEqual(StubSim.seen[-1][1:3], ("/api/v1/ideascreen/3", "1"))
 
     def test_refuses_what_it_should(self):
         self.assertEqual(self.call("PATCH", "/sim/api/v1/idea/1", {"title": "x"})[0], 403)        # no X-Nestor

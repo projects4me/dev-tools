@@ -124,7 +124,8 @@ def hermes(src):
 def devtools(src):
     lines, failures, code, ran_total = [], [], 0, 0
     for name, folder in (("talos", "talos/tests"), ("ai", "ai/tests"), ("installer", "installer/tests"),
-                         ("nestor", "nestor/tests"), ("sim", "sim/tests")):
+                         ("nestor", "nestor/tests"), ("sim", "sim/tests"),
+                         ("gaia-mcp", "gaia-mcp/tests")):
         if not (Path(src) / folder).exists():
             continue
         c, out, log = _run_logged(f"dev-tools-{name}", [sys.executable, "-m", "unittest", "discover", "-s", folder,

@@ -178,6 +178,11 @@ a:hover { text-decoration: underline; }
 .live-steps { padding: 0 10px 8px; font-size: 12px; color: var(--muted); }
 .live-steps div { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .plan-ref { display: inline-block; margin: 0 10px 10px; font-size: 13px; }
+.screens { display: flex; flex-wrap: wrap; gap: 10px; padding: 0 10px 10px; }
+.screen { display: block; width: calc(50% - 5px); min-width: 220px; border: 1px solid var(--border); background: #fff; }
+.screen:hover { border-color: var(--primary); text-decoration: none; }
+.screen img { display: block; width: 100%; height: auto; border-bottom: 1px solid var(--border); }
+.screen-title { display: block; padding: 6px 8px; font-size: 12px; color: var(--text); }
 .working::after { content: " …"; animation: blink 1.2s infinite; }
 @keyframes blink { 50% { opacity: .2; } }
 .composer { display: flex; gap: 10px; align-items: flex-start; }

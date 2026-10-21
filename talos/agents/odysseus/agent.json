@@ -8,9 +8,7 @@
     "A Gaia": "gaia",
     "A Prometheus": "prometheus"
   },
-  "milestones": [
-    "Claude-v1"
-  ],
+  "milestones": [],
   "acceptAssignmentsFrom": [],
   "handoffTo": "",
   "pickupStatus": "in_progress",

@@ -1,5 +1,6 @@
 """Sim Gaia (idea resources) and sim Hermes (envelopes, intents, SSE). Run: python -m unittest discover -s tests"""
 
+import base64
 import json
 import sys
 import tempfile
@@ -107,6 +108,26 @@ class IdeasTest(unittest.TestCase):
         self.assertEqual([e["changes"]["status"] for e in approved], ["approved", "creating", "created"])
         self.assertEqual(self.ideas.get(self.idea["id"], OWNER)["plans"][1]["issues"][0]["number"], 5001)
 
+    def test_screens_versions_access_and_messages(self):
+        png = b"\x89PNG\r\n\x1a\n" + b"data"
+        s1, v1 = self.ideas.add_screen(AGENT, self.idea["id"], "list", "List", 1440, 900, png)
+        s2, v2 = self.ideas.add_screen(AGENT, self.idea["id"], "list", "List", 1440, 900, png + b"2")
+        self.assertEqual((v1, v2), (1, 2))
+        with self.assertRaises(Forbidden):
+            self.ideas.add_screen(OWNER, self.idea["id"], "x", "X", 1, 1, png)          # the agent's move
+        with self.assertRaises(ValueError):
+            self.ideas.add_screen(AGENT, self.idea["id"], "x", "X", 1, 1, b"GIF89a")    # PNG only
+        self.assertEqual(self.ideas.screen_png(s2, OWNER), png + b"2")
+        with self.assertRaises(NotFound):
+            self.ideas.screen_png(s2, "stranger")
+        self.ideas.add_message(AGENT, self.idea["id"], "agent", "Here", screens=[s1, s2])
+        with self.assertRaises(ValueError):
+            self.ideas.add_message(AGENT, self.idea["id"], "agent", "Bad", screens=[12345])
+        data = self.ideas.get(self.idea["id"], OWNER)
+        self.assertEqual([(x["key"], x["version"]) for x in data["screens"]], [("list", 1), ("list", 2)])
+        self.assertNotIn("png", data["screens"][0])
+        self.assertEqual(data["messages"][-1]["screens"], [s1, s2])
+
     def test_idea_fields_by_role(self):
         self.ideas.update(self.idea["id"], OWNER, {"agent_state": "stopping"})
         self.ideas.update(self.idea["id"], AGENT, {"agent_state": "working", "status": "created"})
@@ -162,6 +183,17 @@ class ServerTest(unittest.TestCase):
         stream.close()
         self.assertTrue(self.call("GET", f"/api/v1/idea/{idea['data']['id']}")[1]["data"]["messages"])
         self.assertEqual(self.call("GET", "/api/v1/idea", actor="")[0], 403)
+        png = b"\x89PNG\r\n\x1a\nxyz"
+        status, made = self.call("POST", "/api/v1/ideascreen", {"idea_id": idea["data"]["id"], "key": "k", "title": "K",
+                                                                "width": 1440, "height": 900,
+                                                                "png_base64": base64.b64encode(png).decode()}, actor=AGENT)
+        self.assertEqual(status, 201)
+        self.assertEqual(self.call("POST", "/api/v1/ideascreen", {"idea_id": idea["data"]["id"], "key": "k",
+                                                                  "png_base64": "not base64!"}, actor=AGENT)[0], 400)
+        req = urllib.request.Request(f"http://127.0.0.1:{self.port}/api/v1/ideascreen/{made['data']['id']}",
+                                     headers={"X-Sim-Actor": OWNER})
+        with urllib.request.urlopen(req, timeout=5) as r:
+            self.assertEqual((r.headers["Content-Type"], r.read()), ("image/png", png))
         env = envelope("idea.agent.progress", f"user:{OWNER}", "idea", 1, AGENT, {"phase": "started"})
         self.assertEqual(self.call("POST", "/publish", env, headers={"X-Hermes-Secret": "wrong"})[0], 401)
         self.assertEqual(self.call("POST", "/publish", env, headers={"X-Hermes-Secret": "secret"})[1]["ok"], True)

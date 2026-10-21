@@ -7,5 +7,7 @@
     "url": "http://127.0.0.1:4791",
     "secretFile": "dev-tools/sim/state/hermes-secret"
   },
-  "kbMaxAgeMinutes": 10
+  "kbMaxAgeMinutes": 10,
+  "browserBin": "",
+  "prometheusUrl": ""
 }

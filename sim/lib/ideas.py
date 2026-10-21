@@ -15,6 +15,8 @@ AGENT_STATES = ("idle", "queued", "working")
 OWNER_PLAN = {"approved": ("proposed", "failed")}
 AGENT_PLAN = {"creating": ("approved",), "failed": ("approved", "creating"), "created": ("creating",)}
 MAX_TEXT = 100_000
+MAX_PNG = 8 * 1024 * 1024
+PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 
 
 class Forbidden(Exception):
@@ -60,7 +62,7 @@ class Ideas:
         for p in plans:
             p["issues"] = [i for i in issues if i["plan_id"] == p["id"]]
         return {"idea": {**idea, "cost_usd": self.store.cost(idea_id), "agent_online": self.bus.online(idea["agent"])},
-                "messages": self.store.messages(idea_id), "plans": plans}
+                "messages": self.store.messages(idea_id), "plans": plans, "screens": self.store.screens(idea_id)}
 
     # -- idea ---------------------------------------------------------------------------------------------------
 
@@ -104,7 +106,7 @@ class Ideas:
 
     # -- ideamessage --------------------------------------------------------------------------------------------
 
-    def add_message(self, actor, idea_id, role, body, steps=None, plan_id=None, cost=None):
+    def add_message(self, actor, idea_id, role, body, steps=None, plan_id=None, cost=None, screens=None):
         idea = self._idea(idea_id, actor)
         allowed = USER_ROLES if self._role(idea, actor) == "owner" else AGENT_ROLES
         if role not in allowed:
@@ -114,7 +116,11 @@ class Ideas:
             raise ValueError(f"a message needs 1 to {MAX_TEXT} characters")
         if plan_id is not None and not (self.store.plan(plan_id) or {}).get("idea_id") == idea_id:
             raise ValueError("plan_id is not a plan of this idea")
-        mid = self.store.insert_message(idea_id, role, actor, body, steps=steps, plan_id=plan_id, cost=cost)
+        screens = [int(s) for s in (screens or [])]
+        if screens and (role != "agent" or not {s["id"] for s in self.store.screens(idea_id)} >= set(screens)):
+            raise ValueError("screens must be this idea's screens, on an agent message")
+        mid = self.store.insert_message(idea_id, role, actor, body, steps=steps, plan_id=plan_id, cost=cost,
+                                        screens=screens)
         self._publish(idea, "idea.message.created", "ideamessage", mid, actor, {"role": role}, {"messageId": mid})
         return mid
 
@@ -147,6 +153,31 @@ class Ideas:
         self._publish(idea, "idea.plan.status.changed", "ideaplan", plan_id, actor, {"status": status},
                       {"version": plan["version"]})
         return self.store.plan(plan_id)
+
+    # -- ideascreen ---------------------------------------------------------------------------------------------
+
+    def add_screen(self, actor, idea_id, key, title, width, height, png):
+        """A rendered UI screen (PNG) the agent designed; the same key again is its next version."""
+        idea = self._idea(idea_id, actor)
+        if self._role(idea, actor) != "agent":
+            raise Forbidden("only the agent adds screens")
+        if not isinstance(png, bytes) or not png.startswith(PNG_MAGIC) or len(png) > MAX_PNG:
+            raise ValueError(f"a screen is a PNG image of at most {MAX_PNG // 1024 // 1024} MB")
+        key = str(key or "").strip()
+        if not key or len(key) > 40:
+            raise ValueError("a screen needs a key of at most 40 characters")
+        sid, version = self.store.insert_screen(idea_id, key, str(title or key)[:120], int(width or 0),
+                                                int(height or 0), png)
+        self._publish(idea, "idea.screen.created", "ideascreen", sid, actor, {"key": key, "version": version},
+                      {"key": key, "version": version})
+        return sid, version
+
+    def screen_png(self, screen_id, actor):
+        screen = self.store.screen(screen_id)
+        if not screen:
+            raise NotFound(f"no screen {screen_id}")
+        self._idea(screen["idea_id"], actor)          # only the idea's owner and agent may see it
+        return screen["png"]
 
     # -- ideaissue ----------------------------------------------------------------------------------------------
 

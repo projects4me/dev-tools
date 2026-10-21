@@ -21,6 +21,9 @@ CREATE INDEX IF NOT EXISTS ideamessage_by_idea ON ideamessage(idea_id, id);
 CREATE TABLE IF NOT EXISTS ideaplan (
     id INTEGER PRIMARY KEY AUTOINCREMENT, idea_id INTEGER NOT NULL, version INTEGER NOT NULL, body TEXT NOT NULL,
     status TEXT NOT NULL, error TEXT, created TEXT, updated TEXT, UNIQUE (idea_id, version));
+CREATE TABLE IF NOT EXISTS ideascreen (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, idea_id INTEGER NOT NULL, key TEXT NOT NULL, version INTEGER NOT NULL,
+    title TEXT, width INTEGER, height INTEGER, png BLOB NOT NULL, created TEXT, UNIQUE (idea_id, key, version));
 CREATE TABLE IF NOT EXISTS ideaissue (
     id INTEGER PRIMARY KEY AUTOINCREMENT, idea_id INTEGER NOT NULL, plan_id INTEGER NOT NULL, key TEXT NOT NULL,
     number INTEGER NOT NULL, project_code TEXT, subject TEXT, url TEXT, created TEXT, UNIQUE (plan_id, key));
@@ -39,6 +42,10 @@ class Store:
         self.lock = threading.RLock()
         with self.lock:
             self.db.executescript(SCHEMA)
+            columns = {r["name"] for r in self.db.execute("PRAGMA table_info(ideamessage)")}
+            if "screens" not in columns:          # added with UI screens
+                self.db.execute("ALTER TABLE ideamessage ADD COLUMN screens TEXT")
+                self.db.commit()
 
     def close(self):
         self.db.close()
@@ -96,10 +103,11 @@ class Store:
 
     # -- ideamessage --------------------------------------------------------------------------------------------
 
-    def insert_message(self, idea_id, role, author, body, steps=None, plan_id=None, cost=None):
-        mid = self.write("INSERT INTO ideamessage (idea_id, role, author, body, steps, plan_id, cost_usd, created) "
-                         "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                         (idea_id, role, author, body, json.dumps(steps) if steps else None, plan_id, cost, now()))
+    def insert_message(self, idea_id, role, author, body, steps=None, plan_id=None, cost=None, screens=None):
+        mid = self.write("INSERT INTO ideamessage (idea_id, role, author, body, steps, plan_id, cost_usd, screens, "
+                         "created) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                         (idea_id, role, author, body, json.dumps(steps) if steps else None, plan_id, cost,
+                          json.dumps(screens) if screens else None, now()))
         self.touch(idea_id)
         return mid
 
@@ -107,6 +115,7 @@ class Store:
         rows = self.rows("SELECT * FROM ideamessage WHERE idea_id = ? ORDER BY id", (idea_id,))
         for r in rows:
             r["steps"] = json.loads(r["steps"]) if r["steps"] else []
+            r["screens"] = json.loads(r["screens"]) if r.get("screens") else []
         return rows
 
     def cost(self, idea_id):
@@ -148,6 +157,28 @@ class Store:
             params += list(only_from)
         with self.lock, self.db:
             return self.db.execute(sql, params).rowcount == 1
+
+    # -- ideascreen ---------------------------------------------------------------------------------------------
+
+    def insert_screen(self, idea_id, key, title, width, height, png):
+        """A new version of the idea's screen `key`; returns (id, version)."""
+        with self.transaction() as db:
+            row = db.execute("SELECT max(version) AS v FROM ideascreen WHERE idea_id = ? AND key = ?",
+                             (idea_id, key)).fetchone()
+            version = (row["v"] or 0) + 1
+            sid = db.execute("INSERT INTO ideascreen (idea_id, key, version, title, width, height, png, created) "
+                             "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                             (idea_id, key, version, title, width, height, png, now())).lastrowid
+        self.touch(idea_id)
+        return sid, version
+
+    def screens(self, idea_id):
+        """Every version of the idea's screens, without the images."""
+        return self.rows("SELECT id, idea_id, key, version, title, width, height, created FROM ideascreen "
+                         "WHERE idea_id = ? ORDER BY key, version", (idea_id,))
+
+    def screen(self, screen_id):
+        return self.one("SELECT * FROM ideascreen WHERE id = ?", (screen_id,))
 
     # -- ideaissue ----------------------------------------------------------------------------------------------
 

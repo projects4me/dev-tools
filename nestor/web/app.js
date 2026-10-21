@@ -7,7 +7,7 @@
 const $ = (id) => document.getElementById(id);
 const state = { ideas: [], current: null, view: null, info: null, planTab: null, live: null, online: null };
 const EVENTS = ["idea.created", "idea.updated", "idea.message.created", "idea.plan.created",
-                "idea.plan.status.changed", "idea.issue.created", "idea.agent.progress"];
+                "idea.plan.status.changed", "idea.issue.created", "idea.screen.created", "idea.agent.progress"];
 
 // -- API --------------------------------------------------------------------------------------------------
 
@@ -196,8 +196,9 @@ function renderIdea() {
   $("idea-title").textContent = `Idea - #${idea.id} | ${idea.title}`;
   label($("idea-status"), idea.status);
   const plansById = Object.fromEntries(plans.map((p) => [p.id, p]));
+  const screensById = Object.fromEntries((state.view.screens || []).map((s) => [s.id, s]));
   const log = $("log");
-  log.replaceChildren(...messages.map((m) => renderMessage(m, plansById)));
+  log.replaceChildren(...messages.map((m) => renderMessage(m, plansById, screensById)));
   if (!messages.length) log.append(el("p", { class: "no-entry" }, icon("info-circle"), " Describe the idea below to start."));
   if (state.live && state.live.ideaId === idea.id) log.append(state.live.node);
   else if (idea.agent_state === "queued") log.append(el("p", { class: "note working" }, `${agentName()} will answer next`));
@@ -211,7 +212,20 @@ function agentAvatar() {
   return el("span", { class: "avatar avatar-sm" }, el("img", { src: "img/logo.png", alt: "" }));
 }
 
-function renderMessage(m, plansById) {
+function screenUrl(id) {
+  return `/sim/api/v1/ideascreen/${id}`;
+}
+
+function renderScreens(ids, screensById) {
+  const shots = ids.map((id) => screensById[id]).filter(Boolean);
+  if (!shots.length) return null;
+  return el("div", { class: "screens" }, shots.map((s) => el("a", {
+    class: "screen", href: screenUrl(s.id), target: "_blank", rel: "noopener", title: `Open ${s.title} (v${s.version})`,
+  }, el("img", { src: screenUrl(s.id), alt: s.title, loading: "lazy" }),
+     el("span", { class: "screen-title" }, icon("picture-o"), ` ${s.title}`, el("span", { class: "muted" }, ` · ${s.key} v${s.version}`)))));
+}
+
+function renderMessage(m, plansById, screensById = {}) {
   if (m.role === "system") return el("p", { class: "note" }, icon("info-circle"), " ", m.body);
   if (m.role === "error") return el("p", { class: "note error" }, icon("exclamation-triangle"), " ", m.body);
   const mine = m.role === "user";
@@ -221,6 +235,7 @@ function renderMessage(m, plansById) {
       !mine && m.cost_usd ? el("span", { class: "muted" }, money(m.cost_usd)) : null,
       el("span", { class: "when", title: m.created }, icon("clock-o"), " ", ago(m.created))),
     mine ? el("div", { class: "item-body plain" }, m.body) : el("div", { class: "item-body" }, markdown(m.body)));
+  if (m.screens && m.screens.length) main.append(renderScreens(m.screens, screensById) || "");
   const plan = m.plan_id && plansById[m.plan_id];
   if (plan) {
     main.append(el("a", { href: "#", class: "plan-ref", onclick: (e) => { e.preventDefault(); selectPlan(plan.id); } },
@@ -310,7 +325,10 @@ function renderPlan(plans) {
           el("span", {}, issue.type),
           el("span", { class: `prio-${issue.priority}` }, icon(PRIO_ICON[issue.priority] || "circle-o"), ` ${issue.priority}`),
           el("span", {}, icon(issue.complexity === "complex" ? "cogs" : "cog"), ` ${issue.complexity}`),
+          el("span", { title: issue.newMilestone ? "Created in the project on approval" : "" }, icon("flag-o"),
+            ` ${issue.milestone || "Claude-v1"}${issue.newMilestone ? " (new)" : ""}`),
           issue.dependsOn.length ? el("span", {}, icon("level-up"), ` after ${issue.dependsOn.join(", ")}`) : null,
+          (issue.screens || []).length ? el("span", {}, icon("picture-o"), ` ${issue.screens.join(", ")}`) : null,
           c ? el("a", { href: c.url, target: "_blank", rel: "noopener" }, icon("external-link"), ` ${c.project_code}-${c.number}`)
             : el("span", { class: "muted" }, issue.key))),
       el("div", { class: "desc md" }, ...safeHtml(issue.description).childNodes)));
