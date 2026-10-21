@@ -13,10 +13,13 @@ from pathlib import Path
 AI_DIR = Path(__file__).resolve().parent.parent
 DEV_TOOLS = AI_DIR.parent
 WORKSPACE = DEV_TOOLS.parent
+# This machine's settings and state live in the dev-tools checkout, also when the code runs from the runtime copy
+# (<workspace>/.dev-tools-runtime, see `p4m runtime`), so their paths don't depend on which copy is running.
+LOCAL_DIR = WORKSPACE / "dev-tools"
 ODYSSEUS = DEV_TOOLS / "odysseus" / "odysseus"
 P4M = DEV_TOOLS / "installer" / "p4m.py"
 GAIA_MCP = DEV_TOOLS / "gaia-mcp"
-STATE_DIR = AI_DIR / "state"
+STATE_DIR = LOCAL_DIR / "ai" / "state"
 CONFIG_FILE = AI_DIR / "config.json"
 
 REPOS = {"gaia": "Projects4Me/gaia", "prometheus": "Projects4Me/prometheus",
@@ -37,7 +40,7 @@ def config():
     """config.json, overlaid by the engineer's config.local.json (git-ignored, written by `p4m configure`)."""
     with open(CONFIG_FILE, encoding="utf-8") as f:
         cfg = json.load(f)
-    local = CONFIG_FILE.with_name("config.local.json")
+    local = LOCAL_DIR / "ai" / "config.local.json"
     if local.exists():
         with open(local, encoding="utf-8") as f:
             cfg.update(json.load(f))
@@ -134,7 +137,7 @@ def tracker():
     if _tools is None:
         sys.path.insert(0, str(GAIA_MCP))
         import server  # noqa: E402  (dev-tools/gaia-mcp/server.py)
-        server.load_env_file(os.environ.get("GAIA_MCP_ENV", str(GAIA_MCP / "gaia-mcp.env")))
+        server.load_env_file(os.environ.get("GAIA_MCP_ENV", str(LOCAL_DIR / "gaia-mcp" / "gaia-mcp.env")))
         _tools = server.Tools(server.Gaia())
     return _tools
 

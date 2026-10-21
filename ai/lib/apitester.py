@@ -8,7 +8,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-from .common import AiError, GAIA_MCP, WORKSPACE, say
+from .common import AiError, LOCAL_DIR, WORKSPACE, say
 
 CATALOGS = WORKSPACE / "gaia" / "tools" / "api-tester" / "apis"
 FIXTURES = WORKSPACE / "gaia" / "tools" / "api-tester" / "fixtures" / "default.json"
@@ -81,7 +81,7 @@ def _request(method, url, data=None, headers=None):
 def _credentials(target, profile):
     if target == "dev":
         env = {}
-        for line in (GAIA_MCP / "gaia-mcp.env").read_text(encoding="utf-8").splitlines():
+        for line in (LOCAL_DIR / "gaia-mcp" / "gaia-mcp.env").read_text(encoding="utf-8").splitlines():
             if "=" in line and not line.lstrip().startswith("#"):
                 k, _, v = line.partition("=")
                 env[k.strip()] = v.strip().strip('"').strip("'")

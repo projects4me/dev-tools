@@ -22,11 +22,12 @@ def _iso(moment):
 class Dispatcher:
     """Serial worker for one agent (its runs share working trees and the local stack)."""
 
-    def __init__(self, agent, tracker, claude, dry_run=False):
+    def __init__(self, agent, tracker, claude, dry_run=False, mcp=None):
         self.agent = agent
         self.tracker = tracker
         self.claude = claude
         self.dry_run = dry_run
+        self.mcp = mcp          # the agent's MCP config file (mcp.mcp_config)
         self.user_id = tracker.user_id()
         self._queue = queue.Queue()
         self._pending = set()
@@ -85,7 +86,7 @@ class Dispatcher:
         live_id = session_id or str(uuid.uuid4())
         limits = policy.run_limits(self.agent, model)
         cmd = runner.build_command(self.claude, self.agent, prompt, model, session_id,
-                                   new_session_id=None if session_id else live_id, limits=limits)
+                                   new_session_id=None if session_id else live_id, limits=limits, mcp=self.mcp)
         mode = why or (f"resume {session_id[:8]}" if session_id else "new session")
         if not session_id:
             mode += f", session {live_id[:8]}"

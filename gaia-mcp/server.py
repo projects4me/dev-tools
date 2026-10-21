@@ -22,6 +22,9 @@ import urllib.request
 from datetime import date, timedelta
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+# This machine's settings and state live in the dev-tools checkout, also when the code runs from the runtime copy
+# (<workspace>/.dev-tools-runtime, see `p4m runtime`), so their paths don't depend on which copy is running.
+LOCAL_DIR = os.path.join(os.path.dirname(os.path.dirname(HERE)), "dev-tools", "gaia-mcp")
 SERVER_NAME = "gaia"
 SERVER_VERSION = "0.1.0"
 SUPPORTED_PROTOCOLS = ("2025-06-18", "2025-03-26", "2024-11-05")
@@ -735,7 +738,7 @@ class Server:
 
 
 if __name__ == "__main__":
-    load_env_file(os.environ.get("GAIA_MCP_ENV", os.path.join(HERE, "gaia-mcp.env")))
+    load_env_file(os.environ.get("GAIA_MCP_ENV", os.path.join(LOCAL_DIR, "gaia-mcp.env")))
     sys.stdout.reconfigure(encoding="utf-8")
     sys.stdin.reconfigure(encoding="utf-8")
     Server().run()

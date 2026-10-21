@@ -17,5 +17,8 @@ if not defined PY (
   echo [p4m] Python installed. Open a NEW terminal and run the command again.
   exit /b 0
 )
+rem The runtime copy of dev-tools (p4m runtime) runs main's tooling while this checkout is worked;
+rem P4M_RUNTIME=off runs this copy.
+if /i not "%P4M_RUNTIME%"=="off" if exist "%~dp0..\..\.dev-tools-runtime\installer\p4m.py" set "P4M_DIR=%~dp0..\..\.dev-tools-runtime\installer\"
 %PY% "%P4M_DIR%p4m.py" %*
 exit /b %ERRORLEVEL%

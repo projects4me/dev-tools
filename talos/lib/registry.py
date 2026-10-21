@@ -3,7 +3,7 @@
 import json
 from dataclasses import dataclass, field
 
-from .config import AGENTS_DIR, DEV_TOOLS, TalosError, log
+from .config import AGENTS_DIR, LOCAL_DIR, TalosError, log
 
 
 @dataclass
@@ -63,7 +63,7 @@ def load_agent(folder):
     path = folder / "agent.json"
     with open(path, encoding="utf-8") as f:
         raw = json.load(f)
-    local = folder / "agent.local.json"
+    local = LOCAL_DIR / "talos" / "agents" / folder.name / "agent.local.json"
     if local.exists():
         with open(local, encoding="utf-8") as f:
             raw.update(json.load(f))
@@ -76,7 +76,7 @@ def load_agent(folder):
     role_file = folder / raw["rolePrompt"]
     if not role_file.exists():
         raise TalosError(f"{path}: rolePrompt {role_file.name} not found")
-    env_file = DEV_TOOLS / raw["gaiaEnv"]
+    env_file = LOCAL_DIR / raw["gaiaEnv"]
     if not env_file.exists():
         raise TalosError(f"{path}: gaiaEnv {env_file} not found")
     reserved = [k for k in raw.get("env", {}) if str(k).upper().startswith("GAIA_")]

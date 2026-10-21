@@ -12,8 +12,11 @@ from pathlib import Path
 TALOS_DIR = Path(__file__).resolve().parent.parent
 DEV_TOOLS = TALOS_DIR.parent
 WORKSPACE = DEV_TOOLS.parent
+# This machine's settings and state live in the dev-tools checkout, also when the code runs from the runtime copy
+# (<workspace>/.dev-tools-runtime, see `p4m runtime`), so their paths don't depend on which copy is running.
+LOCAL_DIR = WORKSPACE / "dev-tools"
 AGENTS_DIR = TALOS_DIR / "agents"
-STATE_DIR = TALOS_DIR / "state"
+STATE_DIR = LOCAL_DIR / "talos" / "state"
 LOG_DIR = STATE_DIR / "logs"
 CONFIG_FILE = TALOS_DIR / "config.json"
 OUTCOME_SCHEMA = TALOS_DIR / "schema" / "outcome.json"
@@ -29,7 +32,7 @@ def settings():
     """config.json, overlaid by the engineer's config.local.json (git-ignored, written by `p4m configure`)."""
     with open(CONFIG_FILE, encoding="utf-8") as f:
         cfg = json.load(f)
-    local = CONFIG_FILE.with_name("config.local.json")
+    local = LOCAL_DIR / "talos" / "config.local.json"
     if local.exists():
         with open(local, encoding="utf-8") as f:
             cfg.update(json.load(f))

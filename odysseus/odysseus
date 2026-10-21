@@ -7,7 +7,15 @@
 # Settings come from odysseus.env (git-ignored; `dev-tools/installer/p4m configure` writes it).
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-if [ -f "$HERE/odysseus.env" ]; then set -a; source "$HERE/odysseus.env"; set +a; fi
+# The runtime copy of dev-tools (`p4m runtime`) runs main's tooling while this checkout is worked;
+# P4M_RUNTIME=off runs this copy.
+RT="$HERE/../../.dev-tools-runtime/odysseus/odysseus"
+if [ "${P4M_RUNTIME:-}" != off ] && [ -f "$RT" ] && [ "$(cd "$(dirname "$RT")" && pwd)" != "$HERE" ]; then
+  exec bash "$RT" "$@"
+fi
+# odysseus.env stays in <workspace>/dev-tools, also when this runs from the runtime copy (see `p4m runtime`).
+ENV_FILE="$(cd "$HERE/../.." && pwd)/dev-tools/odysseus/odysseus.env"
+if [ -f "$ENV_FILE" ]; then set -a; source "$ENV_FILE"; set +a; fi
 NAME="${ODYSSEUS_NAME:-Agent Odysseus}"
 EMAIL="${ODYSSEUS_EMAIL:-agent.odysseus@projects4.me}"
 KEY="${ODYSSEUS_SSH_KEY:-$HOME/.ssh/agent_odysseus}"
@@ -21,7 +29,7 @@ case "$cmd" in
              -c core.sshCommand="ssh -i $KEY -o IdentitiesOnly=yes" "$@"
     ;;
   gh)
-    [ -n "${GH_TOKEN:-}" ] || { echo "GH_TOKEN is empty in $HERE/odysseus.env (run dev-tools/installer/p4m configure)" >&2; exit 1; }
+    [ -n "${GH_TOKEN:-}" ] || { echo "GH_TOKEN is empty in $ENV_FILE (run dev-tools/installer/p4m configure)" >&2; exit 1; }
     export GH_TOKEN
     GH="$(command -v gh || true)"
     [ -n "$GH" ] || [ ! -x "/c/Program Files/GitHub CLI/gh.exe" ] || GH="/c/Program Files/GitHub CLI/gh.exe"

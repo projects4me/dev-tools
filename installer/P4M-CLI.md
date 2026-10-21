@@ -24,10 +24,12 @@ The domain is the `P4M_DOMAIN` setting in `p4m.env`. Change it and every URL fol
 ```
 Projects4Me\
 ├─ ares\  docker-images\  gaia\  hermes\  prometheus\   ← the repos (untouched)
+├─ .dev-tools-runtime\         ← worktree of dev-tools' origin/main the tools run from (`p4m runtime`)
 └─ dev-tools\
    ├─ installer\                ← p4m itself
    │  ├─ p4m.cmd / p4m / p4m.py    the CLI (Windows / bash launchers + code)
    │  ├─ configure.py              `p4m configure`: per-engineer settings and credentials
+   │  ├─ runtime.py                `p4m runtime`: the runtime copy of dev-tools
    │  └─ P4M-CLI.md                this doc
    ├─ p4m.env                   your settings (created on first run)
    ├─ .p4m\                     generated proxy config, compose overrides, certs
@@ -92,6 +94,7 @@ started from the same image, env, network and mounts with the source pointed her
 | `p4m doctor` | Check tools, WSL, Docker, ports 80/443/5432, hosts file, CA trust, repos |
 | `p4m watch start\|stop\|status` | File sync of the prometheus source into its container (started by `p4m up`) |
 | `p4m diag [svc…]` | Write a full diagnostics report (status, probes, logs) to `dev-tools/logs/` |
+| `p4m runtime setup\|update\|status` | The runtime copy of dev-tools (`.dev-tools-runtime`, a worktree of `origin/main`) that Talos and the agents' tooling run from; `update` fast-forwards it, refusing while a Talos run is active (`--force` for a stale one). See the Talos README |
 
 Service names: `proxy postgres gaia hermes ares prometheus gaia-test gaia-test-hermes-down hermes-test xhgui`.
 Groups: `all`, `core`, `test`, `tools`, or a repo name (`gaia` = all gaia services).

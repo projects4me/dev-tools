@@ -27,7 +27,26 @@ python -m unittest discover -s dev-tools/talos/tests       # unit tests (from de
 ```
 
 `--dry-run` decides and logs everything but never starts Claude or writes to the tracker. First-time setup:
-`npm install` in this folder (the listener needs `socket.io-client`).
+`npm install` in this folder (the listener needs `socket.io-client`); `p4m runtime setup` does it for the runtime copy.
+
+### The runtime copy: Talos runs `main`, not the checkout being worked
+
+Odysseus works A Dev Tool issues in `dev-tools/`, so that checkout gets edited and switches branches. Talos and
+the tooling its agents call therefore run from a separate copy: `<workspace>/.dev-tools-runtime`, a detached
+`git worktree` of `origin/main` that `p4m setup` / `p4m configure` create (`p4m runtime setup`).
+
+- The launchers (`dev-tools/talos/talos`, `dev-tools/ai/ai`, `dev-tools/installer/p4m`, `nestor`, `sim`, `odysseus`, and their
+  `.cmd` twins) hand over to the runtime copy when it exists, so the commands, the prompts, the skills and the
+  `allowedTools` rules keep saying `dev-tools/ai/ai`. `P4M_RUNTIME=off` runs the copy you called instead (to try
+  a tooling branch by hand).
+- Talos gives its agents the gaia MCP server from the runtime copy (`--strict-mcp-config`,
+  `state/<agent>/mcp.json`), and reads `agent.json` and the role prompts from it.
+- This machine's files stay in `dev-tools/` whichever copy runs: `*/state/` (talos.db, logs, kb.db, timers, sim),
+  `*.local.json` (including `talos/agents/<agent>/agent.local.json`), `gaia-mcp/*.env`, `odysseus/odysseus.env`,
+  `p4m.env` and `.p4m/`.
+- A merged dev-tools PR takes effect only after `p4m runtime update`: it fast-forwards the copy to `origin/main`
+  (and runs `npm ci` when the lock file changed), refusing while `talos.db` lists an active run (`--force` for a
+  stale one) or the copy has local changes. Then restart `talos run`. `p4m runtime status` shows where it is.
 
 ## How an assignment is handled
 
@@ -80,7 +99,7 @@ their events), and an env file with its `GAIA_*` credentials.
 |---|---|
 | `name`, `displayName`, `role`, `enabled` | identity; disabled agents are skipped by `run` |
 | `gaiaEnv` | env file with the agent's `GAIA_*` credentials, relative to `dev-tools/` |
-| `projects` | project name → repo folder (the `{repo}` placeholder). Odysseus: A Gaia, A Prometheus, A Hermes, A Ares and A Dev Tool. A dev-tools issue changes the checkout Talos itself runs from, so restart `talos run` after merging one |
+| `projects` | project name → repo folder (the `{repo}` placeholder). Odysseus: A Gaia, A Prometheus, A Hermes, A Ares and A Dev Tool. Talos runs from the runtime copy, so a merged dev-tools PR takes effect after `p4m runtime update` and a restart of `talos run` |
 | `milestones` | only work issues in these (empty = any; Odysseus: any, so an issue from any milestone assigned to it is worked. Issues the agents *create* still go in Claude-v1 by default) |
 | `acceptAssignmentsFrom`, `handoffTo` | Gaia user ids that may hand it work / that get questions and failures |
 | `pickupStatus` | status set when Talos starts a run (e.g. `in_progress`); empty leaves it alone |
@@ -178,6 +197,7 @@ The pre-SQLite `state/sessions.json` is imported when `talos run`/`dispatch` sta
 | `lib/policy.py` | pure decisions: which events count, whether to run, prompt filling, outcome parsing |
 | `lib/dispatcher.py` | per-agent queue; runs a job and applies the outcome to the tracker |
 | `lib/runner.py` | builds and runs the `claude -p` command, keeps its output |
+| `lib/mcp.py` | the agent's MCP config: only the gaia server from the copy Talos runs from |
 | `lib/tracker.py` | Gaia as one agent, through the `gaia-mcp` client |
 | `lib/db.py` | SQLite connection, schema, one-time import of `sessions.json` |
 | `lib/sessions.py` | issue state (`issues` table): session, run count, escalation, in-flight flag |

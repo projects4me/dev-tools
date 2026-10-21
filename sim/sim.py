@@ -21,15 +21,18 @@ from lib.server import serve  # noqa: E402
 from lib.store import Store  # noqa: E402
 
 SIM_DIR = Path(__file__).resolve().parent
-DB_FILE = SIM_DIR / "state" / "sim.db"
-SECRET_FILE = SIM_DIR / "state" / "hermes-secret"   # the /publish secret; Talos reads it from here
-OLD_NESTOR_DB = SIM_DIR.parent / "nestor" / "state" / "nestor.db"
+# This machine's settings and state live in the dev-tools checkout, also when the code runs from the runtime copy
+# (<workspace>/.dev-tools-runtime, see `p4m runtime`), so their paths don't depend on which copy is running.
+LOCAL_DIR = SIM_DIR.parent.parent / "dev-tools"
+DB_FILE = LOCAL_DIR / "sim" / "state" / "sim.db"
+SECRET_FILE = LOCAL_DIR / "sim" / "state" / "hermes-secret"   # the /publish secret; Talos reads it from here
+OLD_NESTOR_DB = LOCAL_DIR / "nestor" / "state" / "nestor.db"
 
 
 def settings():
     with open(SIM_DIR / "config.json", encoding="utf-8") as f:
         cfg = json.load(f)
-    local = SIM_DIR / "config.local.json"
+    local = LOCAL_DIR / "sim" / "config.local.json"
     if local.exists():
         with open(local, encoding="utf-8") as f:
             cfg.update(json.load(f))

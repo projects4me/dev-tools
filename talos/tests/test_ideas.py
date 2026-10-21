@@ -137,14 +137,17 @@ class RegistryTest(unittest.TestCase):
     def test_an_agent_that_cant_load_doesnt_stop_the_others(self):
         from lib import registry
         tmp = Path(tempfile.mkdtemp())
+        local_dir = Path(tempfile.mkdtemp())      # the dev-tools checkout: agent.local.json and the gaia env file
+        (local_dir / "agent.env").write_text("GAIA_EMAIL=x\n")
         for name, local in (("aaa", None), ("odysseus", {"acceptAssignmentsFrom": ["1"], "handoffTo": "1"})):
             (tmp / name).mkdir()
             (tmp / name / "agent.json").write_text(json.dumps({
-                "name": name, "gaiaEnv": "README.md", "projects": {}, "acceptAssignmentsFrom": [], "handoffTo": "",
+                "name": name, "gaiaEnv": "agent.env", "projects": {}, "acceptAssignmentsFrom": [], "handoffTo": "",
                 "actions": {}, "model": {"default": "sonnet"}, "rolePrompt": "agent.json"}))
             if local:
-                (tmp / name / "agent.local.json").write_text(json.dumps(local))
-        with mock.patch.object(registry, "AGENTS_DIR", tmp):
+                (local_dir / "talos" / "agents" / name).mkdir(parents=True)
+                (local_dir / "talos" / "agents" / name / "agent.local.json").write_text(json.dumps(local))
+        with mock.patch.object(registry, "AGENTS_DIR", tmp), mock.patch.object(registry, "LOCAL_DIR", local_dir):
             self.assertEqual([a.name for a in registry.load_agents()], ["odysseus"])   # aaa isn't configured
             self.assertEqual([a.name for a in registry.load_agents("odysseus")], ["odysseus"])
             with self.assertRaises(Exception):

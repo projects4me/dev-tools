@@ -49,6 +49,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import dblock
+import runtime
 import testenv
 
 # --------------------------------------------------------------------------- #
@@ -56,11 +57,12 @@ import testenv
 # --------------------------------------------------------------------------- #
 
 INSTALLER_DIR = Path(__file__).resolve().parent    # <workspace>/dev-tools/installer
-TOOLS_DIR = INSTALLER_DIR.parent                   # <workspace>/dev-tools (local state lives here)
+TOOLS_DIR = INSTALLER_DIR.parent                   # the dev-tools copy this runs from (checkout or runtime copy)
 ROOT = TOOLS_DIR.parent                            # <workspace>: the repos live here
-STATE_DIR = TOOLS_DIR / ".p4m"
-ENV_FILE = TOOLS_DIR / "p4m.env"
-LOG_DIR = TOOLS_DIR / "logs"
+LOCAL_DIR = ROOT / "dev-tools"                     # local state lives here, whichever copy runs (`p4m runtime`)
+STATE_DIR = LOCAL_DIR / ".p4m"
+ENV_FILE = LOCAL_DIR / "p4m.env"
+LOG_DIR = LOCAL_DIR / "logs"
 CERT_DIR = STATE_DIR / "certs"
 PROXY_DIR = STATE_DIR / "proxy"
 GITHUB_ORG = "https://github.com/Projects4Me"
@@ -1537,9 +1539,10 @@ def cmd_setup(args) -> None:
 
     info("Step 8/8  start everything")
     cmd_up(argparse.Namespace(services=[], build=False, wait=90))
+    ensure_runtime()
     print()
     ok(f"Setup complete. Open https://app.{domain()}  (API: https://api.{domain()})")
-    if not (TOOLS_DIR / "workspace.local.json").exists():
+    if not (LOCAL_DIR / "workspace.local.json").exists():
         info("Next: `dev-tools/installer/p4m configure` for your settings and the Agent Odysseus credentials")
 
 
@@ -1557,7 +1560,33 @@ def cmd_configure(args) -> int:
     """Per-engineer settings and credentials (see configure.py)."""
     sys.path.insert(0, str(INSTALLER_DIR))
     import configure  # noqa: E402  (dev-tools/installer/configure.py)
-    return configure.main(args.rest)
+    rc = configure.main(args.rest)
+    if not rc and not {"-h", "--help"} & set(args.rest):
+        ensure_runtime()
+    return rc
+
+
+def ensure_runtime() -> None:
+    """Create the runtime copy of dev-tools if it is missing; a failure is a warning (the tools still run from the
+    checkout), with the command to retry."""
+    info("Runtime copy of dev-tools (Talos and the agents' tooling run from it)")
+    try:
+        runtime.setup(LOCAL_DIR, ROOT, say=ok)
+    except (runtime.RuntimeCopyError, OSError) as e:
+        warn(f"runtime copy not created: {e}  (retry: `p4m runtime setup`)")
+
+
+def cmd_runtime(args) -> None:
+    """The runtime copy of dev-tools: setup, update (fast-forward to origin/main), status. See runtime.py."""
+    try:
+        if args.action == "setup":
+            runtime.setup(LOCAL_DIR, ROOT, say=ok)
+        elif args.action == "update":
+            runtime.update(ROOT, LOCAL_DIR, force=args.force, say=ok)
+        else:
+            runtime.status(ROOT, LOCAL_DIR, say=print)
+    except runtime.RuntimeCopyError as e:
+        raise P4MError(str(e)) from e
 
 
 def cmd_trust(args) -> None:
@@ -1802,6 +1831,12 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("configure", help="your settings + the shared Agent Odysseus credentials (re-runnable)",
                        add_help=False)
     s.add_argument("rest", nargs=argparse.REMAINDER); s.set_defaults(fn=cmd_configure)
+
+    s = sub.add_parser("runtime", help="the runtime copy of dev-tools Talos and the agents run from: "
+                                       "setup|update|status")
+    s.add_argument("action", choices=["setup", "update", "status"])
+    s.add_argument("--force", action="store_true", help="update even if talos.db lists an active run (stale)")
+    s.set_defaults(fn=cmd_runtime)
 
     s = sub.add_parser("watch", help="file sync into containers (prometheus): start|stop|status")
     s.add_argument("action", choices=["start", "stop", "status"])

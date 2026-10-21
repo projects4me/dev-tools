@@ -28,6 +28,19 @@ possible). A change that works on only one is not done. In practice:
 - **Platform-specific code** goes behind `os.name == "nt"` with both branches written, next to each other.
 - **Tests** don't depend on the OS: temp dirs from `tempfile`, no shell commands, no fixed ports (bind port 0).
 
+## Runtime copy: the tools run `main`, the checkout is for issues
+
+Talos, `ai`, `p4m`, gaia-mcp, Nestor and sim run from `<workspace>/.dev-tools-runtime`, a detached worktree of
+`origin/main` (`p4m runtime setup|update|status`; see the Talos README). The launchers hand over to it, so a branch
+checked out in `dev-tools/` doesn't change the tooling under running agents; `P4M_RUNTIME=off` runs the checkout's
+code instead. When writing code:
+
+- **Per-machine files** (state, `*.local.json`, `*.env`) live in `<workspace>/dev-tools` for both copies: build
+  their paths from `LOCAL_DIR` (`WORKSPACE / "dev-tools"`), never from the module's own folder. Code, configs
+  and prompts that ship with the repo come from the running copy.
+- A merged change takes effect after `p4m runtime update` (and a restart of `talos run`). Test a branch with its
+  unit tests (`ai test dev-tools`), not by running its launchers.
+
 ## Shared test containers
 - The local `gaia-dev`/`gaia-test` containers can mount another checkout (e.g. `Projects4Me/gaia`, not `Pr4M/gaia`),
   so `p4m test` / `ai test` may not test the branch. Check the mount (`docker inspect`) before trusting a result;
