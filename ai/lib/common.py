@@ -23,7 +23,7 @@ REPOS = {"gaia": "Projects4Me/gaia", "prometheus": "Projects4Me/prometheus",
          "hermes": "Projects4Me/hermes", "ares": "Projects4Me/ares",
          "dev-tools": "Projects4Me/dev-tools", "pr4m": "Projects4Me/Pr4M"}
 PROJECT_FOR_REPO = {"gaia": "A Gaia", "prometheus": "A Prometheus", "hermes": "A Hermes", "ares": "A Ares",
-                    "dev-tools": "A Gaia", "pr4m": "A Gaia"}
+                    "dev-tools": "A Dev Tool", "pr4m": "A Gaia"}
 # The branch PRs target; the service repos use dev, the tooling and the workspace root use main.
 BASE_BRANCH = {"dev-tools": "main", "pr4m": "main"}
 REPO_PATH = {"pr4m": "."}

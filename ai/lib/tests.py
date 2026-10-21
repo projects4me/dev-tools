@@ -211,6 +211,10 @@ def judge(r, known):
 
 def cmd_test(args):
     repo = args.repo
+    if repo == "ares":
+        say("ares has no test suite yet (see ares/CLAUDE.md): ship with `ai ship ares <issue> <spec> --no-tests "
+            "\"<how you checked it>\"`")
+        return 2
     if repo not in SUITES:
         say(f"no test recipe for {repo}")
         return 2
