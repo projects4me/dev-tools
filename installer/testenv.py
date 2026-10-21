@@ -17,9 +17,11 @@ import hashlib
 import io
 import json
 import os
+import queue
 import re
 import subprocess
 import tarfile
+import threading
 import time
 from pathlib import Path
 
@@ -27,6 +29,10 @@ IS_WINDOWS = os.name == "nt"
 LABEL = "p4m.test"
 BUILD_DIR = "/tmp/p4m-test-dist"
 BUILD_LOG = "/tmp/p4m-build.log"
+TEST_TIMEOUT = 900        # seconds for one `ember test`
+STUCK_GRACE = 20          # seconds after a hang marker before the run is stopped (the other tests may still finish)
+# Output after which testem never reports completion: no test matched, or QUnit/TestLoader failed globally.
+HANG_MARKER = re.compile(r"No tests matched the filter|Global failure|TestLoader Failures", re.I)
 BUILD_DONE = re.compile(r"Build successful|Built project successfully|Build Error|Build failed", re.I)
 BUILD_FAILED = re.compile(r"Build Error|Build failed", re.I)
 # What `ember build --watch` rebuilds on: a sync that touches none of these won't produce a new build.
@@ -285,6 +291,68 @@ class PrometheusTestContainer:
         if filter_text:
             cmd += ["--filter", filter_text]
         return cmd
+
+    def kill_tests(self):
+        """Stop any `ember test` and its Chrome in the container (a killed caller leaves them running)."""
+        # [e]mber / [c]hrome: the patterns must not match the sh -c command line that runs pkill
+        _docker("exec", self.name, "sh", "-c",
+                "pkill -f '[e]mber test'; pkill -f '[c]hrome'; pkill -f '[t]estem'; sleep 1", check=False)
+
+    def run_tests(self, filter_text=None, timeout=TEST_TIMEOUT, log=None):
+        """Run `ember test`, echoing its output as it arrives. Returns the exit code.
+
+        A run that can never finish is stopped: nothing matched the filter, a QUnit global failure /
+        TestLoader failure (testem waits forever after those), or `timeout` seconds. Whatever ends the run,
+        the in-container ember test and Chrome are killed.
+        """
+        self.kill_tests()
+        proc = subprocess.Popen(self.test_command(filter_text), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                text=True, encoding="utf-8", errors="replace", bufsize=1)
+        lines = queue.Queue()
+
+        def pump():
+            for l in proc.stdout:
+                lines.put(l)
+            lines.put(None)
+
+        threading.Thread(target=pump, daemon=True).start()
+        logf = open(log, "w", encoding="utf-8") if log else None
+        started, stuck_since, reason = time.time(), None, None
+        try:
+            while True:
+                try:
+                    line = lines.get(timeout=1)
+                except queue.Empty:
+                    line = ""
+                else:
+                    if line is None:
+                        break
+                    print(line, end="", flush=True)
+                    if logf:
+                        logf.write(line)
+                        logf.flush()
+                    if HANG_MARKER.search(line) and stuck_since is None:
+                        stuck_since = time.time()
+                if stuck_since and time.time() - stuck_since > STUCK_GRACE:
+                    reason = "a QUnit global failure / test load failure or an unmatched filter; testem would wait forever"
+                    break
+                if time.time() - started > timeout:
+                    reason = f"ember test did not finish within {timeout}s"
+                    break
+        except KeyboardInterrupt:
+            reason = "interrupted"
+        finally:
+            if reason or proc.poll() is None:
+                proc.kill()
+            self.kill_tests()
+            if logf:
+                if reason:
+                    logf.write(f"\n# p4m: stopped ember test: {reason}\n")
+                logf.close()
+        if reason:
+            print(f"\np4m: stopped ember test: {reason}", flush=True)
+            return 1
+        return proc.wait()
 
 
 # --- cleanup -------------------------------------------------------------------------------------

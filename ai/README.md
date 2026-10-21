@@ -57,3 +57,13 @@ Repos: `gaia`, `prometheus`, `hermes`, `ares` (base `dev`), `dev-tools` and `pr4
 /address-review gaia 180 3960          # after the reviewer comments
 dev-tools/ai/ai sync gaia              # after merge (start does this too)
 ```
+
+## Running tests safely
+
+- Don't pipe `ai test` through `tail`/`head`: the log `state/test-<repo>-<suite>.log` is written as the run
+  progresses, so read that instead. Prefer `--changed` or a plain-text `--filter`.
+- The launchers set `MSYS_NO_PATHCONV=1`, so `--filter "/idea/i"` reaches QUnit unchanged from Git Bash. A filter
+  that looks like a converted Windows path is rejected.
+- `ember test` is stopped (and its Chrome killed in the container) when nothing matches the filter, a QUnit
+  global/load failure is reported, it exceeds 15 minutes, or the run is interrupted. A new run first clears
+  leftovers of an earlier one.
