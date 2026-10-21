@@ -22,6 +22,7 @@ import re
 import subprocess
 import tarfile
 import threading
+import sys
 import time
 from pathlib import Path
 
@@ -29,6 +30,17 @@ IS_WINDOWS = os.name == "nt"
 LABEL = "p4m.test"
 BUILD_DIR = "/tmp/p4m-test-dist"
 BUILD_LOG = "/tmp/p4m-build.log"
+BUILD_PID = "/tmp/p4m-build.pid"    # pid of the watch build p4m started (it execs ember, so pid == ember)
+# Pids (one per line) with the build log open whose process group is not the recorded watch build's.
+STALE_SCRIPT = f"""keep=$(cat {BUILD_PID} 2>/dev/null); kg=
+[ -n "$keep" ] && kg=$(awk '{{print $5}}' /proc/$keep/stat 2>/dev/null)
+for d in /proc/[0-9]*; do
+  p=${{d#/proc/}}; [ "$p" = "$$" ] && continue
+  ls -l $d/fd 2>/dev/null | grep -q {BUILD_LOG} || continue
+  g=$(awk '{{print $5}}' $d/stat 2>/dev/null)
+  [ -n "$kg" ] && [ "$g" = "$kg" ] && continue
+  echo $p
+done"""
 TEST_TIMEOUT = 900        # seconds for one `ember test`
 STUCK_GRACE = 20          # seconds after a hang marker before the run is stopped (the other tests may still finish)
 # Output after which testem never reports completion: no test matched, or QUnit/TestLoader failed globally.
@@ -246,20 +258,41 @@ class PrometheusTestContainer:
         r = _docker("exec", self.name, "sh", "-c", f"cat {BUILD_LOG} 2>/dev/null", check=False)
         return r.stdout or ""
 
+    def build_count(self):
+        """Builds finished so far. Read it BEFORE sync(): a small change rebuilds faster than the copy returns."""
+        return len(BUILD_DONE.findall(self._build_log()))
+
     def _builder_running(self):
         # [e]mber: the pattern must not match this sh -c command line itself
         r = _docker("exec", self.name, "sh", "-c", "pgrep -f '[e]mber build' >/dev/null", check=False)
         return r.returncode == 0
 
-    def build(self, changed, timeout=900):
-        """Make sure the test build is current after syncing `changed` paths. Returns (ok, message)."""
+    def stale_builders(self):
+        """Pids of processes holding the build log open that are not p4m's own watch build (its process group)."""
+        r = _docker("exec", self.name, "sh", "-c", STALE_SCRIPT, check=False)
+        return [int(p) for p in (r.stdout or "").split() if p.isdigit()]
+
+    def kill_stale_builders(self):
+        """Kill orphaned watchers (e.g. renamed to plain `ember`, so pgrep -f 'ember build' misses them)."""
+        pids = self.stale_builders()
+        if pids:
+            _docker("exec", self.name, "kill", "-9", *map(str, pids), check=False)
+        return pids
+
+    def build(self, changed, before=None, timeout=900, progress=30):
+        """Make sure the test build is current after syncing `changed` paths. Returns (ok, message).
+
+        `before` is build_count() taken before the sync; without it the count is read now (racy after a copy).
+        """
+        self.kill_stale_builders()
         if any(c in RESTART_ON for c in changed) and self._builder_running():
             _docker("exec", self.name, "sh", "-c", "pkill -f '[e]mber build'; sleep 1", check=False)
-        before = len(BUILD_DONE.findall(self._build_log()))
+        if before is None:
+            before = self.build_count()
         if not self._builder_running():
             _docker("exec", "-d", self.name, "sh", "-c",
-                    f"cd /prometheus && ./node_modules/.bin/ember build --environment=test "
-                    f"--output-path={BUILD_DIR} --watch > {BUILD_LOG} 2>&1")
+                    f"echo $$ > {BUILD_PID}; cd /prometheus && exec ./node_modules/.bin/ember build "
+                    f"--environment=test --output-path={BUILD_DIR} --watch > {BUILD_LOG} 2>&1")
             before, changed = 0, ["(new build)"]
         elif changed and not any(c.startswith(WATCHED) for c in changed):
             return True, "build current (changed files are outside the build)"
@@ -267,11 +300,16 @@ class PrometheusTestContainer:
             return True, "build current"
         deadline = time.time() + timeout
         last, stable_since = None, time.time()
+        next_note = time.time() + progress
         while time.time() < deadline:
             log = self._build_log()
             done = len(BUILD_DONE.findall(log))
             if log != last:
                 last, stable_since = log, time.time()
+            if progress and time.time() >= next_note:
+                next_note = time.time() + progress
+                print(f"waiting for the test build, {done} builds seen, last log write "
+                      f"{int(time.time() - stable_since)}s ago", file=sys.stderr, flush=True)
             # a new build result, and nothing written for 2s (a sync can trigger two rebuilds)
             if done > before and time.time() - stable_since >= 2:
                 tail = log[log.rfind("\n", 0, max(0, len(log) - 2000)) + 1:]
