@@ -34,9 +34,12 @@ applied through generated compose override files in .p4m/.
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import os
 import platform
+import re
+import secrets
 import shutil
 import socket
 import subprocess
@@ -231,6 +234,13 @@ class P4MError(Exception):
 # Process helpers
 # --------------------------------------------------------------------------- #
 
+def settings_key_entry() -> str:
+    """A new random key for Gaia's secure settings, in SettingsCipher's format (32 bytes, base64)."""
+    return ("\n# Encrypts Gaia's secure settings (e.g. the SMTP password). Generated for this machine: never commit it\n"
+            "# or share it, and don't change it - settings saved with it can't be read with another key.\n"
+            f"SETTINGS_ENCRYPTION_KEY={base64.b64encode(secrets.token_bytes(32)).decode('ascii')}\n")
+
+
 def load_env() -> dict[str, str]:
     if not ENV_FILE.exists():
         ENV_FILE.write_text(DEFAULT_ENV, encoding="utf-8")
@@ -240,6 +250,9 @@ def load_env() -> dict[str, str]:
             ENV_FILE.write_text(
                 "# Base domain for all services (https://app.<domain>, https://api.<domain>, ...)\n"
                 f"P4M_DOMAIN={DEFAULT_DOMAIN}\n\n" + text, encoding="utf-8")
+    text = ENV_FILE.read_text(encoding="utf-8")
+    if not re.search(r"^\s*SETTINGS_ENCRYPTION_KEY\s*=", text, re.M):   # added once; an existing key is kept
+        ENV_FILE.write_text(text.rstrip("\n") + "\n" + settings_key_entry(), encoding="utf-8")
     values: dict[str, str] = {}
     for line in ENV_FILE.read_text(encoding="utf-8").splitlines():
         line = line.strip()
@@ -1081,6 +1094,10 @@ def cmd_doctor(args) -> int:
         ok("ANTHROPIC_API_KEY set")
     else:
         warn("ANTHROPIC_API_KEY empty - ares will start but AI endpoints will fail")
+    if cfg.get("SETTINGS_ENCRYPTION_KEY"):
+        ok("SETTINGS_ENCRYPTION_KEY set")
+    else:
+        warn("SETTINGS_ENCRYPTION_KEY empty - Gaia can't save secure settings (e.g. the SMTP password)")
     print()
     (ok if not problems else err)(f"{problems} problem(s) found")
     return 1 if problems else 0
