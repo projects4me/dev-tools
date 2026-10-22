@@ -2,14 +2,19 @@
 Gaia's idea records, and a turn, an approval and a reconcile through the gaia MCP's idea tools (in memory)."""
 
 import base64
+import contextlib
+import io
 import json
 import sys
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import talos  # noqa: E402
 from lib import hermes  # noqa: E402
+from lib import runs as run_log  # noqa: E402
 from lib.ideas import policy, state  # noqa: E402
 from lib.ideas.approval import Approval  # noqa: E402
 from lib.ideas.client import GaiaIdeasClient, to_idea  # noqa: E402
@@ -246,6 +251,45 @@ class GaiaFlowTest(TempDb):
         self.assertEqual(self.tracker.created[0][2], OWNER)                # assigned to who created the idea
         self.assertIn("Created 2 issue(s) from plan v1: aprom-5001 (ui), agaia-5002 (api).", self.thread()[-1][1])
 
+    def test_a_plan_written_before_the_last_message_is_kept(self):
+        # the agent answers with its plan and screen, edits its knowledge map, then sums up "plan and screen above"
+        shot = '```nestor-screen key="list" title="Grouped list"\n<section class="content">Hi</section>\n```'
+        self.tools.say("Issues that repeat weekly")
+        self.launcher.replies.append(["Looking around.", "Here.\n" + shot + "\n" + block(issue("ui", screens=["list"])),
+                                      "One issue (plan and screen above)."])
+        self.worker.handle(("turn", IDEA))
+        reply = self.tools.messages[-1]
+        # the answer, then the summary; not the narration before it, and not the blocks
+        self.assertEqual(reply["body"].split(), "Here. One issue (plan and screen above).".split())
+        self.assertEqual(reply["ideaplanId"], self.tools.plans[0]["id"])
+        self.assertEqual([s["key"] for s in json.loads(reply["screens"])], ["list"])
+
+    def test_a_turn_is_recorded_as_a_run_and_shows_while_running(self):
+        self.tools.say("hi")
+        self.launcher.replies.append("Hello.")
+        seen = []
+        self.conv.turn(IDEA, lambda run: seen.append(run_log.running_ideas()))
+        self.assertEqual([(r["agent"], r["issue"], r["summary"]) for r in seen[0]],
+                         [("nestor", IDEA, "Recurring issues")])
+        self.assertEqual(run_log.running_ideas(), [])
+        row = run_log.recent()[0]
+        self.assertEqual((row["status_at_start"], row["outcome"], row["cost_usd"], row["model"]),
+                         (run_log.IDEA, "replied", 0.25, self.agent.model_default))
+        out = io.StringIO()
+        run_log.start("nestor", IDEA, None, "opus", "s-9", False, run_log.IDEA, "2026-10-22T16:41:49+05:00",
+                      summary="Recurring issues")
+        with contextlib.redirect_stdout(out):
+            talos.cmd_status(SimpleNamespace(steps=5))
+            talos.cmd_runs(SimpleNamespace(limit=5, issue=None))
+        self.assertIn(f'RUNNING  nestor idea {IDEA} "Recurring issues"  on opus', out.getvalue())
+        self.assertIn(f"idea {IDEA[:8]}", out.getvalue())
+        run_log.close_unfinished_ideas("nestor", "2026-10-22T17:00:00+05:00")      # what a restarted worker does
+        self.assertEqual(run_log.running_ideas(), [])
+
+    def test_nothing_to_answer_starts_no_run(self):
+        self.worker.handle(("turn", IDEA))
+        self.assertEqual((self.launcher.calls, run_log.recent(), self.thread()), ([], [], []))
+
     def test_a_follow_up_resumes_the_session_and_only_takes_in_the_new_message(self):
         self.tools.say("first")
         self.launcher.replies += ["one", "two"]
@@ -255,6 +299,7 @@ class GaiaFlowTest(TempDb):
         self.assertEqual(self.launcher.calls[1], ("second", "sess-1"))
         self.worker.handle(("turn", IDEA))                                  # nothing new
         self.assertEqual(len(self.launcher.calls), 2)
+        self.assertEqual(self.thread()[-1], ("message", "two"))             # and no "working" notice left behind
 
     def test_reconcile_answers_a_turn_cut_off_and_resumes_plans(self):
         self.tools.say("anyone there?")

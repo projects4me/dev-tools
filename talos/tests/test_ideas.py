@@ -260,6 +260,8 @@ class StreamTest(unittest.TestCase):
         tool = {"type": "assistant", "message": {"content": [
             {"type": "tool_use", "name": "Bash", "input": {"command": "dev-tools/ai/ai kb search  recurring"}}]}}
         self.assertEqual(stream.events(tool), [{"type": "step", "text": "Searching issues: recurring"}])
+        said = {"type": "assistant", "message": {"id": "msg_1", "content": [{"type": "text", "text": "The plan"}]}}
+        self.assertEqual(stream.events(said), [{"type": "said", "message": "msg_1", "text": "The plan"}])
         self.assertTrue(stream.events({"type": "result", "subtype": "error_max_turns"})[0]["is_error"])
 
     def test_command_comes_from_the_agent(self):
@@ -362,13 +364,18 @@ class FakeLauncher:
         self.replies, self.calls, self.session_cost = [], [], {}
 
     def start(self, prompt, model, system_prompt, session_id=None, new_session_id=None, label=""):
+        """A reply is the final message, or a list of the run's messages (the last one is the final)."""
         self.calls.append((prompt, session_id))
-        text = self.replies.pop(0)
+        reply = self.replies.pop(0)
+        messages = reply if isinstance(reply, list) else [reply]
+        text = messages[-1]
         session = session_id or "sess-1"
         self.session_cost[session] = self.session_cost.get(session, 0) + 0.25
-        return FakeRun([{"type": "step", "text": "Reading x"}, {"type": "text", "text": text},
-                        {"type": "result", "text": text, "session_id": session, "cost": self.session_cost[session],
-                         "is_error": False, "subtype": "success"}])
+        return FakeRun([{"type": "step", "text": "Reading x"}]
+                       + [{"type": "said", "message": f"msg_{i}", "text": m} for i, m in enumerate(messages)]
+                       + [{"type": "text", "text": text},
+                          {"type": "result", "text": text, "session_id": session, "cost": self.session_cost[session],
+                           "is_error": False, "subtype": "success"}])
 
 
 class FakeKb:

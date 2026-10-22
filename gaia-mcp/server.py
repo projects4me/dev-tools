@@ -626,14 +626,18 @@ class Tools:
         return found[0]
 
     def get_idea(self, args):
-        idea = self._idea(args["idea"], rels="messages,plans,project")
+        # messages and plans have their own unlimited queries: through `rels` on this limit=1 read, Gaia caps the
+        # related records too, and a thread would be cut short
+        idea = self._idea(args["idea"], rels="project")
+        messages = self.g.find("ideamessage", f"(Ideamessage.ideaId : {idea['id']})", limit=-1)
+        plans = self.g.find("ideaplan", f"(Ideaplan.ideaId : {idea['id']})", limit=-1)
         plan_issues = self.g.find("ideaplanissue", f"(Ideaplanissue.ideaId : {idea['id']})", rels="issue", limit=-1)
         return {
             "id": idea["id"], "title": idea.get("title"), "description": idea.get("description"),
             "status": idea.get("status"), "projectId": idea.get("projectId"), "createdUser": idea.get("createdUser"),
             "projectShortCode": (idea.get("project") or {}).get("shortCode"),
-            "messages": sorted(idea.get("messages") or [], key=lambda r: r.get("dateCreated") or ""),
-            "plans": sorted(idea.get("plans") or [], key=lambda r: int(r.get("version") or 0)),
+            "messages": sorted(messages, key=lambda r: r.get("dateCreated") or ""),
+            "plans": sorted(plans, key=lambda r: int(r.get("version") or 0)),
             "planIssues": [{"id": r.get("id"), "ideaplanId": r.get("ideaplanId"), "key": r.get("key"),
                             "issueId": r.get("issueId"),
                             "issueNumber": (r.get("issue") or {}).get("issueNumber"),
