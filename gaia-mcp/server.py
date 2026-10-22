@@ -9,6 +9,7 @@ so Gaia's ACL applies to everything it does.
 Settings come from the environment, or from gaia-mcp.env next to this file (see gaia-mcp.env.example).
 """
 
+import base64
 import json
 import mimetypes
 import os
@@ -125,16 +126,13 @@ class Gaia:
             payload = {"raw": raw[:2000]}
         return status, payload
 
-    def upload(self, file_path, fields):
-        """Multipart POST to /upload, the same request Prometheus' file drop zone sends."""
+    def upload(self, name, content, fields):
+        """Multipart POST to /upload, the same request Prometheus' file drop zone sends. Returns Gaia's JSON reply."""
         boundary = f"----gaia-mcp-{os.urandom(8).hex()}"
-        name = os.path.basename(file_path)
         mime = mimetypes.guess_type(name)[0] or "application/octet-stream"
         parts = []
         for key, value in fields.items():
             parts.append(f'--{boundary}\r\nContent-Disposition: form-data; name="{key}"\r\n\r\n{value}\r\n'.encode())
-        with open(file_path, "rb") as f:
-            content = f.read()
         parts.append(f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="{name}"\r\n'
                      f'Content-Type: {mime}\r\n\r\n'.encode() + content + b"\r\n")
         parts.append(f"--{boundary}--\r\n".encode())
@@ -145,7 +143,8 @@ class Gaia:
                 "Content-Type": f"multipart/form-data; boundary={boundary}"})
             try:
                 with urllib.request.urlopen(req, timeout=self.timeout, context=self.ssl) as resp:
-                    return resp.status
+                    raw = resp.read().decode("utf-8", "replace")
+                    return json.loads(raw) if raw.strip() else {}
             except urllib.error.HTTPError as e:
                 if e.code == 401 and attempt == 1:
                     self.access_token = None
@@ -440,7 +439,8 @@ class Tools:
             raise GaiaError(f"Only these file types can be attached: {', '.join(self.ATTACHABLE)}")
         if os.path.getsize(path) > 10 * 1024 * 1024:
             raise GaiaError("File is larger than 10 MB.")
-        self.g.upload(path, {"relatedId": issue["id"], "relatedTo": "issue"})
+        with open(path, "rb") as f:
+            self.g.upload(os.path.basename(path), f.read(), {"relatedId": issue["id"], "relatedTo": "issue"})
         return {"attached": os.path.basename(path), "issueNumber": issue["issueNumber"]}
 
     def log_time(self, args):
@@ -584,7 +584,134 @@ class Tools:
         return {"updated": summarize_issue(self.g.issue_by_number(args["issue_number"]), self.ui),
                 "changedFields": sorted(attrs)}
 
+    # -- Ideas ---------------------------------------------------------------------------------
 
+    @staticmethod
+    def _json_text(value, label):
+        """A JSON column's text: strings pass through, lists and dicts are encoded."""
+        if value is None or isinstance(value, str):
+            return value
+        try:
+            return json.dumps(value, ensure_ascii=False)
+        except (TypeError, ValueError):
+            raise GaiaError(f"{label} must be JSON.")
+
+    def _created(self, payload, what):
+        created = self.g.flatten(payload)
+        if not created or not created[0].get("id"):
+            raise GaiaError(f"Gaia did not confirm the new {what}: {json.dumps(payload)[:1000]}")
+        return created[0]
+
+    def _idea(self, idea_id, rels=None):
+        found = self.g.find("idea", f"(Idea.id : {idea_id})", rels=rels, limit=1)
+        if not found:
+            raise GaiaError(f"Idea '{idea_id}' was not found or is not visible to {self.g.email}.")
+        return found[0]
+
+    def get_idea(self, args):
+        idea = self._idea(args["idea"], rels="messages,plans,project")
+        plan_issues = self.g.find("ideaplanissue", f"(Ideaplanissue.ideaId : {idea['id']})", rels="issue", limit=-1)
+        return {
+            "id": idea["id"], "title": idea.get("title"), "description": idea.get("description"),
+            "status": idea.get("status"), "projectId": idea.get("projectId"),
+            "projectShortCode": (idea.get("project") or {}).get("shortCode"),
+            "messages": sorted(idea.get("messages") or [], key=lambda r: r.get("dateCreated") or ""),
+            "plans": sorted(idea.get("plans") or [], key=lambda r: int(r.get("version") or 0)),
+            "planIssues": [{"id": r.get("id"), "ideaplanId": r.get("ideaplanId"), "key": r.get("key"),
+                            "issueId": r.get("issueId"),
+                            "issueNumber": (r.get("issue") or {}).get("issueNumber")} for r in plan_issues],
+        }
+
+    def list_ideas(self, args):
+        p = self.g.project(args["project"])
+        clauses = [f"(Idea.projectId : {p['id']})"]
+        if args.get("status"):
+            # Gaia's Clause parser pastes values into quoted PHQL, so only let plain text through.
+            status = re.sub(r"[^\w.-]", "", str(args["status"]))
+            clauses.append(f"(Idea.status : {status})")
+        rows = self.g.find("idea", "(" + " AND ".join(clauses) + ")", sort="Idea.dateCreated", order="DESC", limit=-1)
+        return {"project": p.get("name"), "count": len(rows),
+                "ideas": [{"id": r.get("id"), "title": r.get("title"), "status": r.get("status"),
+                           "dateCreated": r.get("dateCreated")} for r in rows]}
+
+    def add_idea_message(self, args):
+        body = (args.get("body") or "").strip()
+        if not body:
+            raise GaiaError("body is empty.")
+        attrs = {"ideaId": args["idea"], "body": body, "kind": args.get("kind") or "message"}
+        for key in ("steps", "screens"):
+            if args.get(key) is not None:
+                attrs[key] = self._json_text(args[key], key)
+        if args.get("ideaplanId"):
+            attrs["ideaplanId"] = args["ideaplanId"]
+        if args.get("costUsd") is not None:
+            attrs["costUsd"] = float(args["costUsd"])
+        payload = self.g.request("POST", "ideamessage", body={"data": {"type": "ideamessage", "attributes": attrs}})
+        return {"id": self._created(payload, "idea message")["id"], "ideaId": args["idea"]}
+
+    def add_idea_plan(self, args):
+        body = self._json_text(args.get("body"), "body")
+        if not body:
+            raise GaiaError("body is empty.")
+        payload = self.g.request("POST", "ideaplan", body={"data": {"type": "ideaplan", "attributes": {
+            "ideaId": args["idea"], "body": body}}})
+        plan = self._created(payload, "idea plan")
+        if plan.get("version") is None:  # Gaia numbers the plan when it saves it
+            found = self.g.find("ideaplan", f"(Ideaplan.id : {plan['id']})", limit=1)
+            plan = found[0] if found else plan
+        return {"id": plan["id"], "version": plan.get("version"), "status": plan.get("status")}
+
+    def update_idea_plan(self, args):
+        attrs = {k: args[k] for k in ("status", "error") if args.get(k) is not None}
+        if not attrs:
+            raise GaiaError("Nothing to update: pass a status and/or an error.")
+        self.g.request("PATCH", f"ideaplan/{args['plan']}",
+                       body={"data": {"type": "ideaplan", "id": args["plan"], "attributes": attrs}})
+        return {"updated": args["plan"], "changedFields": sorted(attrs)}
+
+    def add_idea_plan_issue(self, args):
+        p = self.g.project(args["project"])
+        issue = self.g.issue_by_number(args["issue_number"])
+        if issue.get("projectId") not in (None, p["id"]):
+            raise GaiaError(f"Issue #{args['issue_number']} is not in project {p.get('name')}.")
+        plan = self.g.find("ideaplan", f"(Ideaplan.id : {args['plan']})", limit=1)
+        if not plan:
+            raise GaiaError(f"Idea plan '{args['plan']}' was not found or is not visible to {self.g.email}.")
+        payload = self.g.request("POST", "ideaplanissue", body={"data": {"type": "ideaplanissue", "attributes": {
+            "ideaId": plan[0]["ideaId"], "ideaplanId": plan[0]["id"], "key": args["key"], "issueId": issue["id"]}}})
+        return {"id": self._created(payload, "idea plan issue")["id"], "key": args["key"],
+                "issueNumber": issue.get("issueNumber")}
+
+    def upload_idea_screen(self, args):
+        key = str(args.get("key") or "").strip()
+        if not key:
+            raise GaiaError("key is required.")
+        idea = self._idea(args["idea"])
+        name = re.sub(r"[^\w.-]", "_", key)
+        if not name.lower().endswith(".png"):
+            name += ".png"
+        if args.get("path"):
+            path = os.path.abspath(os.path.expanduser(args["path"]))
+            if not os.path.isfile(path):
+                raise GaiaError(f"File not found: {path}")
+            with open(path, "rb") as f:
+                content = f.read()
+        elif args.get("png_base64"):
+            try:
+                content = base64.b64decode(args["png_base64"], validate=True)
+            except ValueError:
+                raise GaiaError("png_base64 is not valid base64.")
+        else:
+            raise GaiaError("Pass the PNG as path or png_base64.")
+        if not content.startswith(b"\x89PNG"):
+            raise GaiaError("The screen must be a PNG.")
+        if len(content) > 10 * 1024 * 1024:
+            raise GaiaError("File is larger than 10 MB.")
+        reply = self.g.upload(name, content, {"relatedId": idea["id"], "relatedTo": "idea"})
+        return {"uploadId": self._created(reply, "upload")["id"], "key": key, "name": name, "ideaId": idea["id"]}
+
+
+IDEA_ARG = {"type": "string", "description": "The idea's id."}
 PROJECT_ARG = {"type": "string",
                "description": "Project name or short code. Gaia work goes in 'A Gaia', Prometheus work in 'A Prometheus'."}
 DESCRIPTION_ARG = {"type": "string",
@@ -670,6 +797,40 @@ TOOLS = [
                                             "description": DESCRIPTION_ARG, "complexity": COMPLEXITY_ARG},
                                            **FIELD_ARGS),
       "required": ["issue_number"]}),
+    ("gaia_get_idea", "get_idea",
+     "Get an idea with its messages, plans and plan issues, and the project's short code.",
+     {"type": "object", "properties": {"idea": IDEA_ARG}, "required": ["idea"]}),
+    ("gaia_list_ideas", "list_ideas", "List a project's ideas, newest first, optionally by status.",
+     {"type": "object", "properties": {"project": PROJECT_ARG, "status": {"type": "string"}}, "required": ["project"]}),
+    ("gaia_add_idea_message", "add_idea_message",
+     "Post a message to an idea's thread. screens: list of {uploadId, key, title, version, width, height} from "
+     "gaia_upload_idea_screen.",
+     {"type": "object", "properties": {
+         "idea": IDEA_ARG, "body": {"type": "string"}, "kind": {"type": "string", "description": "Default 'message'."},
+         "steps": {"type": ["array", "string"], "description": "Progress steps (JSON)."},
+         "ideaplanId": {"type": "string"}, "costUsd": {"type": "number"},
+         "screens": {"type": ["array", "string"]}},
+      "required": ["idea", "body"]}),
+    ("gaia_add_idea_plan", "add_idea_plan", "Propose a plan for an idea. Returns the plan's id and version.",
+     {"type": "object", "properties": {"idea": IDEA_ARG,
+                                       "body": {"type": ["object", "array", "string"], "description": "The plan, as JSON."}},
+      "required": ["idea", "body"]}),
+    ("gaia_update_idea_plan", "update_idea_plan", "Set an idea plan's status and/or error.",
+     {"type": "object", "properties": {"plan": {"type": "string", "description": "The plan's id."},
+                                       "status": {"type": "string"}, "error": {"type": "string"}},
+      "required": ["plan"]}),
+    ("gaia_add_idea_plan_issue", "add_idea_plan_issue",
+     "Record the issue created for a plan's key. Resolves the issue by number.",
+     {"type": "object", "properties": {"plan": {"type": "string", "description": "The plan's id."},
+                                       "key": {"type": "string"}, "issue_number": {"type": "integer"},
+                                       "project": PROJECT_ARG},
+      "required": ["plan", "key", "issue_number", "project"]}),
+    ("gaia_upload_idea_screen", "upload_idea_screen",
+     "Upload a PNG screen to an idea. Returns the upload id to use in a message's screens.",
+     {"type": "object", "properties": {"idea": IDEA_ARG, "key": {"type": "string"},
+                                       "path": {"type": "string", "description": "Absolute path to a PNG."},
+                                       "png_base64": {"type": "string", "description": "PNG bytes, base64 (instead of path)."}},
+      "required": ["idea", "key"]}),
 ]
 
 
