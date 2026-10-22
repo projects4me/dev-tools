@@ -147,6 +147,7 @@ the page works through the proxy.
 |---|---|---|
 | `P4M_DOMAIN` | local-projects4.me | Base domain for every URL. After changing it, run `p4m hosts` then `p4m up` |
 | `ANTHROPIC_API_KEY` | empty | ares AI calls |
+| `SETTINGS_ENCRYPTION_KEY` | generated | Encrypts Gaia's secure settings (e.g. the SMTP password). A random key per machine, added on first use; never commit it, and don't change it (settings saved with it become unreadable). Recreate gaia after it's added: `p4m up gaia` |
 | `GAIA_XDEBUG_PORT` | 9003 | Xdebug client port (repo uses 9000 = hermes) |
 | `GAIA_XDEBUG_MODE` | debug,develop | Set to `off` for faster requests |
 | `FILE_WATCH_POLLING` | auto | Polling watchers for ember/nodemon/uvicorn (needed on Windows bind mounts) |
