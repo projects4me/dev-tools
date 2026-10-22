@@ -1,6 +1,8 @@
 """Sim Gaia (idea resources) and sim Hermes (envelopes, intents, SSE). Run: python -m unittest discover -s tests"""
 
 import base64
+import contextlib
+import io
 import json
 import sys
 import tempfile
@@ -197,6 +199,22 @@ class ServerTest(unittest.TestCase):
         env = envelope("idea.agent.progress", f"user:{OWNER}", "idea", 1, AGENT, {"phase": "started"})
         self.assertEqual(self.call("POST", "/publish", env, headers={"X-Hermes-Secret": "wrong"})[0], 401)
         self.assertEqual(self.call("POST", "/publish", env, headers={"X-Hermes-Secret": "secret"})[1]["ok"], True)
+
+    def test_console_shows_writes_and_failures_not_routine_traffic(self):
+        env = envelope("idea.agent.progress", f"user:{OWNER}", "idea", 1, AGENT, {"phase": "started"})
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.call("GET", "/api/v1/idea")
+            self.call("POST", "/publish", env, headers={"X-Hermes-Secret": "secret"})   # live progress, every second
+            self.call("POST", "/publish", env, headers={"X-Hermes-Secret": "wrong"})
+            self.call("POST", "/api/v1/idea", {"title": "T", "agent": AGENT})
+            self.call("GET", "/api/v1/idea/999")
+        lines = err.getvalue().splitlines()
+        self.assertEqual(len(lines), 3, lines)
+        self.assertIn("/publish", lines[0])
+        self.assertIn("401", lines[0])
+        self.assertIn("POST /api/v1/idea ", lines[1])
+        self.assertIn("404", lines[2])
 
 
 if __name__ == "__main__":
