@@ -120,7 +120,8 @@ A markdown file (path below) that only you edit, so later conversations start in
 code. After a conversation taught you something durable, update it with Edit: per product area, where the code
 lives (key files and classes), the key issues (numbers) and decisions, and open threads. Keep it terse and
 current: replace stale lines rather than appending, and stay under about 300 lines. Never put secrets or personal
-data in it.
+data in it. Update it before you write your reply: the reply, with its screen and plan blocks, is your last
+message of the turn.
 
 ## Rules
 - Read-only: you can't edit code, run git commands that change anything, or create or change issues. Don't try,

@@ -6,15 +6,18 @@ STATS = ("turns", "input_tokens", "cache_read_tokens", "cache_write_tokens", "ou
          "peak_context_tokens")
 
 
-def start(agent, issue, iteration, model, session_id, resumed, status_at_start, started_at):
+IDEA = "idea"   # status_at_start of an ideas agent's turn; its `issue` is the idea id (Gaia's are GUIDs)
+
+
+def start(agent, issue, iteration, model, session_id, resumed, status_at_start, started_at, summary=None):
     """Record a run as it starts (ended_at stays NULL while it runs). Returns the run id."""
     conn = db.connect()
     try:
         with conn:
             cur = conn.execute(
-                "INSERT INTO runs (agent, issue, iteration, model, session_id, resumed, status_at_start, started_at) "
-                "VALUES (?,?,?,?,?,?,?,?)",
-                (agent, issue, iteration, model, session_id, int(resumed), status_at_start, started_at))
+                "INSERT INTO runs (agent, issue, iteration, model, session_id, resumed, status_at_start, started_at, "
+                "summary) VALUES (?,?,?,?,?,?,?,?,?)",
+                (agent, issue, iteration, model, session_id, int(resumed), status_at_start, started_at, summary))
             return cur.lastrowid
     finally:
         conn.close()
@@ -40,6 +43,27 @@ def close_unfinished(agent, issue, ended_at, outcome="interrupted"):
         with conn:
             conn.execute("UPDATE runs SET ended_at = ?, outcome = ? WHERE agent = ? AND issue = ? AND ended_at IS NULL",
                          (ended_at, outcome, agent, issue))
+    finally:
+        conn.close()
+
+
+def close_unfinished_ideas(agent, ended_at, outcome="interrupted"):
+    """Mark an ideas agent's turns left open by a Talos restart."""
+    conn = db.connect()
+    try:
+        with conn:
+            conn.execute("UPDATE runs SET ended_at = ?, outcome = ? WHERE agent = ? AND status_at_start = ? "
+                         "AND ended_at IS NULL", (ended_at, outcome, agent, IDEA))
+    finally:
+        conn.close()
+
+
+def running_ideas():
+    """Ideas agents' turns in flight, oldest first."""
+    conn = db.connect()
+    try:
+        return [dict(r) for r in conn.execute("SELECT * FROM runs WHERE status_at_start = ? AND ended_at IS NULL "
+                                              "ORDER BY id", (IDEA,))]
     finally:
         conn.close()
 

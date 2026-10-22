@@ -6,7 +6,9 @@ engineer messages no turn has taken in, and plans approved or left creating.
 
 import queue
 import threading
+from datetime import datetime
 
+from .. import runs as run_log
 from ..config import log
 from . import policy, state
 
@@ -96,6 +98,8 @@ class IdeaWorker:
     # -- work ---------------------------------------------------------------------------------------------------
 
     def start(self):
+        # turns a stopped Talos left open in talos.db would show as running for good
+        run_log.close_unfinished_ideas(self.agent.name, datetime.now().astimezone().isoformat(timespec="seconds"))
         threading.Thread(target=self._loop, name=f"ideas-{self.agent.name}", daemon=True).start()
 
     def _loop(self):
@@ -120,7 +124,8 @@ class IdeaWorker:
         with self._lock:
             self._current = (kind, idea_id, None)
             stopped = kind == "turn" and idea_id in self._stop
-        idea = self.client.idea(idea_id)["idea"]
+        data = self.client.idea(idea_id)
+        idea = data["idea"]
         if idea["agent"] != self.user_id or idea["owner"] not in self.agent.accept_from:
             log(f"idea #{idea_id}: not this agent's, or its owner can't hand it work; skipped", self.agent.name)
             return
@@ -131,6 +136,9 @@ class IdeaWorker:
             return
         if kind == "approve":
             self.approval.run(idea_id, job[2])
+            return
+        if not policy.unanswered(data["messages"], state.get(self.agent.name, idea_id).get("answered_upto")):
+            log(f"idea #{idea_id}: nothing new to answer", self.agent.name)   # before "working": no notice left behind
             return
         self._set_state(idea_id, "working")
         self.progress.publish(idea, {"phase": "started"})

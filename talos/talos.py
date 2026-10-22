@@ -73,18 +73,17 @@ def cmd_status(args):
     """What Talos is running now (with the live transcript's latest steps) and each issue's state."""
     entries = sessions.all_entries()
     running = {k: v for k, v in entries.items() if v.get("running")}
-    if not running:
+    ideas = run_log.running_ideas()
+    if not running and not ideas:
         print("Nothing running.")
+    for r in ideas:   # an ideas agent's turn (Agent Nestor answering in an idea's conversation)
+        print(f"RUNNING  {r['agent']} idea {r['issue']} \"{r.get('summary') or ''}\"  on {r.get('model')}"
+              f"  since {r.get('started_at') or '?'}")
+        _print_live(runner.transcript(r.get("session_id")), args.steps)
     for (agent, issue), entry in sorted(running.items()):
         print(f"RUNNING  {agent} #{issue}  on {entry.get('last_model')}  iteration {entry.get('runs')}"
               f"  since {entry.get('started_at') or '?'}")
-        path = runner.transcript(entry.get("live_session_id")) or runner.transcript_for_issue(issue)
-        if not path:
-            print("  transcript not found yet")
-            continue
-        print(f"  transcript {path}  (last write {time.strftime('%H:%M:%S', time.localtime(path.stat().st_mtime))})")
-        for step in runner.recent_steps(path, args.steps):
-            print(f"  {step}")
+        _print_live(runner.transcript(entry.get("live_session_id")) or runner.transcript_for_issue(issue), args.steps)
     others = sorted((k, v) for k, v in entries.items() if not v.get("running"))
     if others:
         print("\nIssues worked before:")
@@ -94,13 +93,23 @@ def cmd_status(args):
     return 0
 
 
+def _print_live(path, steps):
+    """A running session's transcript and its latest steps."""
+    if not path:
+        print("  transcript not found yet")
+        return
+    print(f"  transcript {path}  (last write {time.strftime('%H:%M:%S', time.localtime(path.stat().st_mtime))})")
+    for step in runner.recent_steps(path, steps):
+        print(f"  {step}")
+
+
 def cmd_runs(args):
     """Per-run stats from talos.db: model, outcome, cost of that run alone, turns and context size."""
     rows = run_log.recent(args.limit, args.issue)
     if not rows:
         print("No runs recorded yet.")
         return 0
-    print(f"{'id':>4} {'issue':>6} {'it':>2} {'model':7} {'resumed':7} {'started':16} {'min':>5} "
+    print(f"{'id':>4} {'agent':9} {'issue':>13} {'it':>2} {'model':7} {'resumed':7} {'started':16} {'min':>5} "
           f"{'outcome':12} {'cost':>6} {'turns':>5} {'peak':>5}")
     total = 0.0
     for r in rows:
@@ -108,7 +117,8 @@ def cmd_runs(args):
         total += cost or 0
         minutes = f"{r['duration_s'] / 60:.1f}" if r.get("duration_s") else "-"
         peak = f"{(r.get('peak_context_tokens') or 0) // 1000}K" if r.get("peak_context_tokens") else "-"
-        print(f"{r['id']:>4} {r['issue']:>6} {r.get('iteration') or '-':>2} {r.get('model') or '-':7} "
+        what = f"idea {str(r['issue'])[:8]}" if r.get("status_at_start") == run_log.IDEA else str(r["issue"])
+        print(f"{r['id']:>4} {r['agent']:9} {what:>13} {r.get('iteration') or '-':>2} {r.get('model') or '-':7} "
               f"{'yes' if r.get('resumed') else 'no':7} {(r.get('started_at') or '')[:16]:16} {minutes:>5} "
               f"{r.get('outcome') or 'running':12} {('$%.2f' % cost) if cost is not None else '-':>6} "
               f"{r.get('turns') if r.get('turns') is not None else '-':>5} {peak:>5}")
@@ -198,7 +208,8 @@ def build_parser():
     sp.add_argument("--dry-run", action="store_true")
     sp.set_defaults(func=cmd_dispatch)
 
-    sp = sub.add_parser("status", help="what is running now, with the live transcript's latest steps")
+    sp = sub.add_parser("status", help="what is running now (issues and idea turns), with the live transcript's "
+                                       "latest steps")
     sp.add_argument("--steps", type=int, default=10, help="how many recent steps to show (default 10)")
     sp.set_defaults(func=cmd_status)
 

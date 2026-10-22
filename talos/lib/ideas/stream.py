@@ -5,6 +5,7 @@ streamed and turned into a few progress events:
   {"type": "text", "text": ...}      a piece of the reply, as it is written
   {"type": "turn"}                   the agent starts another message (the text so far was narration)
   {"type": "step", "text": ...}      a tool call, in a few words (steps.py)
+  {"type": "said", "message": id, "text": ...}   a finished text block of one of its messages
   {"type": "result", ...}            the run finished: final text, session id, cost, error flag
 
 The agent's tool policy comes from its agent.json: `builtinTools` (--tools: what is loaded at all; each loaded
@@ -60,8 +61,14 @@ def events(raw):
             return [{"type": "text", "text": delta.get("text", "")}]
         return []
     if kind == "assistant":
-        return [{"type": "step", "text": describe(block.get("name", ""), block.get("input"))}
-                for block in (raw.get("message") or {}).get("content") or [] if block.get("type") == "tool_use"]
+        message = raw.get("message") or {}
+        out = []
+        for block in message.get("content") or []:
+            if block.get("type") == "tool_use":
+                out.append({"type": "step", "text": describe(block.get("name", ""), block.get("input"))})
+            elif block.get("type") == "text" and block.get("text"):
+                out.append({"type": "said", "message": message.get("id"), "text": block["text"]})
+        return out
     if kind == "result":
         # total_cost_usd is the whole session's cost so far when the session was resumed
         return [{"type": "result", "text": raw.get("result") or "", "session_id": raw.get("session_id"),

@@ -20,8 +20,8 @@ dev-tools/talos/talos check                    # Claude CLI, node + socket.io-cl
 dev-tools/talos/talos agents                   # the registry, with Gaia user and project ids resolved
 dev-tools/talos/talos run [--dry-run]          # listen until Ctrl+C (Windows: talos.cmd)
 dev-tools/talos/talos dispatch odysseus 3714 [--dry-run]   # work one issue now, as if just assigned
-dev-tools/talos/talos status [--steps 20]                  # what is running now + the live transcript's latest steps
-dev-tools/talos/talos runs [--issue 3714] [--limit 50]     # per-run stats: model, outcome, cost of that run, turns, context
+dev-tools/talos/talos status [--steps 20]                  # what is running now (issues, idea turns) + the latest steps
+dev-tools/talos/talos runs [--issue 3714] [--limit 50]     # per-run stats (issues and idea turns): model, outcome, cost, turns, context
 dev-tools/talos/talos reset odysseus 3714 [--model]        # after a manual look: fresh iteration allowance
 python -m unittest discover -s dev-tools/talos/tests       # unit tests (from dev-tools/talos: -s tests)
 ```

@@ -5,6 +5,7 @@ import time
 import uuid
 from datetime import date, datetime
 
+from .. import runner
 from .. import runs as run_log
 from ..config import log
 from . import plan as plans
@@ -76,7 +77,7 @@ class Conversation:
             self.client.post(idea["id"], "error", self._error_text(result), steps=steps, cost=cost)
             log(f"idea #{idea['id']}: {result.get('subtype')}", self.agent.name)
             return False
-        text, raw = plans.extract(result["text"])
+        text, raw = plans.extract(reply_text(result))
         text, designed, problems = screens.extract(text)
         screen_refs, rendered, failed = self._render(idea, designed, problems)
         plan_id = None
@@ -87,7 +88,7 @@ class Conversation:
                 fix, fix_steps, session, fix_cost = self._run(idea, FIX_PLAN.format(error=error), session,
                                                               result.get("cost") or session_cost, on_run)
                 steps, cost = steps + fix_steps, cost + fix_cost
-                fixed = None if fix["is_error"] else plans.extract(fix["text"])[1]
+                fixed = None if fix["is_error"] else plans.extract(reply_text(fix))[1]
                 if fixed is not None:
                     plan_id, error = self._add_plan(idea, fixed, failed, problems, rendered)
                 if error:
@@ -99,14 +100,29 @@ class Conversation:
         return True
 
     def _run(self, idea, prompt, session_id, session_cost, on_run):
-        """One `claude -p` run, streamed. Returns (result, steps, session, this run's cost)."""
-        run = self.launcher.start(prompt, self.agent.model_default, self.system_prompt(), session_id=session_id,
-                                  new_session_id=None if session_id else str(uuid.uuid4()),
-                                  label=f"{self.agent.name}-idea{idea['id']}")
-        on_run(run)
-        steps, result = self._stream(idea, run)
-        session, cost = self._account(idea, result, session_id, session_cost)
-        return result, steps, session, cost
+        """One `claude -p` run, streamed and recorded in talos.db's runs (what `talos status` and `talos runs`
+        show). Returns (result, steps, session, this run's cost)."""
+        model, live_id = self.agent.model_default, session_id or str(uuid.uuid4())
+        started = datetime.now().astimezone()
+        run_id = run_log.start(self.agent.name, str(idea["id"]), None, model, live_id, bool(session_id),
+                               run_log.IDEA, started.isoformat(timespec="seconds"), summary=idea.get("title"))
+        result, session, cost, run = None, session_id, None, None
+        try:
+            run = self.launcher.start(prompt, model, self.system_prompt(), session_id=session_id,
+                                      new_session_id=None if session_id else live_id,
+                                      label=f"{self.agent.name}-idea{idea['id']}")
+            on_run(run)
+            steps, result = self._stream(idea, run)
+            session, cost = self._account(idea, result, session_id, session_cost)
+            return result, steps, session, cost
+        finally:
+            ended = datetime.now().astimezone()
+            outcome = ("failed" if result is None else result.get("subtype") if result["is_error"] else "replied")
+            log_path = getattr(run, "log_path", None)
+            run_log.finish(run_id, ended.isoformat(timespec="seconds"), round((ended - started).total_seconds(), 1),
+                           outcome, idea.get("title"), cost, (result or {}).get("cost"),
+                           runner.usage_since(runner.transcript(session or live_id), started),
+                           log_path.name if log_path else None)
 
     def _render(self, idea, designed, problems):
         """Render each screen to PNG and store it on the idea; failures become notes in the reply.
@@ -152,7 +168,7 @@ class Conversation:
 
     def _stream(self, idea, run):
         """Consume the run: publish text (batched), turns and steps as progress. Returns (steps, result)."""
-        steps, result, buffer, flushed = [], None, [], time.monotonic()
+        steps, result, buffer, flushed, said = [], None, [], time.monotonic(), {}
 
         def flush():
             if buffer:
@@ -172,8 +188,10 @@ class Conversation:
             elif event["type"] == "step":
                 steps.append(event["text"])
                 self.progress.publish(idea, {"phase": "step", "text": event["text"]})
+            elif event["type"] == "said":
+                said[event["message"]] = (said.get(event["message"], "") + "\n\n" + event["text"]).strip()
             elif event["type"] == "result":
-                result = event
+                result = dict(event, said=list(said.values()))
         flush()
         return steps, result
 
@@ -194,3 +212,15 @@ class Conversation:
         if result.get("subtype") == "error_max_turns":
             return "The agent ran out of turns before answering. Ask it to continue, or narrow the question."
         return f"The agent's run failed ({result.get('subtype')}): {result.get('error') or result.get('text')}"
+
+
+def reply_text(result):
+    """The reply: the run's final message. When the plan or screens aren't in it but in an earlier message of the
+    run (the agent wrote its answer, then used a tool, then summed up), that message comes first: only blocks
+    the reply holds are rendered and stored."""
+    final = result.get("text") or ""
+    if plans.BLOCK.search(final) or screens.BLOCK.search(final):
+        return final
+    earlier = [t for t in result.get("said") or [] if t.strip() != final.strip()]
+    answer = next((t for t in reversed(earlier) if plans.BLOCK.search(t) or screens.BLOCK.search(t)), None)
+    return f"{answer}\n\n{final}" if answer else final

@@ -121,8 +121,11 @@ class IdeaToolsTest(unittest.TestCase):
         self.g = IdeaGaia()
         self.g.rows["idea"] = [{"id": "idea-1", "title": "T", "status": "open", "projectId": "p-1",
                                 "project": {"id": "p-1", "shortCode": "adt"},
-                                "messages": [{"id": "m2", "dateCreated": "2"}, {"id": "m1", "dateCreated": "1"}],
-                                "plans": [{"id": "pl2", "version": 2}, {"id": "pl1", "version": 1}]}]
+                                # what real Gaia does with rels on a limit=1 read: the related records are cut short
+                                "messages": [{"id": "m1", "dateCreated": "1"}], "plans": []}]
+        self.g.rows["ideamessage"] = [{"id": "m2", "dateCreated": "2"}, {"id": "m3", "dateCreated": "3"},
+                                      {"id": "m1", "dateCreated": "1"}]
+        self.g.rows["ideaplan"] = [{"id": "pl2", "version": 2}, {"id": "pl1", "version": 1}]
         self.tools = server.Tools(self.g)
 
     def posted(self, path):
@@ -135,7 +138,7 @@ class IdeaToolsTest(unittest.TestCase):
         out = self.tools.get_idea({"idea": "idea-1"})
         self.assertEqual(out["createdUser"], "1")
         self.assertEqual(out["projectShortCode"], "adt")
-        self.assertEqual([m["id"] for m in out["messages"]], ["m1", "m2"])
+        self.assertEqual([m["id"] for m in out["messages"]], ["m1", "m2", "m3"])   # the whole thread
         self.assertEqual([p["id"] for p in out["plans"]], ["pl1", "pl2"])
         self.assertEqual((out["planIssues"][0]["issueNumber"], out["planIssues"][0]["projectShortcode"]), (4100, "adt"))
 
