@@ -57,9 +57,12 @@ def make_handler(ideas, bus, secret, allowed_hosts):
     class Handler(BaseHTTPRequestHandler):
         server_version = "SimGaiaHermes"
 
-        def log_message(self, fmt, *args):
-            if self.command not in ("GET",):
-                super().log_message(fmt, *args)
+        def log_request(self, code="-", size="-"):
+            # reads and Talos' live progress (a /publish about every second while an agent writes) are routine;
+            # print writes and anything that failed
+            routine = self.command == "GET" or urlparse(self.path).path == "/publish"
+            if not routine or (isinstance(code, int) and code >= 400):
+                super().log_request(code, size)
 
         def _dispatch(self):
             if self.headers.get("Host", "").lower() not in allowed_hosts:

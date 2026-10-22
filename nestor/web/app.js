@@ -8,6 +8,7 @@ const $ = (id) => document.getElementById(id);
 const state = { ideas: [], current: null, view: null, info: null, planTab: null, live: null, online: null };
 const EVENTS = ["idea.created", "idea.updated", "idea.message.created", "idea.plan.created",
                 "idea.plan.status.changed", "idea.issue.created", "idea.screen.created", "idea.agent.progress"];
+const RECONNECT_MS = 5000;   // retry the sim after it was unreachable (start-up, event stream)
 
 // -- API --------------------------------------------------------------------------------------------------
 
@@ -422,7 +423,12 @@ function listen() {
     reloadIdeas();
     if (ideaId === state.current) refreshSoon();
   });
-  // EventSource reconnects by itself; `ready` arrives again and we catch up.
+  // EventSource reconnects by itself after a dropped stream; `ready` arrives again and we catch up. A failed
+  // connect (the sim not running: 502) closes it for good, so open a new one.
+  source.addEventListener("error", () => {
+    if (source.readyState !== EventSource.CLOSED) return;
+    setTimeout(listen, RECONNECT_MS);
+  });
 }
 
 // -- wiring -----------------------------------------------------------------------------------------------
@@ -489,13 +495,17 @@ $("menu-btn").addEventListener("click", () => $("sidebar").classList.toggle("ope
   }
   $("agent-name").textContent = state.info.agent.name;
   $("engineer-name").textContent = state.info.engineer.name;
-  try {
-    await loadIdeas();
-  } catch (e) {
-    header(["Ideas"], [homeCrumb()]);
-    show("empty-view");
-    $("empty-view").querySelector(".no-entry").replaceChildren(icon("exclamation-triangle"), " ", e.message);
-    return;
+  for (;;) {   // the sim may not be running yet: wait for it rather than stay on the error
+    try {
+      await loadIdeas();
+      break;
+    } catch (e) {
+      header(["Ideas"], [homeCrumb()]);
+      show("empty-view");
+      $("empty-view").querySelector(".no-entry").replaceChildren(icon("exclamation-triangle"), " ", e.message,
+                                                                 " Retrying…");
+      await new Promise((resolve) => setTimeout(resolve, RECONNECT_MS));
+    }
   }
   listen();
   checkPresence();

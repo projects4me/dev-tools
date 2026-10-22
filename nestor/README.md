@@ -28,7 +28,9 @@ python -m unittest discover -s dev-tools/nestor/tests
 ```
 
 The sidebar shows whether Agent Nestor is listening ("Offline (start Talos)" when Talos isn't running). Messages
-sent while Talos is down are answered when it starts (it reconciles on connect).
+sent while Talos is down are answered when it starts (it reconciles on connect). The page waits for the sim if it
+isn't running yet and reconnects when it restarts, so the start order doesn't matter. Don't stop the sim while
+Nestor is working: his reply is posted to it at the end and would be lost.
 
 **Setup:** `config.local.json` (git-ignored) needs `agentUserId`, Agent Nestor's Gaia user id
 (`dev-tools/talos/talos agents --agent nestor` shows it). You are the engineer from `workspace.local.json`
