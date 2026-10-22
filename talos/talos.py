@@ -11,7 +11,7 @@ import sys
 import time
 import urllib.request
 
-from lib import db, runner, sessions
+from lib import db, policy, runner, sessions
 from lib import runs as run_log
 from lib.config import LISTENER, STATE_DIR, TALOS_DIR, TalosError, claude_bin, log, settings
 from lib.dispatcher import Dispatcher
@@ -46,8 +46,8 @@ def cmd_run(args):
                                 mcp=mcp_config(STATE_DIR / agent.name / "mcp.json"))
         dispatcher.recover_interrupted()
         dispatcher.start()
-        Listener(agent, tracker, dispatcher, cfg["hermesUrl"], cfg.get("nodeBin", "node"),
-                 cfg.get("reconnectSeconds", 10)).start()
+        Listener(agent, tracker, [policy.ASSIGNEE_EVENT], dispatcher.on_event, dispatcher.reconcile,
+                 cfg["hermesUrl"], cfg.get("nodeBin", "node"), cfg.get("reconnectSeconds", 10)).start()
     try:
         while True:
             time.sleep(3600)
@@ -172,7 +172,7 @@ def cmd_check(args):
             return json.loads(r.read()).get("ok")
     report("hermes", hermes)
     agents = load_agents(args.agent)
-    if any(a.kind == "ideas" for a in agents):
+    if any(a.kind == "ideas" and ideas_setup.source(a) == "sim" for a in agents):
         def sim():
             url = ideas_setup.sim_settings(cfg)["url"].rstrip("/")
             with urllib.request.urlopen(url + "/health", timeout=5) as r:

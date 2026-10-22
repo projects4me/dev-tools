@@ -48,7 +48,7 @@ class Conversation:
         prompt = self._prompt(idea, messages, new, st)
         self.kb.ensure_fresh(lambda text: self.progress.publish(idea, {"phase": "step", "text": text}))
         answered = self._converse(idea, prompt, st.get("session_id"), st.get("session_cost_usd") or 0, on_run)
-        state.update(self.agent.name, idea_id, answered_upto=max(m["id"] for m in new),
+        state.update(self.agent.name, idea_id, answered_upto=new[-1]["id"],
                      **({"note": ""} if answered and st.get("note") else {}))
         return True
 
@@ -57,7 +57,8 @@ class Conversation:
         note = f"[Note from Talos] {st['note']}\n\n" if st.get("note") else ""
         if st.get("session_id"):
             return f"{note}{said}"
-        earlier = [m for m in messages if m["id"] < new[0]["id"] and m["role"] in ("user", "agent")][-HISTORY:]
+        before = messages[:next(i for i, m in enumerate(messages) if m["id"] == new[0]["id"])]
+        earlier = [m for m in before if m["role"] in ("user", "agent")][-HISTORY:]
         history = ""
         if earlier:
             lines = [f"{'Engineer' if m['role'] == 'user' else 'You'}: {m['body'][:1500]}" for m in earlier]
@@ -77,10 +78,10 @@ class Conversation:
             return False
         text, raw = plans.extract(result["text"])
         text, designed, problems = screens.extract(text)
-        screen_ids, failed = self._render(idea, designed, problems)
+        screen_refs, rendered, failed = self._render(idea, designed, problems)
         plan_id = None
         if raw is not None:
-            plan_id, error = self._add_plan(idea, raw, failed, problems)
+            plan_id, error = self._add_plan(idea, raw, failed, problems, rendered)
             if error:
                 self.progress.publish(idea, {"phase": "step", "text": "The plan block had problems; correcting it"})
                 fix, fix_steps, session, fix_cost = self._run(idea, FIX_PLAN.format(error=error), session,
@@ -88,13 +89,13 @@ class Conversation:
                 steps, cost = steps + fix_steps, cost + fix_cost
                 fixed = None if fix["is_error"] else plans.extract(fix["text"])[1]
                 if fixed is not None:
-                    plan_id, error = self._add_plan(idea, fixed, failed, problems)
+                    plan_id, error = self._add_plan(idea, fixed, failed, problems, rendered)
                 if error:
                     problems.append(f"The plan in this reply could not be used: {error}")
         body = (text or "(no reply)") + "".join(f"\n\n> {p}" for p in problems)
-        self.client.post(idea["id"], "agent", body, steps=steps, plan_id=plan_id, cost=cost, screens=screen_ids)
+        self.client.post(idea["id"], "agent", body, steps=steps, plan_id=plan_id, cost=cost, screens=screen_refs)
         log(f"idea #{idea['id']}: replied (${cost:.2f})" + (" with a plan" if plan_id else "")
-            + (f", {len(screen_ids)} screen(s)" if screen_ids else ""), self.agent.name)
+            + (f", {len(screen_refs)} screen(s)" if screen_refs else ""), self.agent.name)
         return True
 
     def _run(self, idea, prompt, session_id, session_cost, on_run):
@@ -109,8 +110,8 @@ class Conversation:
 
     def _render(self, idea, designed, problems):
         """Render each screen to PNG and store it on the idea; failures become notes in the reply.
-        Returns (stored screen ids, keys of the screens that failed)."""
-        ids, failed = [], set()
+        Returns (the stored screens as the reply refers to them, keys rendered, keys of the screens that failed)."""
+        refs, rendered, failed = [], set(), set()
         for screen in designed:
             self.progress.publish(idea, {"phase": "step", "text": f"Rendering the screen \u201c{screen['title']}\u201d"})
             try:
@@ -119,13 +120,15 @@ class Conversation:
                 problems.append(f"The screen \u201c{screen['title']}\u201d could not be rendered: {e}")
                 failed.add(screen["key"])
                 continue
-            ids.append(self.client.add_screen(idea["id"], screen, png)[0])
-        return ids, failed
+            refs.append(self.client.add_screen(idea["id"], screen, png))
+            rendered.add(screen["key"])
+        return refs, rendered, failed
 
-    def _add_plan(self, idea, raw, failed=frozenset(), problems=None):
-        """(plan id, None) or (None, the problems). Screens that failed to render this turn are accepted and then
-        left out of the plan (with a note), so a failed render doesn't cost a correction round."""
-        keys = {s["key"] for s in self.client.idea(idea["id"]).get("screens") or []}
+    def _add_plan(self, idea, raw, failed=frozenset(), problems=None, rendered=frozenset()):
+        """(plan id, None) or (None, the problems). A plan may list the idea's screens and those rendered this turn
+        (not on the idea before the reply is posted, in Gaia). Screens that failed to render this turn are accepted
+        and then left out of the plan (with a note), so a failed render doesn't cost a correction round."""
+        keys = {s["key"] for s in self.client.idea(idea["id"]).get("screens") or []} | set(rendered)
         try:
             body = plans.parse(raw, self.project_codes(), self._milestones_or_none, keys | set(failed))
         except ValueError as e:

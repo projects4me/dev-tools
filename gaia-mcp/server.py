@@ -153,6 +153,23 @@ class Gaia:
             except urllib.error.URLError as e:
                 raise GaiaError(f"Cannot reach Gaia at {self.base}: {e.reason}")
 
+    def download(self, upload_id):
+        """The bytes of an upload (GET /upload/{id} streams the file itself)."""
+        for attempt in (1, 2):
+            req = urllib.request.Request(f"{self.base}/api/v1/upload/{urllib.parse.quote(str(upload_id))}",
+                                         method="GET", headers={"Authorization": f"Bearer {self.token()}"})
+            try:
+                with urllib.request.urlopen(req, timeout=self.timeout, context=self.ssl) as resp:
+                    return resp.read()
+            except urllib.error.HTTPError as e:
+                if e.code == 401 and attempt == 1:
+                    self.access_token = None
+                    continue
+                raise GaiaError(f"Gaia download of upload {upload_id} returned {e.code}: "
+                                f"{e.read().decode('utf-8', 'replace')[:500]}")
+            except urllib.error.URLError as e:
+                raise GaiaError(f"Cannot reach Gaia at {self.base}: {e.reason}")
+
     def request(self, method, path, params=None, body=None):
         status, payload = self._http(method, path, params=params, body=body)
         if status == 401:
@@ -613,13 +630,14 @@ class Tools:
         plan_issues = self.g.find("ideaplanissue", f"(Ideaplanissue.ideaId : {idea['id']})", rels="issue", limit=-1)
         return {
             "id": idea["id"], "title": idea.get("title"), "description": idea.get("description"),
-            "status": idea.get("status"), "projectId": idea.get("projectId"),
+            "status": idea.get("status"), "projectId": idea.get("projectId"), "createdUser": idea.get("createdUser"),
             "projectShortCode": (idea.get("project") or {}).get("shortCode"),
             "messages": sorted(idea.get("messages") or [], key=lambda r: r.get("dateCreated") or ""),
             "plans": sorted(idea.get("plans") or [], key=lambda r: int(r.get("version") or 0)),
             "planIssues": [{"id": r.get("id"), "ideaplanId": r.get("ideaplanId"), "key": r.get("key"),
                             "issueId": r.get("issueId"),
-                            "issueNumber": (r.get("issue") or {}).get("issueNumber")} for r in plan_issues],
+                            "issueNumber": (r.get("issue") or {}).get("issueNumber"),
+                            "projectShortcode": (r.get("issue") or {}).get("projectShortcode")} for r in plan_issues],
         }
 
     def list_ideas(self, args):

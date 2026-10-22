@@ -37,7 +37,7 @@ class Agent:
     pickup_status: str = None           # status set when Talos starts work on an issue (None = leave it)
     resume_max_idle_minutes: int = 55   # resume a session only if its last run ended this recently (0 = always)
     max_turns: int = 0                  # turns per run before Claude stops and the issue goes back (0 = no limit)
-    kind: str = "issues"                # "issues": works assigned issues (Hermes); "ideas": brainstorms ideas (sim)
+    kind: str = "issues"                # "issues": works assigned issues; "ideas": brainstorms ideas (Gaia, or the sim)
     events: list = field(default_factory=list)       # event names to subscribe to (kind ideas)
     builtin_tools: str = ""             # `claude --tools`: the built-in tools loaded at all (empty = all)
     denied_tools: list = field(default_factory=list)  # `--disallowedTools`
@@ -118,7 +118,7 @@ def load_agent(folder):
         limits_by_model=dict(raw.get("limitsByModel", {})),
         ship_prompt=raw.get("shipPrompt", ""),
         env={str(k): str(v) for k, v in raw.get("env", {}).items()},
-        extra={k: raw[k] for k in ("knowledgeMap",) if k in raw},
+        extra={k: raw[k] for k in ("knowledgeMap", "ideaSource") if k in raw},
     )
 
 

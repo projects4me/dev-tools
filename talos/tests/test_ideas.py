@@ -92,6 +92,13 @@ class PolicyTest(unittest.TestCase):
         self.assertEqual([m["id"] for m in policy.unanswered(msgs, 0)], [3, 5])     # no state: after the last reply
         self.assertEqual([m["id"] for m in policy.unanswered(msgs, 3)], [5])        # sent during a turn still counts
 
+    def test_unanswered_goes_by_order_not_by_id(self):
+        msgs = [{"id": "f1", "role": "user"}, {"id": "a2", "role": "agent"}, {"id": "c3", "role": "user"},
+                {"id": "b4", "role": "system"}, {"id": "05", "role": "user"}]         # GUIDs: no order of their own
+        self.assertEqual([m["id"] for m in policy.unanswered(msgs, None)], ["c3", "05"])
+        self.assertEqual([m["id"] for m in policy.unanswered(msgs, "c3")], ["05"])
+        self.assertEqual([m["id"] for m in policy.unanswered(msgs, "gone")], ["c3", "05"])
+
     def test_sse(self):
         lines = ["event: ready\n", 'data: {"accepted": []}\n', "\n", ": keepalive\n", "\n",
                  "event: domain:event\n", 'data: {"eventName": "x"}\n', "\n"]
@@ -306,7 +313,7 @@ class FakeClient:
         version = 1 + sum(1 for x in self.screens if x["idea_id"] == idea_id and x["key"] == screen["key"])
         self.screens.append({"id": 900 + len(self.screens), "idea_id": idea_id, "key": screen["key"],
                              "title": screen["title"], "version": version, "png_bytes": png})
-        return self.screens[-1]["id"], version
+        return self.screens[-1]["id"]
 
     def screen_png(self, screen_id):
         return next(x["png_bytes"] for x in self.screens if x["id"] == screen_id)
@@ -484,12 +491,12 @@ class IdeasFlowTest(TempDb):
         self.assertEqual(self.launcher.calls, [])
         self.assertEqual(self.client.messages[-1]["body"], "Stopped.")
 
-    def test_reconcile_queues_waiting_work_and_cleans_up(self):
+    def test_reconcile_queues_waiting_work_and_resumes_plans(self):
         self.client.say(7, "anyone there?")
         self.client.add_plan(7, {"summary": "s", "issues": []})
         self.client.plans[0]["status"] = "creating"                               # Talos died mid-approval
         self.worker.reconcile()
-        self.assertEqual(self.client.plans[0]["status"], "failed")
+        self.assertEqual(self.worker._queue.get_nowait(), ("approve", 7, self.client.plans[0]["id"]))
         self.assertEqual(self.worker._queue.get_nowait(), ("turn", 7))
 
     def test_a_message_sent_during_a_turn_gets_its_own_turn(self):

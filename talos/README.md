@@ -126,24 +126,34 @@ act only on the issues *its* engineer assigns. `agents/<name>/agent.local.json` 
 
 ## Ideas agents (Agent Nestor)
 
-An ideas agent talks with an engineer about an idea (the [Nestor UI](../nestor/README.md)), proposes an
-implementation plan, and creates the approved plan's issues. Ideas live in Gaia and their events come through
-Hermes; until those exist, in the [`dev-tools/sim`](../sim/README.md) stand-ins with the same contract.
+An ideas agent talks with an engineer about an idea (Prometheus' Ideas section), proposes an implementation plan,
+and creates the approved plan's issues. Ideas live in Gaia and Gaia publishes their events through Hermes; Gaia
+and Prometheus know nothing about agents: Talos decides that Agent Nestor answers every idea in his projects.
+With `"ideaSource": "sim"` in agent.json the agent uses the [`dev-tools/sim`](../sim/README.md) stand-ins instead
+(and the [Nestor UI](../nestor/README.md)), until the sim is retired.
 
 ```
-UI ─▶ (sim) Gaia ─publish─▶ (sim) Hermes ─idea.message.created──────▶ Talos ─claude -p (streamed)─▶ agent
-                                          ─idea.plan.status.changed─▶   │  ├─ progress ─▶ (sim) Hermes ─▶ UI
-                                          ─idea.updated (stopping)───▶   │  └─ reply / plan ─▶ (sim) Gaia
-                                                                         └─ approved plan ─gaia MCP─▶ Gaia issues
+Prometheus ─▶ Gaia ─publish─▶ Hermes ─idea.message.created──────▶ Talos ─claude -p (streamed)─▶ agent
+                                     ─idea.plan.status.changed─▶   │  └─ notice / reply / plan ─gaia MCP─▶ Gaia
+                                                                   └─ approved plan ─gaia MCP─▶ Gaia issues
 ```
 
-- **Events** (agent.json `events`, user-scoped intents `user:<agent id>`; lib/ideas/policy.py): a message from the
-  engineer starts a turn, a plan set to `approved` starts the issue creation, `agent_state: stopping` stops the
-  running turn. Only from users in `acceptAssignmentsFrom`; the worker re-reads the idea (events are hints).
+- **Events** (lib/hermes.py `Listener`, lib/ideas/policy.py `gaia_job_for`): `idea.message.created` and
+  `idea.plan.status.changed` in every project of the agent. A `kind: message` from someone else starts a turn, a
+  plan set to `approved` starts the issue creation. The agent's own events are ignored, and only users in
+  `acceptAssignmentsFrom` hand it work; the worker re-reads the idea (events are hints). On the sim: agent.json
+  `events`, user-scoped intents `user:<agent id>`, and `agent_state: stopping` stops the running turn.
+- **Idea client** (lib/ideas/client.py on the gaia MCP's idea tools; sim_client.py on the sim): maps Gaia's
+  records onto one shape. A message's `kind` plus its author become its role (`message` by the agent is its
+  reply), `ideaplanId`/`costUsd` carry the plan and cost, `steps` and `screens` are JSON; the idea's screens are
+  the uploads its messages list; a plan's created issues are its Ideaplanissues; the idea's owner is who created
+  it. Idea ids are GUIDs. Gaia ideas have no agent state: a turn starts with a `kind: system` notice ("Agent
+  Nestor is working on it"), and there is no live progress (Hermes has no agent publish path).
 - **A turn** (lib/ideas/conversation.py): takes in every engineer message since the last turn (also ones sent
   while the agent was answering), resumes the idea's Claude session (or replays the conversation when there is
   none), syncs the `ai kb` issue index (at most every `kbMaxAgeMinutes`), runs `claude -p --output-format
-  stream-json`, publishes `idea.agent.progress` (text in small batches, steps, turns), then posts the reply. A
+  stream-json` (on the sim, publishing `idea.agent.progress`: text in small batches, steps, turns), then posts
+  the reply with its steps, cost and screens. A
   fenced `nestor-plan` JSON block in it is validated (lib/ideas/plan.py; descriptions reduced to plain HTML by
   sanitize.py) and posted as a new plan version; an invalid block gets one correction round.
 - **Milestone**: every plan issue goes in **Claude-v1** unless the engineer asked for another; Nestor then names
@@ -152,7 +162,7 @@ UI ─▶ (sim) Gaia ─publish─▶ (sim) Hermes ─idea.message.created──
 - **UI screens** (lib/ideas/screens.py, render.py): when asked, the agent writes `nestor-screen` blocks of HTML in
   Prometheus' markup; Talos sanitises them (no scripts, styles or external URLs), renders each to a PNG with a
   headless Chromium (Edge or Chrome on Windows; Chromium, Chrome or Edge on Linux; `browserBin` to choose) and
-  stores it on the idea (`ideascreen`), where the UI shows it. The page uses Prometheus' real built CSS from the
+  uploads it to the idea, listed in the reply's `screens` (on the sim: `ideascreen`), where the UI shows it. The page uses Prometheus' real built CSS from the
   running app (`prometheusUrl`, else `appUrl` from `p4m configure`), falling back to the checkout's
   Bootstrap/AdminLTE plus screen_kit/projects4me.css. Plan issues list `screens`; on approval their latest PNGs
   are attached to the created issues (a failed attachment is reported in the idea). No browser, or a screen that fails to render: the reply says so and the plan simply doesn't attach it.
@@ -160,15 +170,17 @@ UI ─▶ (sim) Gaia ─publish─▶ (sim) Hermes ─idea.message.created──
   client as the agent, assigned to the idea's owner, in dependency order, each with a "Depends on" line; each is
   recorded on the idea at once, so approving a failed plan again creates only the missing ones. The agent is told
   the numbers at the start of its next turn.
-- **One job at a time** per agent (lib/ideas/worker.py); after each (re)connect it reconciles: unanswered
-  messages and approved plans are queued, a plan left `creating` by a stopped Talos is marked failed.
+- **One job at a time** per agent (lib/ideas/worker.py); after each (re)connect it reconciles, per project:
+  messages not followed by the agent's reply get a turn (so a Talos restarted mid-turn answers), and plans left
+  `approved` or `creating` carry on (one issue may then be created twice; see approval.py).
 - **Tool policy** in agent.json: `builtinTools` (`--tools`: only these are loaded, which keeps the context small),
   `allowedTools` with `permissionMode: dontAsk`, and `deniedTools` (beats any settings allow rule; Nestor's deny
   Write, git, the gaia write tools and reading credentials). MCP is only the gaia server
   (`--strict-mcp-config`, state/<agent>/mcp.json). `knowledgeMap`: the one file the agent may edit.
-- **State**: the conversation lives in (sim) Gaia; Talos keeps the agent's own memory in the `ideas` table.
+- **State**: the conversation lives in Gaia (or the sim); Talos keeps the agent's own memory in the `ideas` table.
 
-Config: `sim.url` and `sim.secretFile` (or `sim.secret` in config.local.json); `kbMaxAgeMinutes`; `browserBin` and `prometheusUrl` for screens (empty: found automatically).
+Config: `hermesUrl` (as for issue agents); on the sim, `sim.url` and `sim.secretFile` (or `sim.secret` in
+config.local.json); `kbMaxAgeMinutes`; `browserBin` and `prometheusUrl` for screens (empty: found automatically).
 
 ## State: `state/talos.db` (SQLite)
 
@@ -203,4 +215,4 @@ The pre-SQLite `state/sessions.json` is imported when `talos run`/`dispatch` sta
 | `lib/sessions.py` | issue state (`issues` table): session, run count, escalation, in-flight flag |
 | `lib/runs.py` | run records (`runs` table) and the per-run cost calculation |
 | `lib/simbus.py` | sim Hermes connection (SSE): the event source for ideas agents until Hermes carries idea events |
-| `lib/ideas/` | ideas agents: `setup` (wiring), `policy` (events, what waits), `worker` (queue, stop, reconcile), `conversation` (a turn), `approval` (plan → issues), `stream` (streamed run, command), `client` (idea resources), `progress` (live progress), `plan`, `screens` (blocks) + `render` (= `styles` + `page` + `browser`) + `screen_kit/` (UI screens → PNG), `sanitize`, `steps`, `kb`, `state` |
+| `lib/ideas/` | ideas agents: `setup` (wiring), `policy` (events, what waits), `worker` (queue, stop, reconcile), `conversation` (a turn), `approval` (plan → issues), `stream` (streamed run, command), `client` (Gaia idea resources) and `sim_client` (the sim's), `progress` (live progress on the sim), `plan`, `screens` (blocks) + `render` (= `styles` + `page` + `browser`) + `screen_kit/` (UI screens → PNG), `sanitize`, `steps`, `kb`, `state` |
