@@ -8,10 +8,15 @@ from .. import db
 COLUMNS = ("session_id", "session_cost_usd", "note", "answered_upto", "last_ended_at")
 
 
+def _key(idea):
+    """Sim ideas have integer ids, Gaia's are GUIDs."""
+    return idea if isinstance(idea, int) else str(idea)
+
+
 def get(agent, idea):
     conn = db.connect()
     try:
-        row = conn.execute("SELECT * FROM ideas WHERE agent = ? AND idea = ?", (agent, int(idea))).fetchone()
+        row = conn.execute("SELECT * FROM ideas WHERE agent = ? AND idea = ?", (agent, _key(idea))).fetchone()
         return dict(row) if row else {}
     finally:
         conn.close()
@@ -25,10 +30,10 @@ def update(agent, idea, **fields):
     conn = db.connect()
     try:
         with conn:
-            conn.execute("INSERT OR IGNORE INTO ideas (agent, idea) VALUES (?, ?)", (agent, int(idea)))
+            conn.execute("INSERT OR IGNORE INTO ideas (agent, idea) VALUES (?, ?)", (agent, _key(idea)))
             if fields:
                 sets = ", ".join(f"{k} = ?" for k in fields)
                 conn.execute(f"UPDATE ideas SET {sets} WHERE agent = ? AND idea = ?",
-                             (*fields.values(), agent, int(idea)))
+                             (*fields.values(), agent, _key(idea)))
     finally:
         conn.close()

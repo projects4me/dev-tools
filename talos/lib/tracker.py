@@ -125,6 +125,16 @@ class Tracker:
             path.write_bytes(png)
             return self._call(self.tools.attach_file, {"issue_number": number, "file_path": str(path)})
 
+    # -- ideas -----------------------------------------------------------------------------
+
+    def tool(self, name, args):
+        """A gaia-mcp tool by its method name (e.g. "get_idea"), as this agent."""
+        return self._call(getattr(self.tools, name), args)
+
+    def download(self, upload_id):
+        """An upload's bytes (e.g. an idea screen's PNG)."""
+        return self._call(self.gaia.download, upload_id)
+
     def project_codes(self):
         """Project name -> short code for the agent's configured projects."""
         visible = {p["name"]: p["shortCode"] for p in self._call(self.tools.list_projects, {})["projects"]}

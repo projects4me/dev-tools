@@ -130,12 +130,14 @@ class IdeaToolsTest(unittest.TestCase):
 
     def test_get_idea_returns_ordered_messages_plans_and_plan_issues(self):
         self.g.rows["ideaplanissue"] = [{"id": "x", "ideaplanId": "pl1", "key": "a", "issueId": "i-1",
-                                         "issue": {"id": "i-1", "issueNumber": 4100}}]
+                                         "issue": {"id": "i-1", "issueNumber": 4100, "projectShortcode": "adt"}}]
+        self.g.rows["idea"][0]["createdUser"] = "1"
         out = self.tools.get_idea({"idea": "idea-1"})
+        self.assertEqual(out["createdUser"], "1")
         self.assertEqual(out["projectShortCode"], "adt")
         self.assertEqual([m["id"] for m in out["messages"]], ["m1", "m2"])
         self.assertEqual([p["id"] for p in out["plans"]], ["pl1", "pl2"])
-        self.assertEqual(out["planIssues"][0]["issueNumber"], 4100)
+        self.assertEqual((out["planIssues"][0]["issueNumber"], out["planIssues"][0]["projectShortcode"]), (4100, "adt"))
 
     def test_get_idea_not_found_is_a_gaia_error(self):
         self.g.rows["idea"] = []

@@ -26,3 +26,11 @@ class ProgressPublisher:
                 pass
         except OSError:
             pass
+
+
+class NoProgress:
+    """Gaia ideas: Hermes takes events only from Gaia, so there is no live progress yet (the reply carries the
+    steps)."""
+
+    def publish(self, idea, payload):
+        pass

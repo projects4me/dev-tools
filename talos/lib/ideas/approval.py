@@ -4,12 +4,13 @@ failed plan again creates only the ones still missing. No LLM involved. Each iss
 (Claude-v1 unless the engineer asked otherwise; the gaia MCP client creates a milestone the project doesn't
 have yet) and gets the PNGs of the screens it lists attached.
 
-One window is left: if Talos dies between Gaia creating an issue and the idea recording it, approving again
-creates that one issue a second time (the failure message says to check Gaia first)."""
+A plan left "creating" (Talos stopped mid-approval) is taken up again the same way on the next reconcile. One
+window is left: if Talos dies between Gaia creating an issue and the idea recording it, carrying on creates that
+one issue a second time (the failure message says to check Gaia first)."""
 
 from ..config import log
 from . import plan as plans
-from . import state
+from . import policy, state
 
 
 class Approval:
@@ -20,7 +21,7 @@ class Approval:
         data = self.client.idea(idea_id)
         idea = data["idea"]
         plan = next((p for p in data["plans"] if p["id"] == plan_id), None)
-        if not plan or plan["status"] != "approved":
+        if not plan or plan["status"] not in policy.RESUMABLE:
             return None                                  # handled already, or no longer approved
         self.client.set_plan_status(plan_id, "creating")
         issues = plan["body"]["issues"]

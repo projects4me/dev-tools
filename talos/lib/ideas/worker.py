@@ -1,7 +1,7 @@
 """An ideas agent's work queue: one job at a time (runs share the workspace), the way the Dispatcher works issues.
 
-Jobs come from events (policy.job_for) and from reconciling after each (re)connect, since Hermes keeps no history:
-engineer messages no turn has taken in, and approved plans not yet created.
+Jobs come from events (policy.job_for, policy.gaia_job_for) and from reconciling after each (re)connect, since Hermes keeps no history:
+engineer messages no turn has taken in, and plans approved or left creating.
 """
 
 import queue
@@ -12,10 +12,12 @@ from . import policy, state
 
 
 class IdeaWorker:
-    def __init__(self, agent, client, progress, conversation, approval, user_id):
+    def __init__(self, agent, client, progress, conversation, approval, user_id, job_for=None):
         self.agent, self.client, self.progress = agent, client, progress
         self.conversation, self.approval = conversation, approval
         self.user_id = str(user_id)
+        # envelope -> job or None: the sim's events by default, policy.gaia_job_for for Gaia's
+        self.job_for = job_for or (lambda envelope: policy.job_for(envelope, agent, self.user_id))
         self._queue = queue.Queue()
         self._lock = threading.Lock()
         self._pending = set()        # (kind, idea) queued or running
@@ -26,7 +28,7 @@ class IdeaWorker:
     # -- intake -------------------------------------------------------------------------------------------------
 
     def on_event(self, envelope):
-        job = policy.job_for(envelope, self.agent, self.user_id)
+        job = self.job_for(envelope)
         if job and job[0] == "stop":
             self.stop(job[1])
         elif job:
@@ -84,12 +86,7 @@ class IdeaWorker:
         data = self.client.idea(idea_id)
         if data["idea"]["owner"] not in self.agent.accept_from:
             return
-        for plan in data["plans"]:
-            if plan["status"] == "creating":   # Talos stopped mid-approval
-                self.client.set_plan_status(plan["id"], "failed",
-                                            "interrupted: Talos stopped while creating these issues. Check Gaia for "
-                                            "the one being created then, and approve again for the rest.")
-        for plan in policy.approved_plans(data["plans"]):
+        for plan in policy.resumable_plans(data["plans"]):   # creating: Talos stopped mid-approval, carry on
             self.submit(("approve", idea_id, plan["id"]), "reconcile")
         if policy.unanswered(data["messages"], state.get(self.agent.name, idea_id).get("answered_upto")):
             self.submit(("turn", idea_id), "reconcile")
@@ -147,7 +144,7 @@ class IdeaWorker:
             self._set_state(idea_id, "idle")
 
     def _latest_user_message(self, idea_id):
-        return max((m["id"] for m in self.client.idea(idea_id)["messages"] if m["role"] == "user"), default=0)
+        return next((m["id"] for m in reversed(self.client.idea(idea_id)["messages"]) if m["role"] == "user"), 0)
 
     def _running(self, run):
         """Called by the conversation once its process runs: Stop can now reach it."""

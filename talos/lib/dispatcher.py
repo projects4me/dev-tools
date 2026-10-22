@@ -35,6 +35,12 @@ class Dispatcher:
 
     # -- queueing ----------------------------------------------------------------------------
 
+    def on_event(self, envelope):
+        """An issue assignment from Hermes: work it when it hands this agent work from an allowed user."""
+        number = policy.event_issue(envelope, self.agent, self.user_id)
+        if number is not None:
+            self.submit(number, f"assigned by user {envelope.get('actorId')}")
+
     def submit(self, number, source, reconcile=False):
         """Queue an issue once; repeats while it is queued or running are dropped."""
         with self._lock:
