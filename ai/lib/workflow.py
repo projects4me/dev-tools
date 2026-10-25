@@ -185,7 +185,8 @@ def cmd_handoff(args):
 # --- tracker views --------------------------------------------------------------------------
 
 def cmd_issue(args):
-    issue = tracker_call("get_issue", issue_number=args.issue)
+    issue = tracker_call("get_issue", issue_number=args.issue,
+                         comments=100 if args.full else max(1, min(args.comments, 100)))
     say(f"#{issue['issueNumber']} [{issue['status']}] {issue['subject']}")
     say(f"  {issue['project']} · {issue['type']} · {issue['priority']} · assignee {issue['assignee']} · "
         f"spent {issue.get('spent', {}).get('total', '?')}")
@@ -195,7 +196,8 @@ def cmd_issue(args):
     comments = issue.get("comments") or []
     shown = comments if args.full else comments[-args.comments:] if args.comments else []
     if comments:
-        say(f"\n--- comments ({len(comments)}, showing {len(shown)}) ---")
+        older = ", older ones not loaded (--comments N, up to 100)" if issue.get("olderComments") else ""
+        say(f"\n--- comments ({len(comments)}, showing {len(shown)}{older}) ---")
     for c in shown:
         say(f"[{c['date'][:16]}] {c['by']}: {strip_html(c['comment'], None if args.full else 600)}")
 

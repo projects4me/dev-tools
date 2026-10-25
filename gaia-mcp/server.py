@@ -406,17 +406,30 @@ class Tools:
         return {"project": p.get("name"), "count": len(rows),
                 "issues": [summarize_issue(r, self.ui) for r in rows]}
 
+    COMMENTS_DEFAULT, COMMENTS_MAX = 10, 100
+    TIMELOG_LIMIT = 1000
+
     def get_issue(self, args):
-        i = self.g.issue_by_number(args["issue_number"],
-                                   rels="issuestatus,issuetype,assignedTo,issuemilestone,project,comments,spent,estimated")
+        # Gaia's limit counts joined rows, so hasMany rels on this limit=1 read would cut the comments and time
+        # logs short. Load the issue alone, then each child list in its own query with its own limit.
+        i = self.g.issue_by_number(args["issue_number"])
         out = summarize_issue(i, self.ui)
         out["complexity"] = read_complexity(i.get("description"))
         out["description"] = i.get("description")
         out["parentId"] = i.get("parentId")
+        want = max(1, min(int(args.get("comments") or self.COMMENTS_DEFAULT), self.COMMENTS_MAX))
+        comments = []
+        if i.get("conversationRoomId"):
+            comments = self.g.find("comment", f"((Comment.relatedId : {i['conversationRoomId']}) AND "
+                                              "(Comment.relatedTo : conversationrooms))",
+                                   sort="Comment.dateCreated", order="DESC", limit=want + 1)
+        out["olderComments"] = len(comments) > want
         out["comments"] = [{"date": c.get("dateCreated"), "by": c.get("createdUserName"), "comment": c.get("comment")}
-                           for c in sorted(i.get("comments") or [], key=lambda c: c.get("dateCreated") or "")]
-        for rel in ("spent", "estimated"):
-            logs = i.get(rel) or []
+                           for c in reversed(comments[:want])]
+        timelogs = self.g.find("timelog", f"((Timelog.issueId : {i['id']}) AND (Timelog.deleted : 0))",
+                               sort="Timelog.dateCreated", order="ASC", limit=self.TIMELOG_LIMIT)
+        for rel, context in (("spent", "spent"), ("estimated", "est")):
+            logs = [l for l in timelogs if l.get("context") == context]
             out[rel] = {"total": format_minutes(sum(log_minutes(l) for l in logs)),
                         "entries": [{"on": (l.get("spentOn") or l.get("dateCreated") or "")[:10],
                                      "by": l.get("createdUserName"), "time": format_minutes(log_minutes(l)),
@@ -793,8 +806,13 @@ TOOLS = [
          "spent_on": {"type": "string", "description": "YYYY-MM-DD, defaults to today. Ignored for estimates."},
          "kind": {"type": "string", "enum": ["spent", "estimate"]}},
       "required": ["issue_number", "description"]}),
-    ("gaia_get_issue", "get_issue", "Get one issue by its issue number, with description, comments and logged/estimated time.",
-     {"type": "object", "properties": {"issue_number": {"type": "integer"}}, "required": ["issue_number"]}),
+    ("gaia_get_issue", "get_issue",
+     "Get one issue by its issue number, with description, its latest comments (oldest first; olderComments says "
+     "whether there are more) and logged/estimated time.",
+     {"type": "object", "properties": {
+         "issue_number": {"type": "integer"},
+         "comments": {"type": "integer", "minimum": 1, "maximum": 100, "description": "Latest comments to return (default 10)."}},
+      "required": ["issue_number"]}),
     ("gaia_create_issue", "create_issue",
      "Create an issue in a Projects4Me project. Defaults: type Task, status new, priority medium, assignee me, "
      "start date today, end date a week later, milestone Claude-v1. A milestone the project doesn't have yet "
