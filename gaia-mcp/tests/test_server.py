@@ -81,6 +81,70 @@ class MilestoneTest(unittest.TestCase):
         self.assertIn("gaia_create_milestone", json.dumps([t[0] for t in server.TOOLS]))
 
 
+class IssueGaia:
+    """A fake Gaia for get_issue: comments and time logs come only from their own queries, newest first."""
+
+    def __init__(self, comments=12):
+        # what real Gaia does with hasMany rels on a limit=1 read: the related records are cut short
+        self.issue = {"id": "i-1", "issueNumber": 4075, "subject": "S", "conversationRoomId": "room-1",
+                      "comments": [{"dateCreated": "2026-10-01 00:00:00", "comment": "c00"}] * 2}
+        self.comments = [{"dateCreated": f"2026-10-{n + 1:02d} 00:00:00", "createdUserName": "U", "comment": f"c{n:02d}"}
+                         for n in range(comments)]
+        self.timelogs = [{"context": "spent", "hours": 1, "spentOn": "2026-10-02 00:00:00"},
+                         {"context": "spent", "minutes": 30, "spentOn": "2026-10-03 00:00:00"},
+                         {"context": "est", "days": 1, "dateCreated": "2026-10-01 00:00:00"}]
+        self.issue_rels, self.finds = None, []
+
+    def issue_by_number(self, number, rels=None):
+        self.issue_rels = rels
+        return dict(self.issue)
+
+    def find(self, module, query=None, rels=None, fields=None, sort=None, order=None, limit=None, page=None):
+        self.finds.append({"module": module, "query": query, "sort": sort, "order": order, "limit": limit})
+        rows = {"comment": sorted(self.comments, key=lambda c: c["dateCreated"], reverse=True),
+                "timelog": self.timelogs}[module]
+        return rows[:limit] if limit and limit > 0 else rows
+
+
+class GetIssueTest(unittest.TestCase):
+    def setUp(self):
+        self.g = IssueGaia()
+        self.tools = server.Tools(self.g)
+
+    def test_the_issue_read_asks_for_no_has_many_rels(self):
+        self.tools.get_issue({"issue_number": 4075})
+        self.assertFalse({"comments", "spent", "estimated"} & set((self.g.issue_rels or "").split(",")))
+
+    def test_the_latest_ten_comments_come_from_their_own_query_oldest_first(self):
+        out = self.tools.get_issue({"issue_number": 4075})
+        self.assertEqual([c["comment"] for c in out["comments"]], [f"c{n:02d}" for n in range(2, 12)])
+        self.assertTrue(out["olderComments"])
+        q = next(f for f in self.g.finds if f["module"] == "comment")
+        self.assertIn("room-1", q["query"])
+        self.assertEqual((q["sort"], q["order"]), ("Comment.dateCreated", "DESC"))
+
+    def test_more_comments_can_be_asked_for_up_to_the_cap(self):
+        out = self.tools.get_issue({"issue_number": 4075, "comments": 50})
+        self.assertEqual(len(out["comments"]), 12)
+        self.assertFalse(out["olderComments"])
+        self.tools.get_issue({"issue_number": 4075, "comments": 10000})
+        self.assertEqual(self.g.finds[-2]["limit"], server.Tools.COMMENTS_MAX + 1)
+
+    def test_an_issue_without_a_conversation_room_has_no_comments(self):
+        self.g.issue["conversationRoomId"] = None
+        out = self.tools.get_issue({"issue_number": 4075})
+        self.assertEqual((out["comments"], out["olderComments"]), ([], False))
+        self.assertFalse([f for f in self.g.finds if f["module"] == "comment"])
+
+    def test_spent_and_estimated_come_from_one_time_log_query(self):
+        out = self.tools.get_issue({"issue_number": 4075})
+        self.assertEqual((out["spent"]["total"], len(out["spent"]["entries"])), ("1h 30m", 2))
+        self.assertEqual((out["estimated"]["total"], len(out["estimated"]["entries"])), ("1d", 1))
+        q = next(f for f in self.g.finds if f["module"] == "timelog")
+        self.assertIn("i-1", q["query"])
+        self.assertGreater(q["limit"], 0)
+
+
 PNG = b"\x89PNG\r\n\x1a\n" + b"0" * 16
 
 
