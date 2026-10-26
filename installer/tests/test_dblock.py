@@ -6,6 +6,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest import mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -48,10 +49,16 @@ class LockTest(unittest.TestCase):
             self.assertEqual(self.path.read_text(), str(os.getpid()))
 
     def test_live_lock_times_out(self):
-        self.path.write_text("12345")             # fresh mtime: a live holder
+        self.path.write_text(str(os.getpid()))    # fresh mtime and a live PID: a live holder
         with self.assertRaises(dblock.LockTimeout):
             with dblock.held(self.path, wait_seconds=1):
                 pass
+
+    def test_dead_pid_with_fresh_heartbeat_is_taken_over(self):
+        self.path.write_text("12345")             # fresh mtime, but nobody runs it
+        with mock.patch.object(dblock, "pid_alive", return_value=False):
+            with dblock.held(self.path, wait_seconds=5):
+                self.assertEqual(self.path.read_text(), str(os.getpid()))
 
 
 if __name__ == "__main__":

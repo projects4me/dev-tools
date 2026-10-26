@@ -12,6 +12,8 @@
 
 import json
 import re
+import os
+import signal
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -41,12 +43,40 @@ def _run_logged(name, cmd, cwd=WORKSPACE):
     chunks = []
     with open(log, "w", encoding="utf-8") as f, subprocess.Popen(
             cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-            encoding="utf-8", errors="replace", bufsize=1) as proc:
-        for line in proc.stdout:
-            chunks.append(line)
-            f.write(line)
-            f.flush()
+            encoding="utf-8", errors="replace", bufsize=1,
+            start_new_session=(os.name != "nt")) as proc:   # own group, so kill_tree can killpg it
+        try:
+            for line in proc.stdout:
+                chunks.append(line)
+                f.write(line)
+                f.flush()
+        except BaseException:        # interrupted or terminated: don't leave an orphan holding the test lock
+            kill_tree(proc.pid)
+            raise
     return proc.returncode, "".join(chunks), log
+
+
+def kill_tree(pid):
+    """Terminate a process and all its children (killing only the parent leaves the p4m child running)."""
+    if sys.platform == "win32":
+        subprocess.run(["taskkill", "/T", "/F", "/PID", str(pid)], capture_output=True)
+    else:
+        try:
+            os.killpg(os.getpgid(pid), signal.SIGTERM)
+        except (ProcessLookupError, PermissionError):
+            pass
+
+
+def _terminate_as_interrupt():
+    """Turn SIGTERM / SIGBREAK into KeyboardInterrupt so the run's `finally` cleanup and kill_tree happen."""
+    def handler(signum, frame):
+        raise KeyboardInterrupt
+    for name in ("SIGTERM", "SIGBREAK"):
+        if hasattr(signal, name):
+            try:
+                signal.signal(getattr(signal, name), handler)
+            except ValueError:       # not the main thread
+                pass
 
 
 def bad_filter(value):
@@ -322,6 +352,8 @@ def cmd_test(args):
     for n in notes:
         say(n)
     full = not targets
+    _terminate_as_interrupt()
+    started = results.tree_fingerprint(repo)     # the container mounts the live checkout: see results.record
     runs = [run_suite(repo, s, src, targets) for s in SUITES[repo]]
 
     sha = git(repo, "merge-base", "HEAD", f"origin/{base_branch(repo)}", check=False) or ""
@@ -345,7 +377,9 @@ def cmd_test(args):
     verdict = "PASS" if ok else "FAIL"
     say(f"\nRESULT: {verdict}{'' if full else ' (targeted run; ai ship needs a full run)'} "
         f"(full logs in {STATE_DIR})")
-    results.record(repo, ok, full, lines + [f"RESULT: {verdict}"])
+    if not results.record(repo, ok, full, lines + [f"RESULT: {verdict}"], started):
+        say("tree changed during the run; re-run (the result is not shippable)")
+        return 1
     return 0 if ok else 1
 
 

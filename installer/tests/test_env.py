@@ -43,5 +43,29 @@ class SettingsKeyTest(unittest.TestCase):
         self.assertNotEqual(p4m.settings_key_entry(), p4m.settings_key_entry())
 
 
+class PrepareTestDbRetryTest(unittest.TestCase):
+    def _run(self, codes):
+        from unittest import mock
+        results = [mock.Mock(returncode=c) for c in codes]
+        with mock.patch.object(p4m, "is_running", return_value=True), \
+                mock.patch.object(p4m, "fix_eol_in"), mock.patch.object(p4m, "find_bash", return_value="bash"), \
+                mock.patch.object(p4m.time, "sleep"), mock.patch.object(p4m, "warn"), \
+                mock.patch.object(p4m, "info"), \
+                mock.patch.object(p4m, "run", side_effect=results) as run:
+            p4m.prepare_test_db(Path("/tmp/gaia"))
+        return run
+
+    def test_retries_dll_init_failure(self):
+        self.assertEqual(self._run([3221225794, -1073741502, 0]).call_count, 3)
+
+    def test_gives_up_after_two_retries(self):
+        with self.assertRaises(p4m.P4MError):
+            self._run([3221225794, 3221225794, 3221225794])
+
+    def test_other_failures_are_not_retried(self):
+        with self.assertRaises(p4m.P4MError):
+            self._run([1])
+
+
 if __name__ == "__main__":
     unittest.main()

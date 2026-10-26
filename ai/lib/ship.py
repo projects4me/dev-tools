@@ -53,6 +53,9 @@ def test_gate(repo):
     last = results.last(repo)
     if not last:
         raise AiError(f"no recorded test run: run `dev-tools/ai/ai test {repo}` on the final tree first")
+    if last.get("stale"):
+        raise AiError(f"the tree changed during the last test run: run `dev-tools/ai/ai test {repo}` again "
+                      "and don't edit the repo while it runs")
     if last["fingerprint"] != results.tree_fingerprint(repo):
         raise AiError(f"the tree changed since the last test run: run `dev-tools/ai/ai test {repo}` again")
     if not last["full"]:

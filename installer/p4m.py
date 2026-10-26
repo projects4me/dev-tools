@@ -1114,6 +1114,10 @@ def migrate() -> None:
     run(["docker", "exec", "-w", "/var/www/html", "gaia-dev", "php", "cli.php", "migration", "migrate"])
 
 
+DLL_INIT_FAILED = (3221225794, -1073741502)     # 0xC0000142: intermittent on Windows when Git Bash starts
+BASH_SPAWN_RETRIES = 2
+
+
 def prepare_test_db(src: Path | None = None) -> None:
     """Seed pr4m_test with the api-tester fixtures of `src` (default: the workspace's gaia)."""
     src = src or ROOT / "gaia"
@@ -1122,7 +1126,15 @@ def prepare_test_db(src: Path | None = None) -> None:
         raise P4MError("postgres is not running - `p4m up postgres` first")
     fix_eol_in(src, src.name)
     script = "tools/api-tester/harness/prepare-test-db.sh"
-    run([find_bash(), script], cwd=src)
+    for attempt in range(BASH_SPAWN_RETRIES + 1):
+        rc = run([find_bash(), script], cwd=src, check=False).returncode
+        if rc in DLL_INIT_FAILED and attempt < BASH_SPAWN_RETRIES:
+            warn(f"Git Bash failed to start (exit {rc}, STATUS_DLL_INIT_FAILED); retrying")
+            time.sleep(2)
+            continue
+        break
+    if rc != 0:
+        raise P4MError(f"command failed ({rc}): {find_bash()} {script}")
 
 
 def ensure_prometheus_deps(force: bool = False) -> None:
@@ -1421,7 +1433,8 @@ def test_db_lock():
     """Exclusive use of pr4m_test (every api run re-seeds it)."""
     try:
         return dblock.held(STATE_DIR / "pr4m_test.lock",
-                           on_wait=lambda p: info(f"waiting for another pr4m_test user to finish ({p})"))
+                           on_wait=lambda p: info(f"waiting for another pr4m_test user to finish ({p}, held by "
+                                                  f"{dblock.describe_holder(p)}; kill it if it is orphaned)"))
     except dblock.LockTimeout as e:
         raise P4MError(str(e))
 

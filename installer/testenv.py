@@ -407,8 +407,13 @@ class PrometheusTestContainer:
 
 def clean(checkout=None):
     """Remove the p4m test containers (only those for `checkout` if given). Returns their names."""
-    label = f"{LABEL}={norm(Path(checkout).resolve())}" if checkout else LABEL
-    names = _docker("ps", "-a", "--filter", f"label={label}", "--format", "{{.Names}}").stdout.split()
+    # a container is labelled with the path it was started with, so match the given and the resolved form
+    labels = ([f"{LABEL}={norm(p)}" for p in dict.fromkeys([Path(checkout), Path(checkout).resolve()])]
+              if checkout else [LABEL])
+    names = []
+    for label in labels:
+        names += [n for n in _docker("ps", "-a", "--filter", f"label={label}", "--format", "{{.Names}}").stdout.split()
+                  if n not in names]
     for n in names:
         _docker("rm", "-f", n, check=False)
     return names
