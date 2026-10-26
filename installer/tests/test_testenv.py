@@ -295,6 +295,24 @@ class GaiaContainerTest(unittest.TestCase):
         self.assertNotEqual(self.box.name, other.name)
 
 
+class CleanMatchTest(unittest.TestCase):
+    """`p4m test clean --src <path>` finds the container started for that path, however --src is spelt."""
+
+    def test_clean_filter_matches_the_gaia_container_label(self):
+        with tempfile.TemporaryDirectory() as d:
+            checkout = Path(d) / "baseline" / "gaia"
+            box = testenv.GaiaTestContainer(checkout, Path(d))
+            args, _, _ = box.run_args(GaiaContainerTest.SHARED)
+            label = args[args.index("--label") + 1]
+            spellings = [str(checkout), str(checkout) + os.sep, checkout.as_posix()]
+            if testenv.IS_WINDOWS:
+                spellings.append(str(checkout).upper())
+            for src in spellings:
+                with FakeDocker(lambda a: box.name + "\n" if f"label={label}" in a else "") as docker:
+                    self.assertEqual(testenv.clean(src), [box.name], src)
+                self.assertIn((("rm", "-f", box.name), None), docker.calls)
+
+
 @unittest.skipUnless(sys.platform.startswith("linux") and shutil.which("bash"), "needs /proc and bash")
 class BuilderScriptTest(unittest.TestCase):
     """The shell checks against real processes: a live `ember`, a dead pid, a live non-ember pid."""

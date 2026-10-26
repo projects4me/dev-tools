@@ -966,6 +966,22 @@ def find_bash() -> str:
     raise P4MError("Git Bash not found. Install Git for Windows (`p4m install`).")
 
 
+DLL_INIT_FAILED = (3221225794, -1073741502)     # 0xC0000142: intermittent on Windows when Git Bash starts
+BASH_SPAWN_RETRIES = 2
+
+
+def run_bash(args: list, cwd: Path | None = None) -> subprocess.CompletedProcess:
+    """Run `find_bash()` with `args` (never raises on its exit code). A Git Bash that fails to start
+    (STATUS_DLL_INIT_FAILED) is retried."""
+    bash = find_bash()
+    for attempt in range(BASH_SPAWN_RETRIES + 1):
+        cp = run([bash, *args], cwd=cwd, check=False)
+        if cp.returncode not in DLL_INIT_FAILED or attempt == BASH_SPAWN_RETRIES:
+            return cp
+        warn(f"Git Bash failed to start (exit {cp.returncode}, STATUS_DLL_INIT_FAILED); retrying")
+        time.sleep(2)
+
+
 # --------------------------------------------------------------------------- #
 # Prerequisites
 # --------------------------------------------------------------------------- #
@@ -1114,10 +1130,6 @@ def migrate() -> None:
     run(["docker", "exec", "-w", "/var/www/html", "gaia-dev", "php", "cli.php", "migration", "migrate"])
 
 
-DLL_INIT_FAILED = (3221225794, -1073741502)     # 0xC0000142: intermittent on Windows when Git Bash starts
-BASH_SPAWN_RETRIES = 2
-
-
 def prepare_test_db(src: Path | None = None) -> None:
     """Seed pr4m_test with the api-tester fixtures of `src` (default: the workspace's gaia)."""
     src = src or ROOT / "gaia"
@@ -1126,13 +1138,7 @@ def prepare_test_db(src: Path | None = None) -> None:
         raise P4MError("postgres is not running - `p4m up postgres` first")
     fix_eol_in(src, src.name)
     script = "tools/api-tester/harness/prepare-test-db.sh"
-    for attempt in range(BASH_SPAWN_RETRIES + 1):
-        rc = run([find_bash(), script], cwd=src, check=False).returncode
-        if rc in DLL_INIT_FAILED and attempt < BASH_SPAWN_RETRIES:
-            warn(f"Git Bash failed to start (exit {rc}, STATUS_DLL_INIT_FAILED); retrying")
-            time.sleep(2)
-            continue
-        break
+    rc = run_bash([script], cwd=src).returncode
     if rc != 0:
         raise P4MError(f"command failed ({rc}): {find_bash()} {script}")
 

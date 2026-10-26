@@ -33,16 +33,18 @@ def last(repo):
     return json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
 
 
-def record(repo, ok, full, lines, started_fingerprint=None):
-    """Store a run. `started_fingerprint` is the tree as the run began: the test container bind-mounts the
-    live checkout, so if the tree differs now, the run tested something else and is recorded as stale
-    (not ok), which `ai ship` refuses. Returns True if the result is trustworthy."""
-    now = tree_fingerprint(repo)
-    stale = started_fingerprint is not None and started_fingerprint != now
+def changed_since(repo, started_fingerprint):
+    """True if the tree differs from `started_fingerprint` (the tree as a run began): the run then tested
+    something else than the current tree."""
+    return started_fingerprint is not None and started_fingerprint != tree_fingerprint(repo)
+
+
+def record(repo, ok, full, lines, fingerprint, stale=False):
+    """Store a run of the tree `fingerprint`. A stale run (see changed_since) is stored as not ok, which
+    `ai ship` refuses."""
     if stale:
         ok = False
         lines = lines + ["STALE: tree changed during the run; re-run"]
     STATE_DIR.mkdir(exist_ok=True)
-    _file(repo).write_text(json.dumps({"fingerprint": started_fingerprint or now, "ok": ok, "full": full,
+    _file(repo).write_text(json.dumps({"fingerprint": fingerprint, "ok": ok, "full": full,
                                        "stale": stale, "lines": lines}, indent=2), encoding="utf-8")
-    return not stale

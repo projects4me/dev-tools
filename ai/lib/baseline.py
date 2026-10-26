@@ -57,6 +57,7 @@ def require(repo, sha, suites, runner):
     have = load(repo, sha)
     missing = [s for s in suites if s not in have]
     if not missing:
+        drop_container(repo)
         return have
     say(f"\nbaseline: running {', '.join(missing)} on {sha[:8]} to classify failures (one-off per base commit)")
     src = worktree(repo, sha)
@@ -68,6 +69,13 @@ def require(repo, sha, suites, runner):
             save(repo, sha, suite, result.failures)
             say(f"baseline {suite}: {len(result.failures)} failing on {sha[:8]}")
     finally:
-        # one-off per base commit: don't leave its test container running
-        run(p4m("test", "clean", "--src", str(src)), check=False)
+        drop_container(repo)
     return load(repo, sha)
+
+
+def drop_container(repo):
+    """Remove the baseline worktree's test container: a baseline run is one-off per base commit. Also
+    called when nothing is missing, because a hard-killed run (taskkill /F, a timed-out tool call) never
+    reaches require's `finally` and leaves it running."""
+    if (BASELINE_DIR / repo).exists():
+        run(p4m("test", "clean", "--src", str(BASELINE_DIR / repo)), check=False)
