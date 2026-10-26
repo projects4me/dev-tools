@@ -10,7 +10,7 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 from lib.common import AiError, REPOS  # noqa: E402
-from lib import apitester, context, kb, review, ship, tests, workflow  # noqa: E402
+from lib import apitester, context, cost, kb, review, ship, tests, workflow  # noqa: E402
 
 
 def build_parser():
@@ -28,6 +28,12 @@ def build_parser():
     sp.add_argument("issue", type=int)
     sp.add_argument("--comments", type=int, default=10, help="recent comments to show (default 10)")
     sp.add_argument("--full", action="store_true", help="show the whole description and all comments")
+
+    sp = add("cost", cost.cmd_cost, "token and turn accounting per session, issue and repo from Claude Code transcripts")
+    sp.add_argument("--repo", choices=repos)
+    sp.add_argument("--issue", type=int)
+    sp.add_argument("--since", metavar="DATE", help="sessions started on or after YYYY-MM-DD")
+    sp.add_argument("--json", action="store_true", help="machine-readable report")
 
     sp = add("sync", workflow.cmd_sync, "fetch origin and fast-forward local dev (after a merge)")
     sp.add_argument("repo", choices=repos)

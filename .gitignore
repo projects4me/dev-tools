@@ -19,7 +19,8 @@ gaia-mcp/*.env
 odysseus/odysseus.env
 
 # runtime state
-ai/state/
+ai/state/*
+!ai/state/cost-baseline.md
 talos/state/
 nestor/state/
 sim/state/
