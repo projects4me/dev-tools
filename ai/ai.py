@@ -10,7 +10,7 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 from lib.common import AiError, REPOS  # noqa: E402
-from lib import apitester, context, cost, kb, review, ship, tests, workflow  # noqa: E402
+from lib import apitester, context, cost, doctor, kb, review, ship, tests, workflow  # noqa: E402
 
 
 def build_parser():
@@ -69,6 +69,12 @@ def build_parser():
     sp.add_argument("--filter", help="explicit filter: QUnit text or /regex/ (prometheus), case id/path a|b (gaia api)")
     sp.add_argument("--no-baseline", action="store_true",
                     help="don't run the base commit to classify failures not seen before")
+    sp.add_argument("--explain", metavar="CASE", help="gaia: expected vs actual for one failed api case, from the last log")
+    sp.add_argument("--case", metavar="ID", help="gaia: run one api case on the already-seeded DB (no re-seed)")
+
+    sp = add("doctor", doctor.cmd_doctor, "check the Gaia test environment; each failure prints its fix")
+    sp.add_argument("repo", choices=["gaia"])
+    sp.add_argument("--json", action="store_true")
 
     sp = add("baseline", tests.cmd_baseline, "record which tests fail on origin/<base> now, by name")
     sp.add_argument("repo", choices=list(tests.SUITES))

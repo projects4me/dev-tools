@@ -46,6 +46,8 @@ def cmd_start(args):
     tracker_call("update_issue", issue_number=issue, status="in_progress", assignee="me")
     start_timer(issue, repo)
     say(f"issue #{issue}: in_progress, timer started {now().strftime('%H:%M')}")
+    from . import doctor
+    doctor.preflight(repo)
     cmd_issue(args)
 
 
