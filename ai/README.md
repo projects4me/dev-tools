@@ -69,6 +69,8 @@ dev-tools/ai/ai sync gaia              # after merge (start does this too)
 
 - Don't pipe `ai test` through `tail`/`head`: the log `state/test-<repo>-<suite>.log` is written as the run
   progresses, so read that instead. Prefer `--changed` or a plain-text `--filter`.
+- From PowerShell or cmd run `dev-toolsii ...` (`ai.cmd`, same runtime-copy selection and `P4M_RUNTIME=off`). A bare
+  `bash` in PowerShell is the WSL launcher, not Git Bash, so `bash dev-tools/ai/ai` fails there.
 - The launchers set `MSYS_NO_PATHCONV=1`, so `--filter "/idea/i"` reaches QUnit unchanged from Git Bash. A filter
   that looks like a converted Windows path is rejected.
 - `ember test` is stopped (and its Chrome killed in the container) when nothing matches the filter, a QUnit
