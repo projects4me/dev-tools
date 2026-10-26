@@ -10,6 +10,7 @@
 - Raw output goes to dev-tools/ai/state/test-<repo>-<suite>.log.
 """
 
+import json
 import re
 import subprocess
 import sys
@@ -94,8 +95,8 @@ def parse_phpunit_counts(summary):
     return int(tests.group(1)), bad
 
 
-def api(src, api_filter=None):
-    cmd = _p4m("test", "api", "--prepare", "--mode", "backend,acl,client", "--src", str(src))
+def api(src, api_filter=None, prepare=True):
+    cmd = _p4m("test", "api", *(["--prepare"] if prepare else []), "--mode", "backend,acl,client", "--src", str(src))
     if not _tag(src) and testmap.backend_catalog_stale(
             testmap.changed_files(src, f"origin/{base_branch('gaia')}")):
         cmd += ["--regenerate-backend"]
@@ -226,8 +227,82 @@ def judge(r, known):
 
 # --- commands ------------------------------------------------------------------------------------
 
+def explain_case(log_text, case_id):
+    """Compact expected-vs-actual lines for one failed api-tester case from a run log, or None if it did
+    not fail there. The runner prints `FAIL <id>` followed by `  - <assertion>` lines."""
+    lines, found = [], False
+    for line in log_text.splitlines():
+        if line.startswith(("FAIL ", "PASS ", "SKIP ")):
+            if found:
+                break
+            found = line == f"FAIL {case_id}"
+        elif found and line.startswith("  - "):
+            lines.append(line[4:].strip())
+    return lines if found else None
+
+
+def report_context(case_id, src):
+    """(request, response status) for a case from the api-tester JSON reports in <src>/output, if present."""
+    for path in sorted(Path(src, "output").glob("api-tester-*-report.json")):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        for r in data.get("results", []):
+            if r.get("id") == case_id and r.get("status") == "failed":
+                req = r.get("request") or {}
+                return f"{req.get('method', '?')} {req.get('url', '?')}", (r.get("response") or {}).get("status")
+    return None, None
+
+
+def cmd_explain(args):
+    if args.repo != "gaia":
+        say("--explain reads api-tester logs: gaia only")
+        return 2
+    log = STATE_DIR / "test-gaia-api.log"
+    if not log.exists():
+        say(f"no api log at {log}: run `ai test gaia` first")
+        return 2
+    failures = explain_case(log.read_text(encoding="utf-8", errors="replace"), args.explain)
+    if failures is None:
+        say(f"{args.explain}: did not fail in the last api run ({log.name})")
+        return 1
+    request, status = report_context(args.explain, repo_dir("gaia"))
+    say(f"FAIL {args.explain}" + (f"  [{request} -> {status}]" if request else ""))
+    for f in failures:
+        say(f"  {f}")
+    say(f"re-run just this case: dev-tools/ai/ai test gaia --case {args.explain}")
+    return 0
+
+
+def cmd_case(args):
+    """One api-tester case against the already-seeded pr4m_test (no re-seed). The harness filter is a
+    substring match on id/path/resource, so a short id may run neighbours too; the DB keeps what earlier
+    runs wrote, so a case that depends on a previous case's data needs the full run (which re-seeds)."""
+    if args.repo != "gaia":
+        say("--case runs api-tester cases: gaia only")
+        return 2
+    bad = bad_filter(args.case)
+    if bad:
+        say(bad)
+        return 2
+    r = api(repo_dir("gaia"), args.case, prepare=False)
+    for line in r.summary.splitlines():
+        say(line)
+    for f in r.failures:
+        say(f"  FAIL {f}")
+    if r.failures:
+        say(f"details: dev-tools/ai/ai test gaia --explain {r.failures[0]}")
+    say("(targeted run on the existing DB; ai ship needs a full run)")
+    return 0 if r.rc == 0 else 1
+
+
 def cmd_test(args):
     repo = args.repo
+    if args.explain:
+        return cmd_explain(args)
+    if args.case:
+        return cmd_case(args)
     if repo == "ares":
         say("ares has no test suite yet (see ares/CLAUDE.md): ship with `ai ship ares <issue> <spec> --no-tests "
             "\"<how you checked it>\"`")
