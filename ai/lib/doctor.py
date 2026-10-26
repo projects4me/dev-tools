@@ -41,7 +41,8 @@ class Env:
         self.src = repo_dir(repo)
 
     def mount_state(self):
-        """(serving checkout?, note): does the shared gaia-test serve this checkout, else can a throwaway work."""
+        """(serving checkout?, note): does the shared gaia-test serve this checkout (gaia tests always run in
+        their own copied-source container, made from gaia-test's image and settings)."""
         sys.path.insert(0, str(Path(p4m()[1]).parent))
         import testenv  # noqa: E402  (dev-tools/installer/testenv.py)
         shared = testenv.inspect("gaia-test")
@@ -90,8 +91,8 @@ def check_mount(env):
     serves, note = env.mount_state()
     if serves:
         return Result("test-container", True, note)
-    return Result("test-container", True, f"{note}; a throwaway container is used for this checkout "
-                                          "(`ai test` creates it)")
+    return Result("test-container", True, f"{note}; tests run in this checkout's own container with the "
+                                          "source copied in (`ai test` creates it from gaia-test's image)")
 
 
 def check_crlf(env):

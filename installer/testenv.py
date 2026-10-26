@@ -3,9 +3,13 @@
 The shared containers (gaia-test, hermes, prometheus-dev) serve whichever folder `p4m up` was run from.
 Several workspaces can exist on one machine, so `p4m test` checks what the shared container really runs:
 
-- gaia / hermes bind-mount their source. If the shared container mounts another folder, a throwaway
-  container is started from the same image, network, env and mounts, with the source mount (and any bind
-  under it) pointed at the checkout under test. It is kept for reuse and keyed by the checkout path.
+- hermes bind-mounts its source. If the shared container mounts another folder, a throwaway container is
+  started from the same image, network, env and mounts, with the source mount (and any bind under it)
+  pointed at the checkout under test. It is kept for reuse and keyed by the checkout path.
+- gaia always runs its tests in its own container per checkout, with the source copied in (only changed
+  files on later runs) instead of bind-mounted: on Docker Desktop every PHP file read through a Windows bind
+  mount crosses the file-sharing layer (~1 s per request instead of ~30 ms). It reuses gaia-test's image,
+  network, env and volumes, with OPcache on and Xdebug off. Reports are copied back to the checkout.
 - prometheus has no source mount (a Windows bind mount makes the Ember build crawl). Its test container
   gets the source copied in (only changed files on later runs), keeps an incremental
   `ember build --environment=test --watch` running, and runs `ember test --path` on the result.
@@ -193,23 +197,203 @@ class BindTestContainer:
                                    f"(`docker logs {name}`)")
 
 
-# --- prometheus ----------------------------------------------------------------------------------
+# --- copied-source containers (gaia, prometheus) -------------------------------------------------
 
-def _tracked_files(checkout):
-    """Tracked plus untracked-but-not-ignored files of a checkout, minus SYNC_EXCLUDE."""
+def _tracked_files(checkout, exclude=SYNC_EXCLUDE):
+    """Tracked plus untracked-but-not-ignored files of a checkout, minus the `exclude` prefixes."""
     out = subprocess.run(["git", "-C", str(checkout), "ls-files", "-co", "--exclude-standard", "-z"],
                          capture_output=True, check=True).stdout.decode("utf-8", "replace")
-    return [f for f in out.split("\0") if f and not f.startswith(SYNC_EXCLUDE)]
+    return [f for f in out.split("\0") if f and not f.startswith(exclude)]
 
 
-class PrometheusTestContainer:
+def _safe_member(name):
+    """A relative tar member name that stays inside the folder it is extracted to."""
+    parts = name.replace("\\", "/").split("/")
+    return bool(name) and not name.startswith("/") and ":" not in parts[0] and ".." not in parts
+
+
+class CopiedSourceContainer:
+    """A container holding a copy of a checkout at `root`, kept current by an incremental sync."""
+
+    root = "/"
+    exclude = SYNC_EXCLUDE
+    owner = None            # user the copied files belong to (None: the container's default user)
+
+    def __init__(self, checkout, state_dir, prefix):
+        self.checkout = Path(checkout).resolve()
+        self.name = f"{prefix}-{_key(self.checkout)}"
+        self.manifest_file = Path(state_dir) / f"{self.name}.manifest.json"
+
+    def sync(self):
+        """Copy new/changed files in and delete removed ones. Returns the paths changed."""
+        old = json.loads(self.manifest_file.read_text(encoding="utf-8")) if self.manifest_file.exists() else {}
+        new, changed = {}, []
+        for rel in _tracked_files(self.checkout, self.exclude):
+            p = self.checkout / rel
+            try:
+                st = p.stat()
+            except FileNotFoundError:          # tracked but deleted in the working tree
+                continue
+            stamp = [st.st_mtime_ns, st.st_size]
+            new[rel] = stamp
+            if old.get(rel) != stamp:
+                changed.append(rel)
+        removed = sorted(set(old) - set(new))
+        user = ["-u", self.owner] if self.owner else []
+        if changed:
+            buf = io.BytesIO()
+            with tarfile.open(fileobj=buf, mode="w") as tar:
+                for rel in changed:
+                    tar.add(str(self.checkout / rel), arcname=rel, recursive=False)
+            keep_owner = ["--no-same-owner"] if self.owner else []
+            _docker("exec", "-i", *user, self.name, "tar", "-x", *keep_owner, "-C", self.root,
+                    input=buf.getvalue(), text=False)
+        for i in range(0, len(removed), 200):
+            _docker("exec", *user, self.name, "rm", "-f", "--", *[f"{self.root}/{r}" for r in removed[i:i + 200]])
+        self.manifest_file.parent.mkdir(parents=True, exist_ok=True)
+        self.manifest_file.write_text(json.dumps(new), encoding="utf-8")
+        return changed + removed
+
+    def fetch(self, pattern):
+        """Copy the container's files matching a shell glob relative to `root` (e.g. `output/*.json`) back
+        into the checkout. Returns the relative paths copied. `pattern` goes into a shell unquoted: pass
+        only trusted constants."""
+        script = f'cd {self.root} && set -- {pattern} && [ -e "$1" ] || exit 0; tar -cf - -- "$@"'
+        data = _docker("exec", self.name, "sh", "-c", script, text=False).stdout
+        copied = []
+        if not data:
+            return copied
+        with tarfile.open(fileobj=io.BytesIO(data), mode="r:") as tar:
+            for m in tar.getmembers():
+                if not m.isfile() or not _safe_member(m.name):
+                    continue
+                target = self.checkout / m.name
+                if not target.resolve().is_relative_to(self.checkout):   # a symlinked folder in the checkout
+                    continue
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(tar.extractfile(m).read())
+                copied.append(m.name)
+        return copied
+
+
+# --- gaia ----------------------------------------------------------------------------------------
+
+GAIA_ROOT = "/var/www/html"
+# vendor/ is gaia-test's volume; the rest isn't needed to run Gaia or its tests.
+GAIA_SYNC_EXCLUDE = (".git/", ".idea/", ".cursor/", "vendor/")
+# Folders Gaia writes at runtime, mostly git-ignored (so never copied): created and kept writable.
+GAIA_WRITABLE = ("logs", "logs/tests", "output", "filesystem", "filesystem/uploads", "filesystem/img",
+                 "filesystem/img/user", "filesystem/translations", "filesystem/tmp")
+# Written into the test container only (gaia-dev keeps its settings). Timestamps are checked on every
+# request, so the next request after a sync runs the new code.
+GAIA_TEST_INI = ("zend_extension=opcache", "opcache.enable=1", "opcache.validate_timestamps=1",
+                 "opcache.revalidate_freq=0", "opcache.memory_consumption=128",
+                 "opcache.max_accelerated_files=20000")
+GAIA_TEST_INI_FILE = "/usr/local/etc/php/conf.d/zz-p4m-test.ini"
+REPORTS = "output/api-tester-*-report.json"
+
+
+class GaiaTestContainer(CopiedSourceContainer):
+    """gaia-test's image, network, env and volumes, with the checkout copied in instead of bind-mounted."""
+
+    root = GAIA_ROOT
+    exclude = GAIA_SYNC_EXCLUDE
+    owner = "www-data"      # as in the image, so Apache can write where Gaia expects to
+
+    def __init__(self, checkout, state_dir, base="gaia-test"):
+        super().__init__(checkout, state_dir, "p4m-test-gaia")
+        self.base = base
+
+    def ensure(self, fresh=False):
+        """Create the container unless one is running from gaia-test's current image. Returns True if it
+        was (re)created (the next sync copies everything)."""
+        shared = inspect(self.base)
+        if not shared:
+            raise TestEnvError(f"{self.base} does not exist - `p4m up` first (its image and settings are reused)")
+        own = inspect(self.name)
+        if own and not fresh and _running(own) and own.get("Image") == shared.get("Image"):
+            return False
+        if own:
+            _docker("rm", "-f", self.name)
+        self._create(shared)
+        # The image holds an old copy of the source: start from an empty tree (vendor is a volume).
+        _docker("exec", self.name, "sh", "-c",
+                f"find {self.root} -mindepth 1 -maxdepth 1 ! -name vendor -exec rm -rf {{}} +")
+        self.manifest_file.unlink(missing_ok=True)
+        return True
+
+    def run_args(self, shared):
+        """(`docker run` arguments before the image, image and command) for a container like `shared`,
+        without its source mount."""
+        args = ["run", "-d", "--name", self.name, "--label", f"{LABEL}={norm(self.checkout)}"]
+        networks = list((shared.get("NetworkSettings") or {}).get("Networks") or {})
+        if networks:
+            args += ["--network", networks[0]]
+        old_source = mount_source(shared, self.root)
+        for m in shared.get("Mounts", []):
+            dest = m["Destination"]
+            mode = "" if m.get("RW", True) else ":ro"
+            if m["Type"] == "volume":
+                args += ["-v", f"{m['Name']}:{dest}{mode}"]
+            elif m["Type"] == "bind" and dest != self.root:
+                src = host_path(m["Source"])
+                if old_source and norm(src).startswith(norm(old_source) + "/"):
+                    src = (self.checkout / src[len(old_source.rstrip("/")) + 1:]).as_posix()
+                args += ["-v", f"{src}:{dest}{mode}"]
+        cfg = shared["Config"]
+        if cfg.get("User"):
+            args += ["-u", cfg["User"]]
+        args += ["-w", cfg.get("WorkingDir") or self.root, "--entrypoint", "sh"]
+        # gaia-test's process, after writing the test-only PHP ini
+        ini = "\\n".join(GAIA_TEST_INI)
+        command = ["-c", f"printf '{ini}\\n' > {GAIA_TEST_INI_FILE} && exec \"$@\"", "sh",
+                   *(cfg.get("Entrypoint") or []), *(cfg.get("Cmd") or [])]
+        return args, cfg["Image"], command
+
+    def env(self, shared):
+        """gaia-test's environment with Xdebug off (it only slows the suite down)."""
+        return [e for e in shared["Config"].get("Env") or [] if not e.startswith("XDEBUG_MODE=")] \
+            + ["XDEBUG_MODE=off"]
+
+    def _create(self, shared):
+        args, image, command = self.run_args(shared)
+        env_file = Path(os.environ.get("TEMP", "/tmp")) / f"{self.name}.env"
+        env_file.write_text("\n".join(self.env(shared)) + "\n", encoding="utf-8")
+        try:
+            _docker(*args, "--env-file", str(env_file), image, *command)
+        finally:
+            env_file.unlink(missing_ok=True)
+        for extra in list((shared.get("NetworkSettings") or {}).get("Networks") or {})[1:]:
+            _docker("network", "connect", extra, self.name, check=False)
+        probe = ("for i in $(seq 1 60); do (exec 3<>/dev/tcp/127.0.0.1/80) 2>/dev/null "
+                 "&& exit 0; sleep 0.5; done; exit 1")
+        if _docker("exec", self.name, "bash", "-c", probe, check=False).returncode != 0:
+            raise TestEnvError(f"{self.name} did not open port 80 within 30s (`docker logs {self.name}`)")
+
+    def make_writable(self):
+        """Create the runtime folders git ignores; Apache (www-data) and root-run tools both write them."""
+        dirs = " ".join(GAIA_WRITABLE)
+        _docker("exec", "-w", self.root, self.name, "sh", "-c",
+                f"mkdir -p {dirs} && chmod 777 {dirs} && chmod -R a+rwX logs output", check=False)
+
+    def clear_reports(self):
+        """Remove earlier runs' api-tester reports, so only this run's are copied back."""
+        _docker("exec", "-w", self.root, self.name, "sh", "-c", f"rm -f {REPORTS}", check=False)
+
+    def fetch_reports(self):
+        return self.fetch(REPORTS)
+
+
+# --- prometheus ----------------------------------------------------------------------------------
+
+class PrometheusTestContainer(CopiedSourceContainer):
     """Source copied in, incremental test build kept warm, `ember test --path` per run."""
 
+    root = "/prometheus"
+
     def __init__(self, checkout, state_dir, base="prometheus-dev"):
-        self.checkout = Path(checkout).resolve()
+        super().__init__(checkout, state_dir, "p4m-test-prometheus")
         self.base = base
-        self.name = f"p4m-test-prometheus-{_key(self.checkout)}"
-        self.manifest_file = Path(state_dir) / f"{self.name}.manifest.json"
 
     # container lifecycle
     def ensure(self, fresh=False):
@@ -232,34 +416,6 @@ class PrometheusTestContainer:
                 "find /prometheus -mindepth 1 -maxdepth 1 ! -name node_modules -exec rm -rf {} +")
         self.manifest_file.unlink(missing_ok=True)
         return True
-
-    # source sync
-    def sync(self):
-        """Copy new/changed files in and delete removed ones. Returns the paths changed."""
-        old = json.loads(self.manifest_file.read_text(encoding="utf-8")) if self.manifest_file.exists() else {}
-        new, changed = {}, []
-        for rel in _tracked_files(self.checkout):
-            p = self.checkout / rel
-            try:
-                st = p.stat()
-            except FileNotFoundError:          # tracked but deleted in the working tree
-                continue
-            stamp = [st.st_mtime_ns, st.st_size]
-            new[rel] = stamp
-            if old.get(rel) != stamp:
-                changed.append(rel)
-        removed = sorted(set(old) - set(new))
-        if changed:
-            buf = io.BytesIO()
-            with tarfile.open(fileobj=buf, mode="w") as tar:
-                for rel in changed:
-                    tar.add(str(self.checkout / rel), arcname=rel, recursive=False)
-            _docker("exec", "-i", self.name, "tar", "-x", "-C", "/prometheus", input=buf.getvalue(), text=False)
-        for i in range(0, len(removed), 200):
-            _docker("exec", self.name, "rm", "-f", "--", *[f"/prometheus/{r}" for r in removed[i:i + 200]])
-        self.manifest_file.parent.mkdir(parents=True, exist_ok=True)
-        self.manifest_file.write_text(json.dumps(new), encoding="utf-8")
-        return changed + removed
 
     # incremental build
     def _build_log(self):
