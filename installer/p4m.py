@@ -1458,6 +1458,27 @@ def _test_container(base: str, src: Path, dest: str, wait_port: int | None = Non
     return name
 
 
+def _gaia_test_box(src: Path) -> testenv.GaiaTestContainer:
+    """`src`'s own Gaia test container (source copied in, OPcache on, Xdebug off), created if needed."""
+    box = testenv.GaiaTestContainer(src, STATE_DIR / "test")
+    try:
+        if box.ensure():
+            info(f"started {box.name} for {src} (source copied in; the first sync copies everything)")
+    except testenv.TestEnvError as e:
+        raise P4MError(str(e))
+    return box
+
+
+def _sync_gaia(box: testenv.GaiaTestContainer) -> None:
+    """Copy `box`'s checkout changes in. Run it after anything on the host that writes the checkout."""
+    try:
+        changed = box.sync()
+    except testenv.TestEnvError as e:
+        raise P4MError(str(e))
+    box.make_writable()
+    info(f"{len(changed)} file(s) synced into {box.name}")
+
+
 def cmd_test(args) -> None:
     ensure_docker(start=False)
     t = args.test_cmd
@@ -1468,9 +1489,8 @@ def cmd_test(args) -> None:
     if t in ("api", "phpunit"):
         src = _test_checkout(args, "gaia")
         fix_eol_in(src, src.name)                 # CRLF scripts break bash in the container
-        name = _test_container("gaia-test", src, "/var/www/html", wait_port=80)
-        run(["docker", "exec", "-w", "/var/www/html", name, "sh", "-c",
-             "mkdir -p logs/tests output && chmod -R 777 logs output"], check=False, quiet=True)
+        box = _gaia_test_box(src)
+        name = box.name
     if t == "api":
         cmd = ["docker", "exec", "-w", "/var/www/html", name, "bash",
                "tools/api-tester/harness/run-api-tests.sh", "--base-uri", "http://127.0.0.1",
@@ -1482,18 +1502,28 @@ def cmd_test(args) -> None:
         with test_db_lock():                       # the run (and its seed) owns pr4m_test until it ends
             if args.prepare:
                 prepare_test_db(src)               # raises on failure: never test a half-seeded DB
+            _sync_gaia(box)                        # after prepare: it writes the fixtures into the checkout
             if args.regenerate_backend:            # backend.json is generated from the metadata and routes
                 gen = run(["docker", "exec", "-w", "/var/www/html", name, "php",
                            "tools/api-tester/bin/generate-backend-apis.php"], check=False, capture=True)
                 if gen.returncode != 0:
                     raise P4MError("generate-backend-apis.php failed: " + ((gen.stdout or "") + (gen.stderr or ""))[-400:])
+                box.fetch("tools/api-tester/apis/backend.json")
                 print(next((l for l in (gen.stdout or "").splitlines() if l.startswith("Wrote ")), "").replace(
                     "Wrote ", "regenerated backend.json (").split(" to ")[0] + ")")
-            rc = run(cmd, check=False).returncode
+            box.clear_reports()
+            try:
+                rc = run(cmd, check=False).returncode
+            finally:
+                try:
+                    box.fetch_reports()            # `ai test --explain` reads them from the checkout
+                except testenv.TestEnvError as e:  # never hide the run's own result
+                    warn(f"could not copy the reports back: {e}")
         ok(f"reports in {src / 'output'}") if rc == 0 else err(f"api tests failed - reports in {src / 'output'}")
         sys.exit(rc)
     if t == "phpunit":
         target = args.path or "tests"
+        _sync_gaia(box)
         rc = run(["docker", "exec", "-w", "/var/www/html", "-e", "DB_NAME=pr4m_test", "-e", "XDEBUG_MODE=off",
                   name, "./vendor/bin/phpunit", "-c", "tests/phpunit.xml", "--do-not-cache-result", target],
                  check=False).returncode

@@ -133,6 +133,168 @@ class BuildWaitTest(unittest.TestCase):
         self.assertEqual(stopped, [1])
 
 
+class FakeDocker:
+    """Records docker calls in place of testenv._docker; `outputs` maps a call to its stdout."""
+
+    def __init__(self, outputs=None):
+        self.calls, self.outputs = [], outputs or (lambda args: b"")
+        self._old = testenv._docker
+
+    def __enter__(self):
+        testenv._docker = self
+        return self
+
+    def __exit__(self, *exc):
+        testenv._docker = self._old
+
+    def __call__(self, *args, check=True, input=None, text=True):
+        self.calls.append((args, input))
+        return subprocess.CompletedProcess(args, 0, self.outputs(args), "")
+
+
+@unittest.skipUnless(shutil.which("git"), "needs git")
+class GaiaSyncTest(unittest.TestCase):
+    """The incremental copy into the gaia test container, and the copy of results back."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.src = Path(self.tmp.name) / "gaia"
+        self.src.mkdir()
+        subprocess.run(["git", "init", "-q", str(self.src)], check=True)
+        (self.src / ".gitignore").write_text("vendor/\noutput/api-tester-*-report.json\n", encoding="utf-8")
+        (self.src / "app").mkdir()
+        (self.src / "app" / "a.php").write_text("<?php // a\n", encoding="utf-8")
+        (self.src / "app" / "b.php").write_text("<?php // b\n", encoding="utf-8")
+        (self.src / "vendor").mkdir()
+        (self.src / "vendor" / "v.php").write_text("<?php\n", encoding="utf-8")
+        self.box = testenv.GaiaTestContainer(self.src, Path(self.tmp.name) / "state")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _copied(self, docker):
+        """{path: content} of the files sent in tar -x calls."""
+        import io
+        import tarfile
+        files = {}
+        for args, data in docker.calls:
+            if "tar" in args and "-x" in args:
+                self.assertIn("www-data", args)              # owned like the image's source
+                self.assertEqual(args[args.index("-C") + 1], "/var/www/html")
+                with tarfile.open(fileobj=io.BytesIO(data)) as tar:
+                    files.update({m.name: tar.extractfile(m).read() for m in tar.getmembers()})
+        return files
+
+    def test_first_sync_copies_everything_but_vendor(self):
+        with FakeDocker() as docker:
+            changed = self.box.sync()
+        self.assertEqual(sorted(changed), [".gitignore", "app/a.php", "app/b.php"])
+        self.assertEqual(sorted(self._copied(docker)), [".gitignore", "app/a.php", "app/b.php"])
+
+    def test_later_syncs_copy_changes_and_delete_removed_files(self):
+        with FakeDocker():
+            self.box.sync()
+        with FakeDocker() as docker:
+            self.assertEqual(self.box.sync(), [])
+        self.assertEqual(docker.calls, [])
+        (self.src / "app" / "a.php").write_bytes(b"<?php // a, edited\n")
+        (self.src / "app" / "b.php").unlink()
+        with FakeDocker() as docker:
+            changed = self.box.sync()
+        self.assertEqual(changed, ["app/a.php", "app/b.php"])
+        self.assertEqual(self._copied(docker), {"app/a.php": b"<?php // a, edited\n"})
+        removals = [args for args, _ in docker.calls if "rm" in args]
+        self.assertEqual(len(removals), 1)
+        self.assertEqual(removals[0][-1], "/var/www/html/app/b.php")
+
+    def test_fetch_copies_reports_back_and_skips_unsafe_paths(self):
+        import io
+        import tarfile
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w") as tar:
+            for name, body in (("output/api-tester-acl-report.json", b'{"ok":1}'), ("../escape.json", b"x")):
+                info = tarfile.TarInfo(name)
+                info.size = len(body)
+                tar.addfile(info, io.BytesIO(body))
+        with FakeDocker(lambda args: buf.getvalue()) as docker:
+            copied = self.box.fetch_reports()
+        self.assertEqual(copied, ["output/api-tester-acl-report.json"])
+        self.assertEqual((self.src / "output" / "api-tester-acl-report.json").read_bytes(), b'{"ok":1}')
+        self.assertFalse((Path(self.tmp.name) / "escape.json").exists())
+        self.assertIn(testenv.REPORTS, docker.calls[0][0][-1])
+
+    def test_fetch_without_matches_copies_nothing(self):
+        with FakeDocker():
+            self.assertEqual(self.box.fetch("tools/api-tester/apis/backend.json"), [])
+
+
+class GaiaContainerTest(unittest.TestCase):
+    """The gaia test container: gaia-test's settings, no source bind mount, OPcache on, Xdebug off."""
+
+    SHARED = {
+        "Image": "sha256:abc",
+        "Config": {"Image": "gaia-gaia-test", "Entrypoint": ["docker-php-entrypoint"], "Cmd": ["apache2-foreground"],
+                   "WorkingDir": "/var/www/html", "User": "",
+                   "Env": ["DB_NAME=pr4m_test", "XDEBUG_MODE=debug,develop"]},
+        "NetworkSettings": {"Networks": {"backend": {}, "frontend": {}}},
+        "Mounts": [
+            {"Type": "bind", "Source": "D:\\Old\\gaia", "Destination": "/var/www/html", "RW": True},
+            {"Type": "volume", "Name": "gaia_vendor", "Destination": "/var/www/html/vendor", "RW": True},
+            {"Type": "bind", "Source": "/run/desktop/mnt/host/d/Old/gaia/docker/php/conf.d/custom.ini",
+             "Destination": "/usr/local/etc/php/conf.d/zz-custom.ini", "RW": False},
+        ],
+    }
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.box = testenv.GaiaTestContainer(Path(self.tmp.name) / "gaia", Path(self.tmp.name))
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_run_args(self):
+        args, image, command = self.box.run_args(self.SHARED)
+        self.assertEqual(image, "gaia-gaia-test")
+        volumes = [args[i + 1] for i, a in enumerate(args) if a == "-v"]
+        self.assertIn("gaia_vendor:/var/www/html/vendor", volumes)
+        self.assertFalse([v for v in volumes if v.endswith(":/var/www/html")])     # no source bind mount
+        ini = next(v for v in volumes if "zz-custom.ini" in v)
+        self.assertTrue(ini.startswith(self.box.checkout.as_posix() + "/docker/php/conf.d/custom.ini:"))
+        self.assertTrue(ini.endswith(":ro"))
+        self.assertEqual(args[args.index("--network") + 1], "backend")
+        self.assertEqual(command[-2:], ["docker-php-entrypoint", "apache2-foreground"])
+        self.assertIn("zend_extension=opcache", command[1])
+        self.assertIn("opcache.validate_timestamps=1", command[1])
+        self.assertIn(testenv.GAIA_TEST_INI_FILE, command[1])
+
+    def test_xdebug_is_off(self):
+        env = self.box.env(self.SHARED)
+        self.assertIn("XDEBUG_MODE=off", env)
+        self.assertNotIn("XDEBUG_MODE=debug,develop", env)
+        self.assertIn("DB_NAME=pr4m_test", env)
+
+    def test_running_container_from_the_current_image_is_reused(self):
+        own = {"Image": "sha256:abc", "State": {"Running": True}}
+        old = testenv.inspect
+        testenv.inspect = lambda name: self.SHARED if name == "gaia-test" else own
+        try:
+            with FakeDocker() as docker:
+                self.assertFalse(self.box.ensure())
+            self.assertEqual(docker.calls, [])
+            own["Image"] = "sha256:new"                        # gaia-test was rebuilt: start over
+            self.box._create = lambda shared: None
+            with FakeDocker() as docker:
+                self.assertTrue(self.box.ensure())
+            self.assertEqual(docker.calls[0][0], ("rm", "-f", self.box.name))
+        finally:
+            testenv.inspect = old
+
+    def test_name_is_per_checkout(self):
+        other = testenv.GaiaTestContainer(Path(self.tmp.name) / "other", Path(self.tmp.name))
+        self.assertTrue(self.box.name.startswith("p4m-test-gaia-"))
+        self.assertNotEqual(self.box.name, other.name)
+
+
 @unittest.skipUnless(sys.platform.startswith("linux") and shutil.which("bash"), "needs /proc and bash")
 class BuilderScriptTest(unittest.TestCase):
     """The shell checks against real processes: a live `ember`, a dead pid, a live non-ember pid."""
