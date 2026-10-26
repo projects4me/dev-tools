@@ -67,5 +67,16 @@ class PrepareTestDbRetryTest(unittest.TestCase):
             self._run([1])
 
 
+
+class RunBashRetryTest(unittest.TestCase):
+    def test_run_bash_retries_dll_init_failure_and_returns_the_result(self):
+        from unittest import mock
+        results = [mock.Mock(returncode=3221225794), mock.Mock(returncode=7)]
+        with mock.patch.object(p4m, "find_bash", return_value="bash"), mock.patch.object(p4m.time, "sleep"), \
+                mock.patch.object(p4m, "warn"), mock.patch.object(p4m, "run", side_effect=results) as run:
+            self.assertEqual(p4m.run_bash(["x.sh"], cwd=Path("/tmp")).returncode, 7)
+        self.assertEqual(run.call_args_list[0].args[0], ["bash", "x.sh"])
+        self.assertEqual(run.call_count, 2)
+
 if __name__ == "__main__":
     unittest.main()

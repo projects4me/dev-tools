@@ -189,23 +189,67 @@ class BadFilterTest(unittest.TestCase):
 
 
 class StaleResultTest(unittest.TestCase):
-    def test_tree_changed_during_run_is_not_shippable(self):
+    def test_changed_since_compares_with_the_current_tree(self):
         from unittest import mock
         from lib import results
-        with tempfile.TemporaryDirectory() as d, mock.patch.object(results, "STATE_DIR", Path(d)), \
-                mock.patch.object(results, "tree_fingerprint", return_value="after"):
-            self.assertFalse(results.record("gaia", True, True, ["x"], "before"))
+        with mock.patch.object(results, "tree_fingerprint", return_value="now"):
+            self.assertTrue(results.changed_since("gaia", "before"))
+            self.assertFalse(results.changed_since("gaia", "now"))
+            self.assertFalse(results.changed_since("gaia", None))
+
+    def test_stale_run_is_not_shippable(self):
+        from unittest import mock
+        from lib import results
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(results, "STATE_DIR", Path(d)):
+            results.record("gaia", True, True, ["x"], "before", stale=True)
             last = results.last("gaia")
             self.assertFalse(last["ok"])
             self.assertTrue(last["stale"])
+            self.assertEqual(last["fingerprint"], "before")
             with mock.patch.object(ship.results, "last", return_value=last):
                 with self.assertRaises(AiError):
                     ship.test_gate("gaia")
 
-    def test_unchanged_tree_is_trusted(self):
+    def test_fresh_run_keeps_its_verdict(self):
         from unittest import mock
         from lib import results
-        with tempfile.TemporaryDirectory() as d, mock.patch.object(results, "STATE_DIR", Path(d)), \
-                mock.patch.object(results, "tree_fingerprint", return_value="same"):
-            self.assertTrue(results.record("gaia", True, True, ["x"], "same"))
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(results, "STATE_DIR", Path(d)):
+            results.record("gaia", True, True, ["x"], "same")
             self.assertTrue(results.last("gaia")["ok"])
+            self.assertFalse(results.last("gaia")["stale"])
+
+
+class TerminateAsInterruptTest(unittest.TestCase):
+    def test_handlers_are_restored_after_the_block(self):
+        import signal
+        before = signal.getsignal(signal.SIGTERM)
+        with tests.terminate_as_interrupt():
+            self.assertIsNot(signal.getsignal(signal.SIGTERM), before)
+        self.assertIs(signal.getsignal(signal.SIGTERM), before)
+
+    def test_handlers_are_restored_when_the_run_raises(self):
+        import signal
+        before = signal.getsignal(signal.SIGTERM)
+        with self.assertRaises(RuntimeError):
+            with tests.terminate_as_interrupt():
+                raise RuntimeError
+        self.assertIs(signal.getsignal(signal.SIGTERM), before)
+
+
+class BaselineContainerTest(unittest.TestCase):
+    """A baseline run's container is removed, also when an earlier run was killed before its cleanup."""
+
+    def _require(self, have, suites):
+        from unittest import mock
+        from lib import baseline
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(baseline, "BASELINE_DIR", Path(d)), \
+                mock.patch.object(baseline, "load", return_value=have), \
+                mock.patch.object(baseline, "run") as run, mock.patch.object(baseline, "say"):
+            (Path(d) / "gaia").mkdir()
+            baseline.require("gaia", "abc", suites, runner=None)
+            return [c.args[0] for c in run.call_args_list], Path(d) / "gaia"
+
+    def test_leftover_container_is_removed_when_the_baseline_is_complete(self):
+        calls, src = self._require({"api": []}, ["api"])
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][-4:], ["test", "clean", "--src", str(src)])

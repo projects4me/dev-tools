@@ -16,6 +16,7 @@ import os
 import signal
 import subprocess
 import sys
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -67,16 +68,25 @@ def kill_tree(pid):
             pass
 
 
-def _terminate_as_interrupt():
-    """Turn SIGTERM / SIGBREAK into KeyboardInterrupt so the run's `finally` cleanup and kill_tree happen."""
+@contextmanager
+def terminate_as_interrupt():
+    """Within the block, SIGTERM / SIGBREAK raise KeyboardInterrupt, so the run's `finally` cleanup and
+    kill_tree happen. The previous handlers are restored after it (a caller such as `ai ship` keeps its own)."""
     def handler(signum, frame):
         raise KeyboardInterrupt
+    previous = {}
     for name in ("SIGTERM", "SIGBREAK"):
         if hasattr(signal, name):
+            sig = getattr(signal, name)
             try:
-                signal.signal(getattr(signal, name), handler)
+                previous[sig] = signal.signal(sig, handler)
             except ValueError:       # not the main thread
                 pass
+    try:
+        yield
+    finally:
+        for sig, old_handler in previous.items():
+            signal.signal(sig, old_handler)
 
 
 def bad_filter(value):
@@ -352,8 +362,13 @@ def cmd_test(args):
     for n in notes:
         say(n)
     full = not targets
-    _terminate_as_interrupt()
-    started = results.tree_fingerprint(repo)     # the container mounts the live checkout: see results.record
+    with terminate_as_interrupt():
+        return _run_and_record(args, repo, src, targets, full)
+
+
+def _run_and_record(args, repo, src, targets, full):
+    """Run the suites, classify failures against the baseline, print and record the verdict."""
+    started = results.tree_fingerprint(repo)     # the tree the run tests: see results.changed_since
     runs = [run_suite(repo, s, src, targets) for s in SUITES[repo]]
 
     sha = git(repo, "merge-base", "HEAD", f"origin/{base_branch(repo)}", check=False) or ""
@@ -377,7 +392,9 @@ def cmd_test(args):
     verdict = "PASS" if ok else "FAIL"
     say(f"\nRESULT: {verdict}{'' if full else ' (targeted run; ai ship needs a full run)'} "
         f"(full logs in {STATE_DIR})")
-    if not results.record(repo, ok, full, lines + [f"RESULT: {verdict}"], started):
+    stale = results.changed_since(repo, started)
+    results.record(repo, ok, full, lines + [f"RESULT: {verdict}"], started, stale)
+    if stale:
         say("tree changed during the run; re-run (the result is not shippable)")
         return 1
     return 0 if ok else 1
