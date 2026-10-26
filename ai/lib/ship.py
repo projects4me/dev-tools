@@ -27,7 +27,7 @@ import html
 import json
 from pathlib import Path
 
-from . import results, workflow
+from . import cost, results, workflow
 from .common import (AiError, PROJECT_FOR_REPO, REPOS, STATE_DIR, base_branch, config, git, ody, say)
 
 SHORTCODE = {"A Gaia": "agaia", "A Prometheus": "aprom", "A Hermes": "ah", "A Ares": "aa", "A Dev Tool": "adt"}
@@ -110,6 +110,15 @@ def existing_pr(repo, issue):
 
 # --- command -------------------------------------------------------------------------------------
 
+def cost_note(issue):
+    """The issue's token cost as a tracker line; never blocks a ship."""
+    try:
+        line = cost.cost_comment(issue)
+    except Exception:  # noqa: BLE001 - accounting is best effort
+        return ""
+    return f"<p>{html.escape(line)}</p>" if line else ""
+
+
 def cmd_ship(args):
     repo, issue = args.repo, args.issue
     spec = load_spec(args.file)
@@ -144,6 +153,7 @@ def cmd_ship(args):
     if not progress.get("pr"):
         progress["pr"] = existing_pr(repo, issue) or workflow.open_pr(repo, issue, spec["title"], body)
         save_progress(repo, issue, progress)
+    notes += cost_note(issue)
     workflow.pr_hand_off(issue, progress["pr"], git(repo, "rev-parse", "--short", "HEAD"),
                          git(repo, "rev-parse", "--short", f"origin/{base_branch(repo)}"),
                          spec.get("timeNote") or f"commit and PR ({spec['title']})", notes_html=notes)

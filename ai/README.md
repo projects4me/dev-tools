@@ -33,6 +33,11 @@ the `dev-tools/gaia-mcp` client (same credentials and code as the `gaia` MCP ser
 
 Config: `config.json` (co-author trailer, PR footer, never-commit files, known test failures), overlaid by your
 git-ignored `config.local.json` (`reviewer`, `timezoneLabel`), which `dev-tools/installer/p4m configure` writes.
+`ai cost [--repo R] [--issue N] [--since DATE] [--json]` reads the Claude Code transcripts of this workspace and
+reports tokens, turns and peak context per session, issue and repo, tool-result chars per tool and Bash category,
+and files read in 2+ sessions. `ai ship` adds the issue's cost line to the hand-off comment. The baseline is
+`state/cost-baseline.md` (the one tracked file in `state/`).
+
 State (timers, test logs, the `kb` index): `state/` (local only; the index holds tracker content, which stays out
 of this public repo).
 
