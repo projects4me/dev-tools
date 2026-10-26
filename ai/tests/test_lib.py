@@ -186,3 +186,26 @@ class BadFilterTest(unittest.TestCase):
         from lib import tests
         self.assertIsNone(tests.bad_filter("/idea/i"))
         self.assertIsNone(tests.bad_filter("idea"))
+
+
+class StaleResultTest(unittest.TestCase):
+    def test_tree_changed_during_run_is_not_shippable(self):
+        from unittest import mock
+        from lib import results
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(results, "STATE_DIR", Path(d)), \
+                mock.patch.object(results, "tree_fingerprint", return_value="after"):
+            self.assertFalse(results.record("gaia", True, True, ["x"], "before"))
+            last = results.last("gaia")
+            self.assertFalse(last["ok"])
+            self.assertTrue(last["stale"])
+            with mock.patch.object(ship.results, "last", return_value=last):
+                with self.assertRaises(AiError):
+                    ship.test_gate("gaia")
+
+    def test_unchanged_tree_is_trusted(self):
+        from unittest import mock
+        from lib import results
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(results, "STATE_DIR", Path(d)), \
+                mock.patch.object(results, "tree_fingerprint", return_value="same"):
+            self.assertTrue(results.record("gaia", True, True, ["x"], "same"))
+            self.assertTrue(results.last("gaia")["ok"])
