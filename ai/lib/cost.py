@@ -12,7 +12,7 @@ from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .common import REPOS, WORKSPACE, say
+from .common import REPOS, STATE_DIR, WORKSPACE, say
 
 TOKEN_FIELDS = ("output", "input", "cache_creation", "cache_read")
 BRANCH_RE = re.compile(r"claude-issue-(\d+)")
@@ -202,8 +202,38 @@ def tool_chars_total(sessions):
     return total
 
 
+def hook_bypass(log=None):
+    """Counts from the guard hook's log: blocked attempts per kind and --raw uses, so the redirect list can be tuned."""
+    log = log or STATE_DIR / "hooks.jsonl"
+    counts = Counter()
+    if log.exists():
+        for line in log.read_text(encoding="utf-8", errors="replace").splitlines():
+            try:
+                counts[json.loads(line)["kind"]] += 1
+            except (ValueError, KeyError):
+                continue
+    blocked = counts["block-read"] + counts["block-docker"]
+    return {"blocked_reads": counts["block-read"], "blocked_docker": counts["block-docker"], "raw_uses": counts["raw"],
+            "bypass_rate": round(counts["raw"] / (counts["raw"] + blocked), 2) if counts["raw"] + blocked else 0.0}
+
+
+def regression_warning(issue, repo, sessions=None, minimum=3):
+    """A warning line when the issue's output tokens exceed the repo's rolling median per issue, else None."""
+    sessions = sessions if sessions is not None else load_sessions()
+    rows = issue_rollup(select(sessions, repo=repo))
+    mine = next((r for r in rows if r["issue"] == issue), None)
+    others = [r["output"] for r in rows if r["issue"] not in (issue, None)]
+    if not mine or len(others) < minimum:
+        return None
+    median = int(statistics.median(others))
+    if mine["output"] <= median:
+        return None
+    return (f"Cost warning: {k(mine['output'])} output tokens is above the {repo} median of {k(median)} "
+            f"per issue ({len(others)} issues).")
+
+
 def build_report(sessions):
-    return {"sessions": sessions, "issues": issue_rollup(sessions), "repos": repo_rollup(sessions),
+    return {"hook_bypass": hook_bypass(), "sessions": sessions, "issues": issue_rollup(sessions), "repos": repo_rollup(sessions),
             "tool_chars": dict(tool_chars_total(sessions).most_common()),
             "files_read_in_multiple_sessions": [{"file": f, "sessions": n} for f, n in repeated_files(sessions)]}
 
