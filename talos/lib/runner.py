@@ -12,8 +12,11 @@ from pathlib import Path
 from .config import DEV_TOOLS, LOG_DIR, OUTCOME_SCHEMA, WORKSPACE, now_stamp
 
 
-def build_command(claude, agent, prompt, model, session_id=None, new_session_id=None, limits=None, mcp=None):
+def build_command(claude, agent, model, session_id=None, new_session_id=None, limits=None, mcp=None):
     """The `claude -p` argv. Kept separate so it can be checked without running anything.
+
+    The prompt is not part of it: a Windows command line holds ~32k characters and a review-round prompt can be
+    longer, so `run` sends the prompt on stdin (`claude -p` reads it there).
 
     A new session gets its id up front (new_session_id) so its live transcript can be found while it runs.
     `limits` is the run's (max turns, max budget USD) from policy.run_limits; None = the agent's maxTurns only.
@@ -22,7 +25,7 @@ def build_command(claude, agent, prompt, model, session_id=None, new_session_id=
     max_turns, max_budget = limits or (agent.max_turns, 0)
     with open(OUTCOME_SCHEMA, encoding="utf-8") as f:
         schema = json.dumps(json.load(f), separators=(",", ":"))
-    cmd = [claude, "-p", prompt,
+    cmd = [claude, "-p",
            "--model", model,
            "--output-format", "json",
            "--json-schema", schema,
@@ -133,12 +136,17 @@ def recent_steps(path, count=10):
     return steps[-count:]
 
 
-def run(cmd, env, agent_name, issue):
-    """Run Claude from the workspace root; keep the raw output in state/logs. Returns (result dict|None, log path)."""
+def run(cmd, env, agent_name, issue, prompt):
+    """Run Claude from the workspace root, the prompt on stdin; keep the raw output in state/logs.
+    Returns (result dict|None, log path). The log path exists before launch, so a launch failure is written there."""
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     log_path = LOG_DIR / f"{agent_name}-{issue}-{now_stamp()}.json"
-    proc = subprocess.run(cmd, cwd=WORKSPACE, env=env, capture_output=True, text=True,
-                          encoding="utf-8", errors="replace", stdin=subprocess.DEVNULL)
+    try:
+        proc = subprocess.run(cmd, cwd=WORKSPACE, env=env, capture_output=True, text=True,
+                              encoding="utf-8", errors="replace", input=prompt)
+    except OSError as e:
+        log_path.write_text(f"--- launch failed ---\n{e}\n", encoding="utf-8")
+        return {"is_error": True, "subtype": "launch failed", "result": str(e)}, log_path
     with open(log_path, "w", encoding="utf-8") as f:
         f.write(proc.stdout or "")
         if proc.stderr:

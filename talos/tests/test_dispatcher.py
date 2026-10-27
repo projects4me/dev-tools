@@ -64,13 +64,14 @@ class DispatcherTest(unittest.TestCase):
         tracker = StubTracker(issue)
         replies = iter(outcomes)
 
-        def fake_run(cmd, env, agent, number):
+        def fake_run(cmd, env, agent, number, prompt):
+            self.calls[-1]["prompt"] = prompt
             self.models.append(cmd[cmd.index("--model") + 1])
             self.envs.append(env)
             return next(replies), Path("log.json")
 
-        def fake_build(claude, agent, prompt, model, sid=None, new_session_id=None, limits=None, mcp=None):
-            self.calls.append({"prompt": prompt, "resume": sid, "limits": limits})
+        def fake_build(claude, agent, model, sid=None, new_session_id=None, limits=None, mcp=None):
+            self.calls.append({"resume": sid, "limits": limits})
             return ["claude", "--model", model]
 
         with mock.patch.object(dispatcher_mod.runner, "run", fake_run), \
