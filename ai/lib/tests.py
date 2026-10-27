@@ -101,9 +101,14 @@ def _p4m(*args):
     return p4m(*args)
 
 
-def _tag(src):
-    """Log-name suffix, so a baseline run doesn't overwrite the branch run's log."""
-    return "-baseline" if baseline.BASELINE_DIR in Path(src).resolve().parents else ""
+def _tag(src, slot=None):
+    """Log-name suffix, so a baseline run, or a run in another test slot, doesn't overwrite this run's log."""
+    return ("-baseline" if baseline.BASELINE_DIR in Path(src).resolve().parents else "") \
+        + (f"-slot{slot}" if slot else "")
+
+
+def _slot_args(slot):
+    return ["--slot", str(slot)] if slot else []
 
 
 def _int(m):
@@ -112,10 +117,10 @@ def _int(m):
 
 # --- suites --------------------------------------------------------------------------------------
 
-def phpunit(folder, src):
+def phpunit(folder, src, slot=None):
     name = folder.split("/")[-1]
-    code, out, log = _run_logged(f"gaia-phpunit-{name}{_tag(src)}",
-                                 _p4m("test", "phpunit", folder, "--src", str(src)))
+    code, out, log = _run_logged(f"gaia-phpunit-{name}{_tag(src, slot)}",
+                                 _p4m("test", "phpunit", folder, "--src", str(src), *_slot_args(slot)))
     summary = next((l.strip() for l in reversed(out.splitlines())
                     if l.startswith(("OK (", "Tests:", "FAILURES!", "ERRORS!"))), "no summary (see log)")
     failures = re.findall(r"^\d+\) (\S+)", out, flags=re.M)
@@ -135,14 +140,15 @@ def parse_phpunit_counts(summary):
     return int(tests.group(1)), bad
 
 
-def api(src, api_filter=None, prepare=True):
-    cmd = _p4m("test", "api", *(["--prepare"] if prepare else []), "--mode", "backend,acl,client", "--src", str(src))
+def api(src, api_filter=None, prepare=True, slot=None):
+    cmd = _p4m("test", "api", *(["--prepare"] if prepare else []), "--mode", "backend,acl,client", "--src", str(src),
+               *_slot_args(slot))
     if not _tag(src) and testmap.backend_catalog_stale(
             testmap.changed_files(src, f"origin/{base_branch('gaia')}")):
         cmd += ["--regenerate-backend"]
     if api_filter:
         cmd += ["--filter", api_filter]
-    code, out, log = _run_logged(f"gaia-api{_tag(src)}", cmd)
+    code, out, log = _run_logged(f"gaia-api{_tag(src, slot)}", cmd)
     summaries = re.findall(r"^Summary: (\d+) passed, (\d+) failed, (\d+) skipped", out, flags=re.M)
     modes = ["backend", "acl", "client"] if len(summaries) == 3 else [f"run {i + 1}" for i in range(len(summaries))]
     lines = [f"api {m}: {p} passed, {f} failed, {s} skipped" for m, (p, f, s) in zip(modes, summaries)]
@@ -210,11 +216,12 @@ SUITES = {
 }
 
 
-def run_suite(repo, suite, src, targets=None):
+def run_suite(repo, suite, src, targets=None, slot=None):
+    """One suite; `slot` (gaia only) runs it in that test slot instead of on the shared pr4m_test."""
     targets = targets or {}
     if suite.startswith("phpunit-"):
-        return phpunit(next(f for f in PHPUNIT_FOLDERS if f.endswith(suite[len("phpunit-"):])), src)
-    return {"api": lambda: api(src, targets.get("api")),
+        return phpunit(next(f for f in PHPUNIT_FOLDERS if f.endswith(suite[len("phpunit-"):])), src, slot)
+    return {"api": lambda: api(src, targets.get("api"), slot=slot),
             "ember": lambda: ember(src, targets.get("ember")),
             "hermes": lambda: hermes(src),
             "unittest": lambda: devtools(src)}[suite]()
@@ -331,7 +338,7 @@ def cmd_case(args):
     if bad:
         say(bad)
         return 2
-    r = api(repo_dir("gaia"), args.case, prepare=False)
+    r = api(repo_dir("gaia"), args.case, prepare=False, slot=getattr(args, "slot", None))
     for line in r.summary.splitlines():
         say(line)
     for f in r.failures:
@@ -376,7 +383,8 @@ def _run_and_record(args, repo, src, targets, full):
     started = results.tree_fingerprint(repo)     # the tree the run tests: see results.changed_since
     fixture = Path(src) / FIXTURE
     committed = fixture.read_bytes() if repo == "gaia" and fixture.exists() else None
-    runs = [run_suite(repo, s, src, targets) for s in SUITES[repo]]
+    slot = getattr(args, "slot", None) if repo == "gaia" else None
+    runs = [run_suite(repo, s, src, targets, slot=slot) for s in SUITES[repo]]
     drifted = committed is not None and fixture.read_bytes() != committed
     if drifted:
         fixture.write_bytes(committed)           # leave the tree as it was; the harness output is the bug
@@ -386,7 +394,7 @@ def _run_and_record(args, repo, src, targets, full):
     suspects = [r.suite for r in runs
                 if set(r.failures) - known_failures(repo, r.suite) - set(base.get(r.suite, []))]
     if suspects and sha and not args.no_baseline and repo != "dev-tools":
-        base = baseline.require(repo, sha, suspects, lambda suite, wt: run_suite(repo, suite, wt))
+        base = baseline.require(repo, sha, suspects, lambda suite, wt: run_suite(repo, suite, wt, slot=slot))
 
     ok, lines = True, []
     for r in runs:

@@ -274,7 +274,7 @@ class FixtureDriftTest(unittest.TestCase):
             fixture.parent.mkdir(parents=True)
             fixture.write_text("committed", encoding="utf-8")
 
-            def run_suite(repo, suite, src, targets=None):
+            def run_suite(repo, suite, src, targets=None, slot=None):
                 if suite == "api":
                     fixture.write_text(harness_writes, encoding="utf-8")
                 return tests.SuiteResult(suite, "OK (1 test)", [], Path(d), 0, 0, 1)

@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import contextlib
 import json
 import os
 import platform
@@ -54,6 +55,7 @@ from pathlib import Path
 import dblock
 import runtime
 import testenv
+import testslots
 
 # --------------------------------------------------------------------------- #
 # Configuration
@@ -156,6 +158,9 @@ FILE_WATCH_POLLING=auto
 
 # Which services `p4m up` starts with no arguments: all | core
 DEFAULT_SERVICES=all
+
+# Gaia test slots (`p4m test slots`): how many suites can run at once, each on its own database.
+TEST_SLOTS=2
 """
 
 
@@ -287,11 +292,12 @@ def child_env() -> dict[str, str]:
 
 
 def run(cmd: list[str], *, check: bool = True, capture: bool = False, cwd: Path | None = None,
-        quiet: bool = False, input: str | None = None) -> subprocess.CompletedProcess:
+        quiet: bool = False, input: str | None = None,
+        env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
     if not quiet and not capture:
         print(_c("90", "    $ " + " ".join(cmd)), flush=True)
     try:
-        cp = subprocess.run(cmd, cwd=cwd, env=child_env(), text=True, input=input,
+        cp = subprocess.run(cmd, cwd=cwd, env={**child_env(), **(env or {})}, text=True, input=input,
                             stdout=subprocess.PIPE if capture else None,
                             stderr=subprocess.PIPE if capture else None,
                             encoding="utf-8", errors="replace")
@@ -970,12 +976,12 @@ DLL_INIT_FAILED = (3221225794, -1073741502)     # 0xC0000142: intermittent on Wi
 BASH_SPAWN_RETRIES = 2
 
 
-def run_bash(args: list, cwd: Path | None = None) -> subprocess.CompletedProcess:
+def run_bash(args: list, cwd: Path | None = None, env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
     """Run `find_bash()` with `args` (never raises on its exit code). A Git Bash that fails to start
     (STATUS_DLL_INIT_FAILED) is retried."""
     bash = find_bash()
     for attempt in range(BASH_SPAWN_RETRIES + 1):
-        cp = run([bash, *args], cwd=cwd, check=False)
+        cp = run([bash, *args], cwd=cwd, check=False, env=env)
         if cp.returncode not in DLL_INIT_FAILED or attempt == BASH_SPAWN_RETRIES:
             return cp
         warn(f"Git Bash failed to start (exit {cp.returncode}, STATUS_DLL_INIT_FAILED); retrying")
@@ -1134,15 +1140,17 @@ def migrate() -> None:
     run(["docker", "exec", "-w", "/var/www/html", container, "php", "cli.php", "migration", "migrate"])
 
 
-def prepare_test_db(src: Path | None = None) -> None:
-    """Seed pr4m_test with the api-tester fixtures of `src` (default: the workspace's gaia)."""
+def prepare_test_db(src: Path | None = None, db: str = "pr4m_test", fixtures_out: Path | None = None) -> None:
+    """Seed `db` (default pr4m_test) with the api-tester fixtures of `src` (default: the workspace's gaia).
+    The harness writes the fixtures into `src`, or to `fixtures_out`."""
     src = src or ROOT / "gaia"
-    info(f"Preparing pr4m_test (api-tester fixtures from {src})")
+    info(f"Preparing {db} (api-tester fixtures from {src})")
     if not is_running(PG_CONTAINER):
         raise P4MError("postgres is not running - `p4m up postgres` first")
     fix_eol_in(src, src.name)
-    script = "tools/api-tester/harness/prepare-test-db.sh"
-    rc = run_bash([script], cwd=src).returncode
+    script = testslots.SEED_SCRIPT
+    env = {"TEST_DB": db, **({"FIXTURES_OUT": Path(fixtures_out).resolve().as_posix()} if fixtures_out else {})}
+    rc = run_bash([script], cwd=src, env=env).returncode
     if rc != 0:
         raise P4MError(f"command failed ({rc}): {find_bash()} {script}")
 
@@ -1439,13 +1447,110 @@ def ares_probe_output(model: str) -> str:
     return _cap(["docker", "exec", "ares-dev", "python", "-c", ARES_PROBE, model], timeout=90)
 
 
-def test_db_lock():
-    """Exclusive use of pr4m_test (every api run re-seeds it)."""
+def _db_lock(db: str):
     try:
-        return dblock.held(STATE_DIR / "pr4m_test.lock",
-                           on_wait=lambda p: info(f"waiting for another pr4m_test user to finish ({p}, held by "
+        return dblock.held(STATE_DIR / f"{db}.lock",
+                           on_wait=lambda p: info(f"waiting for another {db} user to finish ({p}, held by "
                                                   f"{dblock.describe_holder(p)}; kill it if it is orphaned)"))
     except dblock.LockTimeout as e:
+        raise P4MError(str(e))
+
+
+def test_db_lock(slot: int | None = None):
+    """Exclusive use of pr4m_test, or of a slot's database (every api run re-seeds or resets it)."""
+    return _db_lock(testslots.db_name(slot))
+
+
+def template_lock():
+    """Exclusive use of the slot template while it is built or cloned. Always taken after a slot's lock."""
+    return _db_lock(testslots.TEMPLATE_DB)
+
+
+def test_slots() -> testslots.Slots:
+    try:
+        count = testslots.slot_count(settings())
+    except testslots.SlotError as e:
+        raise P4MError(str(e))
+    return testslots.Slots(testslots.Postgres(PG_CONTAINER, PG_USER), STATE_DIR / "test" / "slots", count,
+                           seed=lambda src, db, fixtures: prepare_test_db(src, db, fixtures))
+
+
+def _slot_arg(args) -> int | None:
+    """--slot, checked against the configured slots."""
+    slot = getattr(args, "slot", None)
+    if slot is None:
+        return None
+    try:
+        return testslots.check_slot(slot, test_slots().count)
+    except testslots.SlotError as e:
+        raise P4MError(str(e))
+
+
+def prepare_slot(slots: testslots.Slots, slot: int, src: Path, force: bool = False, build: bool = True) -> None:
+    """Slot `slot`'s database freshly cloned from the template (rebuilt first if `build` and `src`'s seeds or
+    pr4m's schema changed), and the template's fixtures written into `src`. Run it under the slot's lock."""
+    if not is_running(PG_CONTAINER):
+        raise P4MError("postgres is not running - `p4m up postgres` first")
+    try:
+        with template_lock():
+            current, why = (False, "--force") if force else slots.template_current(src) if build else (True, "")
+            if not current:
+                info(f"building {testslots.TEMPLATE_DB} from {src} ({why})")
+                slots.build_template(src, force=True)
+            slots.reset(slot)
+            slots.write_fixtures(src)              # under the lock: another slot may be rebuilding the template
+    except testslots.SlotError as e:
+        raise P4MError(str(e))
+    info(f"slot {slot}: {testslots.db_name(slot)} reset from {testslots.TEMPLATE_DB}")
+
+
+def cmd_test_slots(args) -> None:
+    """`p4m test slots setup|status|reset`."""
+    slots = test_slots()
+    chosen = args.slots or list(range(1, slots.count + 1))
+    try:
+        for k in chosen:
+            testslots.check_slot(k, slots.count)
+    except testslots.SlotError as e:
+        raise P4MError(str(e))
+    if args.action == "status":
+        _slots_status(slots, Path(args.src).resolve() if args.src else ROOT / "gaia")
+        return
+    src = _test_checkout(args, "gaia")
+    if args.action == "setup" and args.force:      # no slot lock held yet, so the lock order still holds
+        if not is_running(PG_CONTAINER):
+            raise P4MError("postgres is not running - `p4m up postgres` first")
+        with template_lock():
+            info(f"building {testslots.TEMPLATE_DB} from {src} (--force)")
+            try:
+                slots.build_template(src, force=True)
+            except testslots.SlotError as e:
+                raise P4MError(str(e))
+    for k in chosen:                               # slot lock, then the template's: the order every user takes
+        with test_db_lock(k):                      # reset only clones; setup rebuilds a stale template first
+            prepare_slot(slots, k, src, build=args.action == "setup")
+    ok(f"slot(s) {', '.join(map(str, chosen))} ready")
+
+
+def _slots_status(slots: testslots.Slots, src: Path) -> None:
+    if not is_running(PG_CONTAINER):
+        raise P4MError("postgres is not running - `p4m up postgres` first")
+    try:
+        current, why = slots.template_current(src)
+        info(f"{testslots.TEMPLATE_DB}: {'current' if current else 'stale'} for {src} ({why})")
+        for k, db, exists in slots.status():
+            box = testenv.GaiaTestContainer(src, STATE_DIR / "test", slot=k)
+            container = testenv.inspect(box.name)
+            try:
+                holds = box.checkout_file.read_text(encoding="utf-8").strip()
+            except OSError:
+                holds = "nothing yet"
+            lock = STATE_DIR / testslots.lock_name(k)
+            print(f"  slot {k}: {db} {'exists' if exists else 'missing'}; {box.name} "
+                  + (f"{'running' if testenv._running(container) else 'stopped'}, holds {holds}" if container
+                     else "not created")
+                  + (f"; in use by {dblock.describe_holder(lock)}" if lock.exists() else ""))
+    except (testslots.SlotError, testenv.TestEnvError) as e:
         raise P4MError(str(e))
 
 
@@ -1468,12 +1573,14 @@ def _test_container(base: str, src: Path, dest: str, wait_port: int | None = Non
     return name
 
 
-def _gaia_test_box(src: Path) -> testenv.GaiaTestContainer:
-    """`src`'s own Gaia test container (source copied in, OPcache on, Xdebug off), created if needed."""
-    box = testenv.GaiaTestContainer(src, STATE_DIR / "test")
+def _gaia_test_box(src: Path, slot: int | None = None) -> testenv.GaiaTestContainer:
+    """`src`'s own Gaia test container (source copied in, OPcache on, Xdebug off), created if needed; in a slot,
+    the slot's container on the slot's database."""
+    box = testenv.GaiaTestContainer(src, STATE_DIR / "test", slot=slot,
+                                    db_name=testslots.db_name(slot) if slot else None)
     try:
         if box.ensure():
-            info(f"started {box.name} for {src} (source copied in; the first sync copies everything)")
+            info(f"prepared {box.name} for {src} (source copied in; the first sync copies everything)")
     except testenv.TestEnvError as e:
         raise P4MError(str(e))
     return box
@@ -1489,6 +1596,53 @@ def _sync_gaia(box: testenv.GaiaTestContainer) -> None:
     info(f"{len(changed)} file(s) synced into {box.name}")
 
 
+def _run_api(args, src: Path, slot: int | None, box: testenv.GaiaTestContainer) -> int:
+    """The api-tester run in `box`, after the prepare it asks for. Run it under the database's lock."""
+    name = box.name
+    cmd = ["docker", "exec", "-w", "/var/www/html", name, "bash",
+           "tools/api-tester/harness/run-api-tests.sh", "--base-uri", "http://127.0.0.1",
+           "--mode", args.mode]
+    if "live" in args.mode:
+        cmd += ["--hermes-url", f"https://hermes-test.{domain()}"]
+    if args.filter:
+        cmd += ["--filter", args.filter]
+    if args.prepare and slot:
+        prepare_slot(test_slots(), slot, src)   # a clone of the template, not a re-seed
+    elif args.prepare:
+        prepare_test_db(src)               # raises on failure: never test a half-seeded DB
+    _sync_gaia(box)                        # after prepare: it writes the fixtures into the checkout
+    if args.regenerate_backend:            # backend.json is generated from the metadata and routes
+        gen = run(["docker", "exec", "-w", "/var/www/html", name, "php",
+                   "tools/api-tester/bin/generate-backend-apis.php"], check=False, capture=True)
+        if gen.returncode != 0:
+            raise P4MError("generate-backend-apis.php failed: " + ((gen.stdout or "") + (gen.stderr or ""))[-400:])
+        box.fetch("tools/api-tester/apis/backend.json")
+        print(next((l for l in (gen.stdout or "").splitlines() if l.startswith("Wrote ")), "").replace(
+            "Wrote ", "regenerated backend.json (").split(" to ")[0] + ")")
+    box.clear_reports()
+    try:
+        return run(cmd, check=False).returncode
+    finally:
+        try:
+            box.fetch_reports()            # `ai test --explain` reads them from the checkout
+        except testenv.TestEnvError as e:  # never hide the run's own result
+            warn(f"could not copy the reports back: {e}")
+
+
+def _run_phpunit(args, slot: int | None, box: testenv.GaiaTestContainer) -> int:
+    """PHPUnit in `box`, on the slot's database if there is one (it must exist: `p4m test slots setup`)."""
+    if slot:
+        if not is_running(PG_CONTAINER):
+            raise P4MError("postgres is not running - `p4m up postgres` first")
+        if not test_slots().pg.exists(testslots.db_name(slot)):
+            raise P4MError(f"slot {slot} has no database yet - `p4m test slots setup {slot}` first")
+    _sync_gaia(box)
+    return run(["docker", "exec", "-w", "/var/www/html", "-e", f"DB_NAME={testslots.db_name(slot)}",
+                "-e", "XDEBUG_MODE=off",
+                box.name, "./vendor/bin/phpunit", "-c", "tests/phpunit.xml", "--do-not-cache-result",
+                args.path or "tests"], check=False).returncode
+
+
 def cmd_test(args) -> None:
     ensure_docker(start=False)
     t = args.test_cmd
@@ -1496,47 +1650,20 @@ def cmd_test(args) -> None:
         removed = testenv.clean(getattr(args, "src", None))
         ok(f"removed {len(removed)} test container(s)" + (f": {', '.join(removed)}" if removed else ""))
         return
+    if t == "slots":
+        cmd_test_slots(args)
+        return
     if t in ("api", "phpunit"):
         src = _test_checkout(args, "gaia")
+        slot = _slot_arg(args)
         fix_eol_in(src, src.name)                 # CRLF scripts break bash in the container
-        box = _gaia_test_box(src)
-        name = box.name
-    if t == "api":
-        cmd = ["docker", "exec", "-w", "/var/www/html", name, "bash",
-               "tools/api-tester/harness/run-api-tests.sh", "--base-uri", "http://127.0.0.1",
-               "--mode", args.mode]
-        if "live" in args.mode:
-            cmd += ["--hermes-url", f"https://hermes-test.{domain()}"]
-        if args.filter:
-            cmd += ["--filter", args.filter]
-        with test_db_lock():                       # the run (and its seed) owns pr4m_test until it ends
-            if args.prepare:
-                prepare_test_db(src)               # raises on failure: never test a half-seeded DB
-            _sync_gaia(box)                        # after prepare: it writes the fixtures into the checkout
-            if args.regenerate_backend:            # backend.json is generated from the metadata and routes
-                gen = run(["docker", "exec", "-w", "/var/www/html", name, "php",
-                           "tools/api-tester/bin/generate-backend-apis.php"], check=False, capture=True)
-                if gen.returncode != 0:
-                    raise P4MError("generate-backend-apis.php failed: " + ((gen.stdout or "") + (gen.stderr or ""))[-400:])
-                box.fetch("tools/api-tester/apis/backend.json")
-                print(next((l for l in (gen.stdout or "").splitlines() if l.startswith("Wrote ")), "").replace(
-                    "Wrote ", "regenerated backend.json (").split(" to ")[0] + ")")
-            box.clear_reports()
-            try:
-                rc = run(cmd, check=False).returncode
-            finally:
-                try:
-                    box.fetch_reports()            # `ai test --explain` reads them from the checkout
-                except testenv.TestEnvError as e:  # never hide the run's own result
-                    warn(f"could not copy the reports back: {e}")
-        ok(f"reports in {src / 'output'}") if rc == 0 else err(f"api tests failed - reports in {src / 'output'}")
-        sys.exit(rc)
-    if t == "phpunit":
-        target = args.path or "tests"
-        _sync_gaia(box)
-        rc = run(["docker", "exec", "-w", "/var/www/html", "-e", "DB_NAME=pr4m_test", "-e", "XDEBUG_MODE=off",
-                  name, "./vendor/bin/phpunit", "-c", "tests/phpunit.xml", "--do-not-cache-result", target],
-                 check=False).returncode
+        with contextlib.ExitStack() as held:
+            if t == "api" or slot:                # before the box: a slot's container is emptied for a new checkout
+                held.enter_context(test_db_lock(slot))   # the run owns its database (and slot) until it ends
+            box = _gaia_test_box(src, slot)
+            rc = _run_api(args, src, slot, box) if t == "api" else _run_phpunit(args, slot, box)
+        if t == "api":
+            ok(f"reports in {src / 'output'}") if rc == 0 else err(f"api tests failed - reports in {src / 'output'}")
         sys.exit(rc)
     if t == "ember":
         src = _test_checkout(args, "prometheus")
@@ -1745,7 +1872,6 @@ def _cap(cmd: list[str], timeout: int = 30) -> str:
 
 def cmd_diag(args) -> None:
     """Collect everything needed to debug the stack into one text file."""
-    import contextlib
     import io
     LOG_DIR.mkdir(exist_ok=True)
     target = LOG_DIR / f"diag-{time.strftime('%Y%m%d-%H%M%S')}.txt"
@@ -1945,21 +2071,33 @@ def build_parser() -> argparse.ArgumentParser:
     tsub = s.add_subparsers(dest="test_cmd", required=True, metavar="<suite>")
     src_help = "checkout to test (default: the workspace's repo); a throwaway container is used when the " \
                "shared one serves another folder"
+    slot_help = "run in test slot K: its own container and database pr4m_test_K (see `p4m test slots`)"
     t = tsub.add_parser("api", help="gaia api-tester against gaia-test")
     t.add_argument("--mode", default="backend", help="client|backend|acl|live (comma separated)")
     t.add_argument("--filter")
     t.add_argument("--src", help=src_help)
     t.add_argument("--regenerate-backend", action="store_true",
                    help="regenerate api-tester backend.json from the metadata and routes first")
-    t.add_argument("--prepare", action="store_true", help="seed pr4m_test from --src first (under the same lock)")
+    t.add_argument("--prepare", action="store_true",
+                   help="seed pr4m_test from --src first (under the same lock); with --slot, reset the slot's "
+                        "database from the template")
+    t.add_argument("--slot", type=int, metavar="K", help=slot_help)
     t = tsub.add_parser("phpunit", help="gaia phpunit"); t.add_argument("path", nargs="?")
     t.add_argument("--src", help=src_help)
+    t.add_argument("--slot", type=int, metavar="K", help=slot_help)
     t = tsub.add_parser("ember", help="prometheus ember tests (source copied in, incremental test build)")
     t.add_argument("--filter", help="QUnit filter: text, or /regex/")
     t.add_argument("--src", help="checkout to test (default: the workspace's prometheus)")
     t.add_argument("--fresh", action="store_true", help="recreate the test container (full rebuild)")
     t = tsub.add_parser("hermes", help="hermes node --test"); t.add_argument("--src", help=src_help)
-    t = tsub.add_parser("clean", help="remove the throwaway test containers")
+    t = tsub.add_parser("slots", help="gaia test slots: setup (build the template if stale, reset the slots), "
+                                      "status, reset [K ...]")
+    t.add_argument("action", choices=["setup", "status", "reset"])
+    t.add_argument("slots", nargs="*", type=int, metavar="K", help="slots to set up or reset (default: all)")
+    t.add_argument("--src", help="gaia checkout the template is seeded from (default: the workspace's)")
+    t.add_argument("--force", action="store_true", help="rebuild the template even if it is current")
+    t = tsub.add_parser("clean", help="remove the throwaway test containers (with --src only that checkout's; "
+                                      "without, the slot containers too)")
     t.add_argument("--src", help="only the containers for this checkout")
     t = tsub.add_parser("ares", help="call the Anthropic API from inside ares (shows the real error)")
     t.add_argument("--model", default="claude-sonnet-4-20250514",

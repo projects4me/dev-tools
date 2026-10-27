@@ -10,6 +10,8 @@ Several workspaces can exist on one machine, so `p4m test` checks what the share
   files on later runs) instead of bind-mounted: on Docker Desktop every PHP file read through a Windows bind
   mount crosses the file-sharing layer (~1 s per request instead of ~30 ms). It reuses gaia-test's image,
   network, env and volumes, with OPcache on and Xdebug off. Reports are copied back to the checkout.
+  In a test slot (see testslots.py) it is keyed by the slot instead (`p4m-test-gaia-slot<k>`), uses the slot's
+  database (DB_NAME), and is emptied and re-filled when another checkout is synced into it.
 - prometheus has no source mount (a Windows bind mount makes the Ember build crawl). Its test container
   gets the source copied in (only changed files on later runs), keeps an incremental
   `ember build --environment=test --watch` running, and runs `ember test --path` on the result.
@@ -300,9 +302,20 @@ class GaiaTestContainer(CopiedSourceContainer):
     exclude = GAIA_SYNC_EXCLUDE
     owner = "www-data"      # as in the image, so Apache can write where Gaia expects to
 
-    def __init__(self, checkout, state_dir, base="gaia-test"):
+    def __init__(self, checkout, state_dir, base="gaia-test", slot=None, db_name=None):
         super().__init__(checkout, state_dir, "p4m-test-gaia")
         self.base = base
+        self.slot = slot
+        self.db_name = db_name          # overrides gaia-test's DB_NAME (a slot's database)
+        if slot:
+            self.name = f"p4m-test-gaia-slot{slot}"
+            self.manifest_file = Path(state_dir) / f"{self.name}.manifest.json"
+        self.checkout_file = Path(state_dir) / f"{self.name}.checkout"
+
+    @property
+    def label(self):
+        """`p4m.test` label value: the checkout, or `slot<k>` for a slot (it serves any checkout)."""
+        return f"slot{self.slot}" if self.slot else norm(self.checkout)
 
     def ensure(self, fresh=False):
         """Create the container unless one is running from gaia-test's current image. Returns True if it
@@ -312,20 +325,37 @@ class GaiaTestContainer(CopiedSourceContainer):
             raise TestEnvError(f"{self.base} does not exist - `p4m up` first (its image and settings are reused)")
         own = inspect(self.name)
         if own and not fresh and _running(own) and own.get("Image") == shared.get("Image"):
-            return False
+            if self._holds_checkout():
+                return False
+            self._empty()           # a slot that last ran another checkout: copy this one in from scratch
+            return True
         if own:
             _docker("rm", "-f", self.name)
         self._create(shared)
-        # The image holds an old copy of the source: start from an empty tree (vendor is a volume).
+        self._empty()               # the image holds an old copy of the source
+        return True
+
+    def _holds_checkout(self):
+        """Whether the container's tree is this checkout's (a slot's is whichever checkout ran there last)."""
+        if not self.slot:
+            return True
+        try:
+            return self.checkout_file.read_text(encoding="utf-8").strip() == norm(self.checkout)
+        except OSError:
+            return False
+
+    def _empty(self):
+        """Start from an empty tree (vendor is a volume); the next sync copies everything."""
         _docker("exec", self.name, "sh", "-c",
                 f"find {self.root} -mindepth 1 -maxdepth 1 ! -name vendor -exec rm -rf {{}} +")
         self.manifest_file.unlink(missing_ok=True)
-        return True
+        self.checkout_file.parent.mkdir(parents=True, exist_ok=True)
+        self.checkout_file.write_text(norm(self.checkout), encoding="utf-8")
 
     def run_args(self, shared):
         """(`docker run` arguments before the image, image and command) for a container like `shared`,
         without its source mount."""
-        args = ["run", "-d", "--name", self.name, "--label", f"{LABEL}={norm(self.checkout)}"]
+        args = ["run", "-d", "--name", self.name, "--label", f"{LABEL}={self.label}"]
         networks = list((shared.get("NetworkSettings") or {}).get("Networks") or {})
         if networks:
             args += ["--network", networks[0]]
@@ -351,9 +381,10 @@ class GaiaTestContainer(CopiedSourceContainer):
         return args, cfg["Image"], command
 
     def env(self, shared):
-        """gaia-test's environment with Xdebug off (it only slows the suite down)."""
-        return [e for e in shared["Config"].get("Env") or [] if not e.startswith("XDEBUG_MODE=")] \
-            + ["XDEBUG_MODE=off"]
+        """gaia-test's environment with Xdebug off (it only slows the suite down), on the slot's database."""
+        dropped = ("XDEBUG_MODE=",) + (("DB_NAME=",) if self.db_name else ())
+        return [e for e in shared["Config"].get("Env") or [] if not e.startswith(dropped)] \
+            + ["XDEBUG_MODE=off"] + ([f"DB_NAME={self.db_name}"] if self.db_name else [])
 
     def _create(self, shared):
         args, image, command = self.run_args(shared)
