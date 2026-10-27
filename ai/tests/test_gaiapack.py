@@ -51,10 +51,17 @@ class PackTest(unittest.TestCase):
         self.assertEqual(gaiapack.check_commands("B", ["Idea"]),
                          ["graph export --check", "docs generate --check", "check resource Idea", "check api-cases"])
 
+    def test_scaffold_command_per_bundle(self):
+        self.assertTrue(gaiapack.scaffold_command("B", ["Report"]).startswith("scaffold resource Report "))
+        self.assertIn("<Name>", gaiapack.scaffold_command("E", []))
+        self.assertIsNone(gaiapack.scaffold_command("G", ["Idea"]))
+        self.assertIsNone(gaiapack.scaffold_command(None, []))
+
     def test_build_has_each_part(self):
         out = "\n".join(gaiapack.build(self.root, "Idea acl cases for acl.json", set(), fake_run, no_sections, 300))
         for part in ("gaia-dev model Idea", "gaia-dev acl Idea", "gaia-dev cases Idea", "bundle A",
-                     "exemplar PR: #193", "acl-matrix.md#idea", "gaia-dev check api-cases"):
+                     "exemplar PR: #193", "acl-matrix.md#idea", "gaia-dev check api-cases",
+                     "gaia-dev scaffold api-cases"):
             self.assertIn(part, out)
 
     def test_cap_defers_blocks_but_keeps_checks_reference(self):
