@@ -93,7 +93,7 @@ class Dispatcher:
             return self._iteration_limit(number, done_runs)
         live_id = session_id or str(uuid.uuid4())
         limits = policy.run_limits(self.agent, model)
-        cmd = runner.build_command(self.claude, self.agent, prompt, model, session_id,
+        cmd = runner.build_command(self.claude, self.agent, model, session_id,
                                    new_session_id=None if session_id else live_id, limits=limits, mcp=self.mcp)
         mode = why or (f"resume {session_id[:8]}" if session_id else "new session")
         if not session_id:
@@ -113,7 +113,7 @@ class Dispatcher:
         self._mark_picked_up(issue)
         try:
             result, log_path = runner.run(cmd, {**self.tracker.child_env(), **self.agent.env},
-                                          self.agent.name, number)
+                                          self.agent.name, number, prompt)
         except Exception as e:  # e.g. the Claude binary vanished; still close the run and hand off
             result, log_path = {"is_error": True, "subtype": "talos error", "result": str(e)}, None
         ended = _now()

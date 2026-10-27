@@ -2,6 +2,7 @@
 
 import sys
 import unittest
+from unittest import mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -205,10 +206,37 @@ class ComplexityMarkerTest(unittest.TestCase):
             gaia_mcp.with_complexity("", "huge")
 
 
+class RunPromptTest(unittest.TestCase):
+    def run_with(self, side_effect=None, prompt="x" * 40000):
+        import tempfile
+        from types import SimpleNamespace
+        out = '{"session_id": "s1", "result": "ok"}'
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(runner, "LOG_DIR", Path(tmp)), \
+                mock.patch("subprocess.run", side_effect=side_effect,
+                           return_value=SimpleNamespace(stdout=out, stderr="", returncode=0)) as sub:
+            result, log = runner.run(["claude", "-p"], {}, "odysseus", 7, prompt)
+            return result, log.name, log.read_text(encoding="utf-8"), sub
+
+    def test_prompt_goes_on_stdin_not_argv(self):
+        result, _, _, sub = self.run_with()
+        self.assertEqual(result["session_id"], "s1")
+        self.assertEqual(sub.call_args.args[0], ["claude", "-p"])
+        self.assertEqual(sub.call_args.kwargs["input"], "x" * 40000)
+
+    def test_launch_failure_is_logged_with_a_real_path(self):
+        result, name, text, _ = self.run_with(side_effect=OSError("too long"))
+        self.assertTrue(result["is_error"])
+        self.assertTrue(name.startswith("odysseus-7-"))
+        self.assertIn("too long", text)
+
+
 class BuildCommandTest(unittest.TestCase):
+    def test_prompt_is_not_in_argv(self):
+        self.assertNotIn("do it", runner.build_command("claude", make_agent(), "sonnet"))
+
     def test_new_session(self):
-        cmd = runner.build_command("claude", make_agent(), "do it", "sonnet")
-        self.assertEqual(cmd[:3], ["claude", "-p", "do it"])
+        cmd = runner.build_command("claude", make_agent(), "sonnet")
+        self.assertEqual(cmd[:2], ["claude", "-p"])
         self.assertEqual(cmd[cmd.index("--model") + 1], "sonnet")
         self.assertEqual(cmd[cmd.index("--permission-mode") + 1], "auto")
         self.assertNotIn("--max-budget-usd", cmd)
@@ -217,40 +245,40 @@ class BuildCommandTest(unittest.TestCase):
         self.assertNotIn("--resume", cmd)
 
     def test_new_session_gets_its_id_up_front(self):
-        cmd = runner.build_command("claude", make_agent(), "do it", "sonnet", new_session_id="uuid-1")
+        cmd = runner.build_command("claude", make_agent(), "sonnet", new_session_id="uuid-1")
         self.assertEqual(cmd[cmd.index("--session-id") + 1], "uuid-1")
 
     def test_resume_ignores_new_session_id(self):
-        cmd = runner.build_command("claude", make_agent(), "go on", "opus", session_id="abc", new_session_id="x")
+        cmd = runner.build_command("claude", make_agent(), "opus", session_id="abc", new_session_id="x")
         self.assertNotIn("--session-id", cmd)
 
     def test_mcp_config_is_strict(self):
-        self.assertNotIn("--mcp-config", runner.build_command("claude", make_agent(), "x", "sonnet"))
-        cmd = runner.build_command("claude", make_agent(), "x", "sonnet", mcp=Path("m.json"))
+        self.assertNotIn("--mcp-config", runner.build_command("claude", make_agent(), "sonnet"))
+        cmd = runner.build_command("claude", make_agent(), "sonnet", mcp=Path("m.json"))
         self.assertEqual(cmd[cmd.index("--mcp-config") + 1], "m.json")
         self.assertIn("--strict-mcp-config", cmd)
 
     def test_resume(self):
-        cmd = runner.build_command("claude", make_agent(), "go on", "opus", session_id="abc")
+        cmd = runner.build_command("claude", make_agent(), "opus", session_id="abc")
         self.assertEqual(cmd[cmd.index("--resume") + 1], "abc")
         self.assertEqual(cmd[cmd.index("--model") + 1], "opus")
 
     def test_turn_budget(self):
-        self.assertNotIn("--max-turns", runner.build_command("claude", make_agent(), "x", "sonnet"))
-        cmd = runner.build_command("claude", make_agent(max_turns=80), "x", "sonnet")
+        self.assertNotIn("--max-turns", runner.build_command("claude", make_agent(), "sonnet"))
+        cmd = runner.build_command("claude", make_agent(max_turns=80), "sonnet")
         self.assertEqual(cmd[cmd.index("--max-turns") + 1], "80")
 
     def test_run_limits_override_turns_and_add_a_budget(self):
-        cmd = runner.build_command("claude", make_agent(max_turns=80), "x", "opus", limits=(150, 15.0))
+        cmd = runner.build_command("claude", make_agent(max_turns=80), "opus", limits=(150, 15.0))
         self.assertEqual(cmd[cmd.index("--max-turns") + 1], "150")
         self.assertEqual(cmd[cmd.index("--max-budget-usd") + 1], "15.0")
-        self.assertNotIn("--max-budget-usd", runner.build_command("claude", make_agent(), "x", "sonnet",
+        self.assertNotIn("--max-budget-usd", runner.build_command("claude", make_agent(), "sonnet",
                                                                   limits=(80, 0.0)))
 
     def test_tool_policy(self):
-        self.assertNotIn("--tools", runner.build_command("claude", make_agent(), "x", "sonnet"))
+        self.assertNotIn("--tools", runner.build_command("claude", make_agent(), "sonnet"))
         cmd = runner.build_command("claude", make_agent(builtin_tools="Bash,Read", denied_tools=["PowerShell"]),
-                                   "x", "sonnet")
+                                   "sonnet")
         self.assertEqual(cmd[cmd.index("--tools") + 1], "Bash,Read")
         self.assertEqual(cmd[cmd.index("--disallowedTools") + 1], "PowerShell")
 
