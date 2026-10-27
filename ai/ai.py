@@ -71,6 +71,8 @@ def build_parser():
                     help="don't run the base commit to classify failures not seen before")
     sp.add_argument("--explain", metavar="CASE", help="gaia: expected vs actual for one failed api case, from the last log")
     sp.add_argument("--case", metavar="ID", help="gaia: run one api case on the already-seeded DB (no re-seed)")
+    sp.add_argument("--slot", type=int, metavar="K",
+                    help="gaia: run in test slot K (own container and database; see `p4m test slots`)")
 
     sp = add("doctor", doctor.cmd_doctor, "check the Gaia test environment; each failure prints its fix")
     sp.add_argument("repo", choices=["gaia"])

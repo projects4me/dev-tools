@@ -85,11 +85,22 @@ Firefox uses its own certificate store: set `security.enterprise_roots.enabled =
 | `p4m test api --mode backend,acl` | gaia api-tester against gaia-test (`--filter`, `--mode live`) |
 | `p4m test phpunit [path]` / `test hermes` | Unit tests |
 | `p4m test ember [--filter X] [--fresh]` | Prometheus tests in a test container: source copied in, incremental `ember build -e test --watch`, `ember test --path` (reruns in seconds) |
-| `p4m test clean` | remove the throwaway `p4m-test-*` containers |
+| `p4m test slots setup\|status\|reset [K…]` | Gaia test slots: `setup` (re)builds the template database if stale (`--force`: always) and clones it into the slots' databases, `reset` only re-clones it; `status` shows the template, each slot's database, container, checkout and lock (`--src`, `--force`) |
+| `p4m test api\|phpunit --slot K` | Run in test slot K: container `p4m-test-gaia-slotK` on database `pr4m_test_K`; `api --prepare` resets the slot from the template instead of re-seeding |
+| `p4m test clean` | remove the throwaway `p4m-test-*` containers (with `--src`, only that checkout's; without, the slot containers too) |
 
 Every `p4m test` runs against **this workspace's checkout** (or `--src <path>`). The shared containers serve the
 folder `p4m up` ran from; when that is another folder, a throwaway `p4m-test-<service>-<hash>` container is
 started from the same image, env, network and mounts with the source pointed here, and kept for reuse.
+
+Gaia suites share the pr4m_test database, so without `--slot` they run one at a time (a lock serialises them).
+**Test slots** let several run at once: slot K (1..`TEST_SLOTS`) owns database `pr4m_test_K` and container
+`p4m-test-gaia-slotK`, and has its own lock. The slot databases are cloned (`CREATE DATABASE … TEMPLATE`, seconds)
+from `pr4m_test_template`, which the api-tester harness seeds once; it is rebuilt when pr4m's schema (a migration)
+or the checkout's seeds (`db/seeds`, the harness script) change. A slot serves any checkout: one synced into a slot
+that last held another is copied in from scratch. `ai test gaia --slot K` runs the gaia suites in slot K.
+`phpunit --slot K` needs the slot's database (`p4m test slots setup K`). There is one template: slots testing
+checkouts with different seeds rebuild it in turn (a full seed each time).
 | `p4m repos status` / `sync` / `fix-eol` | Git state; clone + checkout + pull; CRLF→LF for shell scripts |
 | `p4m doctor` | Check tools, WSL, Docker, ports 80/443/5432, hosts file, CA trust, repos |
 | `p4m watch start\|stop\|status` | File sync of the prometheus source into its container (started by `p4m up`) |
@@ -152,6 +163,7 @@ the page works through the proxy.
 | `GAIA_XDEBUG_MODE` | debug,develop | Set to `off` for faster requests |
 | `FILE_WATCH_POLLING` | auto | Polling watchers for ember/nodemon/uvicorn (needed on Windows bind mounts) |
 | `DEFAULT_SERVICES` | all | What `p4m up` starts with no args (`all` or `core`) |
+| `TEST_SLOTS` | 2 | Number of Gaia test slots (`p4m test slots`, `--slot K`), 1–16 |
 
 ## Troubleshooting
 

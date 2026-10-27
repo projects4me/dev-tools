@@ -295,6 +295,60 @@ class GaiaContainerTest(unittest.TestCase):
         self.assertNotEqual(self.box.name, other.name)
 
 
+class GaiaSlotContainerTest(unittest.TestCase):
+    """A test slot's gaia container: keyed by the slot, on the slot's database, re-filled per checkout."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.state = Path(self.tmp.name) / "state"
+        self.old = testenv.inspect
+
+    def tearDown(self):
+        testenv.inspect = self.old
+        self.tmp.cleanup()
+
+    def _box(self, checkout, slot=2):
+        return testenv.GaiaTestContainer(Path(self.tmp.name) / checkout, self.state, slot=slot,
+                                         db_name=f"pr4m_test_{slot}")
+
+    def test_name_and_label_are_per_slot_not_per_checkout(self):
+        a, b = self._box("a"), self._box("b")
+        self.assertEqual(a.name, "p4m-test-gaia-slot2")
+        self.assertEqual(a.name, b.name)
+        self.assertEqual(a.manifest_file, b.manifest_file)
+        self.assertNotEqual(a.name, self._box("a", slot=1).name)
+        args, _, _ = a.run_args(GaiaContainerTest.SHARED)
+        self.assertEqual(args[args.index("--label") + 1], f"{testenv.LABEL}=slot2")
+
+    def test_db_name_is_overridden(self):
+        env = self._box("a").env(GaiaContainerTest.SHARED)
+        self.assertIn("DB_NAME=pr4m_test_2", env)
+        self.assertNotIn("DB_NAME=pr4m_test", env)
+        self.assertIn("XDEBUG_MODE=off", env)
+
+    def test_another_checkout_empties_the_slot_first(self):
+        own = {"Image": "sha256:abc", "State": {"Running": True}}
+        testenv.inspect = lambda name: GaiaContainerTest.SHARED if name == "gaia-test" else own
+        a, b = self._box("a"), self._box("b")
+        with FakeDocker():
+            self.assertTrue(a.ensure())                  # nothing recorded yet: start from an empty tree
+        a.manifest_file.parent.mkdir(parents=True, exist_ok=True)
+        a.manifest_file.write_text("{}", encoding="utf-8")
+        with FakeDocker() as docker:
+            self.assertFalse(a.ensure())                 # same checkout: keep the copy, sync only changes
+        self.assertEqual(docker.calls, [])
+        with FakeDocker() as docker:
+            self.assertTrue(b.ensure())                  # another checkout: empty it, copy everything
+        self.assertIn("find /var/www/html", docker.calls[0][0][-1])
+        self.assertNotIn(("rm", "-f", b.name), [c[0] for c in docker.calls])   # the container is kept
+        self.assertFalse(b.manifest_file.exists())
+
+    def test_clean_without_src_removes_slot_containers(self):
+        with FakeDocker(lambda a: "p4m-test-gaia-slot1\n" if f"label={testenv.LABEL}" in a else "") as docker:
+            self.assertEqual(testenv.clean(), ["p4m-test-gaia-slot1"])
+        self.assertIn((("rm", "-f", "p4m-test-gaia-slot1"), None), docker.calls)
+
+
 class BindContainerChoiceTest(unittest.TestCase):
     """Which container a checkout's gaia commands (tests, migrations) run in."""
 
