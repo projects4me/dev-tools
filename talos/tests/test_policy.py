@@ -2,6 +2,7 @@
 
 import sys
 import unittest
+from datetime import datetime, timedelta, timezone
 from unittest import mock
 from pathlib import Path
 
@@ -292,6 +293,34 @@ class PackTest(unittest.TestCase):
 
     def test_with_pack_without_a_pack_is_unchanged(self):
         self.assertEqual(policy.with_pack("Work #1", "  \n"), "Work #1")
+
+
+class LimitTest(unittest.TestCase):
+    NOW = datetime(2026, 10, 28, 12, 0, tzinfo=timezone.utc)
+
+    def test_reads_the_reset_epoch_after_the_pipe(self):
+        epoch = int(datetime(2026, 10, 28, 15, 0, tzinfo=timezone.utc).timestamp())
+        hit, reset = policy.read_limit({"is_error": True, "subtype": "success",
+                                        "result": f"Claude AI usage limit reached|{epoch}"}, self.NOW)
+        self.assertTrue(hit)
+        self.assertEqual(reset, datetime(2026, 10, 28, 15, 0, tzinfo=timezone.utc))
+
+    def test_limit_without_a_reset_time(self):
+        self.assertEqual(policy.read_limit({"is_error": True, "result": "You've hit your limit"}, self.NOW),
+                         (True, None))
+
+    def test_ordinary_errors_and_successes_are_not_limits(self):
+        self.assertEqual(policy.read_limit({"is_error": True, "result": "boom"}, self.NOW), (False, None))
+        self.assertEqual(policy.read_limit({"subtype": "success", "result": "usage limit docs"}, self.NOW),
+                         (False, None))
+        self.assertEqual(policy.read_limit(None, self.NOW), (False, None))
+
+    def test_pause_runs_to_the_reset_or_backs_off_exponentially(self):
+        reset = self.NOW + timedelta(hours=1)
+        self.assertEqual(policy.limit_pause_seconds(reset, 1, self.NOW), 3660)
+        self.assertEqual(policy.limit_pause_seconds(None, 1, self.NOW), 300)
+        self.assertEqual(policy.limit_pause_seconds(None, 3, self.NOW), 1200)
+        self.assertEqual(policy.limit_pause_seconds(None, 30, self.NOW), policy.LIMIT_BACKOFF_MAX_S)
 
 
 if __name__ == "__main__":

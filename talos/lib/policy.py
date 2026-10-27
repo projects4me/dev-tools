@@ -1,5 +1,6 @@
 """Talos decisions as pure functions: which events matter, and what an agent should do with an issue."""
 
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from typing import NamedTuple
@@ -153,3 +154,43 @@ def read_outcome(result):
         return "failed", "Claude finished without a valid outcome", str(result.get("result") or "")[:1500], ""
     return (out["outcome"], str(out.get("summary") or ""), str(out.get("comment") or ""),
             str(out.get("handoff") or ""))
+
+
+# -- Claude usage / rate limits ------------------------------------------------------------------
+
+LIMIT_PATTERN = re.compile(r"usage limit|hit your limit|rate.?limit|limit reached|too many requests|\b429\b|overloaded_error",
+                           re.IGNORECASE)
+LIMIT_BACKOFF_BASE_S = 300
+LIMIT_BACKOFF_MAX_S = 6 * 3600
+
+
+def read_limit(result, now):
+    """(True, reset_at) when a `claude -p` result is a usage/rate-limit stop, else (False, None).
+
+    reset_at is a datetime, or None when the result gives none (the caller then backs off exponentially).
+    Claude reports a limit as an error result whose text is e.g. "Claude AI usage limit reached|1792581600"
+    (epoch seconds after the pipe); a `resetsAt` epoch field is read too when present.
+    """
+    if not isinstance(result, dict) or not (result.get("is_error") or result.get("subtype") not in (None, "success")):
+        return False, None
+    text = str(result.get("result") or "")
+    if not LIMIT_PATTERN.search(text) and not result.get("api_error_status") == 429:
+        return False, None
+    epoch = result.get("resetsAt")
+    match = re.search(r"\|\s*(\d{9,13})\b", text)
+    if epoch is None and match:
+        epoch = match.group(1)
+    try:
+        epoch = float(epoch)
+    except (TypeError, ValueError):
+        return True, None
+    if epoch > 1e11:  # milliseconds
+        epoch /= 1000
+    return True, datetime.fromtimestamp(epoch, tz=now.tzinfo)
+
+
+def limit_pause_seconds(reset_at, streak, now):
+    """How long to stop dispatching: until reset_at (plus a minute), else 5 min doubling per consecutive limit."""
+    if reset_at is not None:
+        return max((reset_at - now).total_seconds(), 0) + 60
+    return min(LIMIT_BACKOFF_BASE_S * 2 ** max(streak - 1, 0), LIMIT_BACKOFF_MAX_S)

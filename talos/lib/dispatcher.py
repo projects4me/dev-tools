@@ -3,8 +3,9 @@
 import html
 import queue
 import threading
+import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from . import policy, runner, sessions, workspaces
 from . import runs as run_log
@@ -32,6 +33,8 @@ class Dispatcher:
         self._queue = queue.Queue()
         self._pending = set()
         self._lock = threading.Lock()
+        self._paused_until = None   # datetime: no dispatching until then (Claude usage limit)
+        self._limit_streak = 0
 
     # -- queueing ----------------------------------------------------------------------------
 
@@ -58,13 +61,27 @@ class Dispatcher:
     def _loop(self):
         while True:
             number, source, reconcile = self._queue.get()
+            requeue = False
             try:
-                self.handle(number, reconcile)
+                self._wait_while_paused()
+                requeue = self.handle(number, reconcile) == "limited"
             except Exception as e:  # never let one issue stop the worker
                 log(f"#{number} failed in Talos: {e}", self.agent.name)
             finally:
-                with self._lock:
-                    self._pending.discard(number)
+                if requeue:       # a usage limit stopped the run: it stays queued, the pause holds the queue
+                    self._queue.put((number, source, reconcile))
+                else:
+                    with self._lock:
+                        self._pending.discard(number)
+
+    def _wait_while_paused(self):
+        while self._paused_until is not None:
+            remaining = (self._paused_until - _now()).total_seconds()
+            if remaining <= 0:
+                self._paused_until = None
+                log("usage-limit pause over, dispatching resumes", self.agent.name)
+                return
+            time.sleep(min(remaining, 30))
 
     # -- one job -----------------------------------------------------------------------------
 
@@ -125,13 +142,23 @@ class Dispatcher:
         stats = runner.usage_since(runner.transcript(new_session), started)
         sessions.update(self.agent.name, number, running=False, last_ended_at=_iso(ended),
                         session_id=new_session, session_cost_usd=reported)
-        outcome, summary, comment, handoff = policy.read_outcome(result)
+        limited, reset_at = policy.read_limit(result, ended)
+        if limited:
+            outcome, summary, comment, handoff = "limited", "Claude usage or rate limit reached", "", ""
+        else:
+            self._limit_streak = 0
+            outcome, summary, comment, handoff = policy.read_outcome(result)
         log_name = log_path.name if log_path else "none"
         run_log.finish(run_id, _iso(ended), round((ended - started).total_seconds(), 1), outcome, summary,
                        cost, reported, stats, log_path.name if log_path else None)
         cost_text = f"${cost:.2f}" if cost is not None else "cost unknown"
         log(f"#{number} {outcome}: {summary} ({cost_text}, {stats['turns']} turns, "
             f"peak context {stats['peak_context_tokens'] // 1000}K, log {log_name})", self.agent.name)
+
+        if outcome == "limited":
+            sessions.update(self.agent.name, number, runs=done_runs)   # a limited run is not an iteration
+            self._pause_for_limit(number, reset_at, ended)
+            return "limited"
 
         if outcome == "escalate" and model != self.agent.model_escalate and not escalated:
             sessions.update(self.agent.name, number, escalated=True)
@@ -167,6 +194,22 @@ class Dispatcher:
                 body += f"<pre>{html.escape(comment)}</pre>"
             self._hand_off(number, "failed", f"{self.agent.display_name}: run failed", body, escaped=True)
         return outcome
+
+    def _pause_for_limit(self, number, reset_at, now):
+        """Stop dispatching until the limit resets (or an exponential backoff); comment once if it is long."""
+        self._limit_streak += 1
+        seconds = policy.limit_pause_seconds(reset_at, self._limit_streak, now)
+        self._paused_until = now + timedelta(seconds=seconds)
+        until = self._paused_until.strftime("%Y-%m-%d %H:%M")
+        log(f"#{number} hit a Claude usage limit: queue paused until {until}; re-queued without counting an "
+            f"iteration", self.agent.name)
+        if seconds > self.agent.limit_comment_hours * 3600 and not self.dry_run:
+            try:
+                self._comment(number, f"{self.agent.display_name}: paused on Claude usage limit",
+                              f"<p>Claude's usage limit was reached. Talos is paused until about {until} and will "
+                              f"then run this issue again; nothing is needed from you.</p>", escaped=True)
+            except TalosError as e:
+                log(f"#{number} limit comment failed: {e}", self.agent.name)
 
     @staticmethod
     def _workspace(number, repo):
