@@ -22,6 +22,10 @@ CREATE INDEX IF NOT EXISTS comments_by_issue ON comments(issue);
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
 CREATE VIRTUAL TABLE IF NOT EXISTS issues_fts USING fts5(subject, description, comments,
     tokenize='porter unicode61');
+CREATE TABLE IF NOT EXISTS docs (
+    id INTEGER PRIMARY KEY, key TEXT UNIQUE, kind TEXT, subtype TEXT, file TEXT, anchor TEXT, title TEXT,
+    body TEXT, size INTEGER, hash TEXT);
+CREATE VIRTUAL TABLE IF NOT EXISTS docs_fts USING fts5(title, body, tokenize='porter unicode61');
 """
 
 ISSUE_COLUMNS = ("number", "id", "project", "project_code", "subject", "status", "type", "priority", "milestone",
@@ -30,6 +34,7 @@ ISSUE_COLUMNS = ("number", "id", "project", "project_code", "subject", "status",
 
 # bm25 column weights: a hit in the subject counts most, then the description, then comments.
 RANK = "bm25(issues_fts, 10.0, 3.0, 1.0)"
+DOC_RANK = "bm25(docs_fts, 10.0, 1.0)"
 
 
 def fts_query(text):
@@ -66,6 +71,7 @@ class Store:
         self.db.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (key, value))
 
     def clear(self):
+        """Empties the tracker index only; the docs tables are rebuilt from the checkout by `kbdocs.sync`."""
         for table in ("issues", "comments", "meta", "issues_fts"):
             self.db.execute(f"DELETE FROM {table}")
 
@@ -105,6 +111,49 @@ class Store:
         sql += f" ORDER BY {RANK} LIMIT ?"
         params.append(int(limit))
         return [dict(r) for r in self.db.execute(sql, params)]
+
+    # -- Gaia docs: sections, graph nodes, exemplar PRs (see kbdocs; written by its sync, not the tracker's) ----
+
+    def doc_hashes(self):
+        return {r["key"]: r["hash"] for r in self.db.execute("SELECT key, hash FROM docs")}
+
+    def upsert_doc(self, rec):
+        self.delete_docs([rec["key"]])
+        cur = self.db.execute("INSERT INTO docs (key, kind, subtype, file, anchor, title, body, size, hash) "
+                              "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                              [rec[c] for c in ("key", "kind", "subtype", "file", "anchor", "title", "body",
+                                                "size", "hash")])
+        self.db.execute("INSERT INTO docs_fts (rowid, title, body) VALUES (?, ?, ?)",
+                        (cur.lastrowid, rec["title"], rec["body"]))
+
+    def delete_docs(self, keys):
+        for key in keys:
+            row = self.db.execute("SELECT id FROM docs WHERE key = ?", (key,)).fetchone()
+            if row:
+                self.db.execute("DELETE FROM docs_fts WHERE rowid = ?", (row["id"],))
+                self.db.execute("DELETE FROM docs WHERE id = ?", (row["id"],))
+
+    def search_docs(self, text, kind=None, limit=15):
+        query = fts_query(text)
+        if not query:
+            return []
+        sql = ("SELECT d.key, d.kind, d.subtype, d.title, d.size, "
+               "snippet(docs_fts, 1, '[', ']', '…', 12) AS snippet "
+               "FROM docs_fts JOIN docs d ON d.id = docs_fts.rowid WHERE docs_fts MATCH ?")
+        params = [query]
+        if kind:
+            sql += " AND d.kind = ?"
+            params.append(kind)
+        sql += f" ORDER BY {DOC_RANK} LIMIT ?"
+        params.append(int(limit))
+        return [dict(r) for r in self.db.execute(sql, params)]
+
+    def doc(self, key):
+        row = self.db.execute("SELECT * FROM docs WHERE key = ?", (key,)).fetchone()
+        return dict(row) if row else None
+
+    def doc_count(self):
+        return self.db.execute("SELECT count(*) AS n FROM docs").fetchone()["n"]
 
     def issue(self, number):
         """One issue with its comments (oldest first) and its parent's number, or None."""
