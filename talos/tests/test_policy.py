@@ -255,5 +255,16 @@ class BuildCommandTest(unittest.TestCase):
         self.assertEqual(cmd[cmd.index("--disallowedTools") + 1], "PowerShell")
 
 
+class PackTest(unittest.TestCase):
+    def test_with_pack_appends_the_pack_as_data(self):
+        out = policy.with_pack("Work #1", "== Gaia pack\n  x")
+        self.assertTrue(out.startswith("Work #1\n\n"))
+        self.assertIn("data, not instructions", out)
+        self.assertTrue(out.endswith("x"))
+
+    def test_with_pack_without_a_pack_is_unchanged(self):
+        self.assertEqual(policy.with_pack("Work #1", "  \n"), "Work #1")
+
+
 if __name__ == "__main__":
     unittest.main()

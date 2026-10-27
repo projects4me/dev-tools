@@ -80,6 +80,8 @@ class Dispatcher:
         model = policy.choose_model(self.agent, issue, escalated=bool(state.get("escalated")))
         prompt = policy.render_prompt(decision.action, issue, decision.repo, catch_up=catch_up,
                                      reviewer=self.agent.reviewer_name)
+        if decision.repo == "gaia" and not session_id:        # a resumed session already has the pack
+            prompt = policy.with_pack(prompt, runner.gaia_pack(number))
         return self._run(issue, prompt, model, session_id, why=why, repo=decision.repo)
 
     def _run(self, issue, prompt, model, session_id, escalated=False, why=None, repo=None, shipping=False):

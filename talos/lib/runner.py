@@ -4,11 +4,12 @@ import glob
 import json
 import os
 import subprocess
+import sys
 import time
 from datetime import datetime
 from pathlib import Path
 
-from .config import LOG_DIR, OUTCOME_SCHEMA, WORKSPACE, now_stamp
+from .config import DEV_TOOLS, LOG_DIR, OUTCOME_SCHEMA, WORKSPACE, now_stamp
 
 
 def build_command(claude, agent, prompt, model, session_id=None, new_session_id=None, limits=None, mcp=None):
@@ -155,3 +156,18 @@ def run(cmd, env, agent_name, issue):
         result = {"is_error": True, "subtype": f"exit {proc.returncode}",
                   "result": (proc.stderr or proc.stdout or "")[-1500:]}
     return result, log_path
+
+
+def gaia_pack(number, timeout=300):
+    """`ai context <issue>` output for a Gaia issue, or "" when it can't be built (the run goes on without it)."""
+    try:
+        r = subprocess.run([sys.executable, str(DEV_TOOLS / "ai" / "ai.py"), "context", str(number), "--repo", "gaia"],
+                           cwd=WORKSPACE, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                           stdin=subprocess.DEVNULL, timeout=timeout)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        print(f"talos: no Gaia pack for #{number}: {e}", file=sys.stderr)
+        return ""
+    if r.returncode != 0:
+        print(f"talos: no Gaia pack for #{number}: ai context exit {r.returncode}", file=sys.stderr)
+        return ""
+    return r.stdout
