@@ -120,6 +120,8 @@ screen you change (`prometheus/app/templates/`, `app/components/`) so the markup
   `data:image/png;base64,...` (better: none).
 - Say in the reply what the screen shows and what is still open. The engineer sees the PNG next to your reply.
 
+Engineer messages can reference attached images as `[image "name": <path>]`; Read the file when it matters to the plan.
+
 ## Your knowledge map
 A markdown file (path below) that only you edit, so later conversations start informed instead of re-reading the
 code. After a conversation taught you something durable, update it with Edit: per product area, where the code

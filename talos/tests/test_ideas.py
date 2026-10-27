@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from lib import db  # noqa: E402
 from lib.ideas import browser, page, plan, policy, screens, state, stream, styles  # noqa: E402
 from lib.ideas.approval import Approval  # noqa: E402
+from lib.ideas.images import Images  # noqa: E402
 from lib.ideas.conversation import Conversation  # noqa: E402
 from lib.ideas.sanitize import SCREEN, clean_html  # noqa: E402
 from lib.ideas.worker import IdeaWorker  # noqa: E402
@@ -664,3 +665,51 @@ class IdeasFlowTest(TempDb):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FakeDownloads:
+    def __init__(self, files):
+        self.files, self.calls = files, []
+
+    def download(self, upload_id):
+        self.calls.append(upload_id)
+        if upload_id not in self.files:
+            raise RuntimeError("404")
+        return self.files[upload_id]
+
+
+class ImagesTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.client = FakeDownloads({"u1": b"PNG-bytes"})
+        self.images = Images(self.client, Path(self.tmp.name))
+
+    def test_a_reference_is_downloaded_and_replaced_by_its_path(self):
+        out = self.images.resolve("i7", "See ![shot.png](upload:u1) please")
+        path = Path(self.tmp.name, "i7", "images", "u1.png")
+        self.assertEqual(out, f'See [image "shot.png": {path.resolve().as_posix()}] please')
+        self.assertEqual(path.read_bytes(), b"PNG-bytes")
+
+    def test_an_image_is_downloaded_once(self):
+        self.images.resolve("i7", "![a.png](upload:u1)")
+        self.images.resolve("i7", "![a.png](upload:u1) again")
+        self.assertEqual(self.client.calls, ["u1"])
+
+    def test_a_failed_download_does_not_fail(self):
+        out = self.images.resolve("i7", "x ![gone.jpg](upload:nope) y")
+        self.assertEqual(out, 'x [image "gone.jpg" could not be downloaded] y')
+
+    def test_the_prompt_carries_the_image_paths_in_new_messages_and_history(self):
+        client = FakeClient()
+        client.add_idea()
+        client.say(7, "old ![a.jpg](upload:u1)")
+        client.messages.append({"id": 2, "idea_id": 7, "role": "agent", "body": "ok"})
+        client.say(7, "new ![b.png](upload:u1)")
+        client.download = self.client.download
+        conv = Conversation(make_agent(), client, None, None, None, lambda: PROJECTS, Path("map.md"),
+                            images=self.images)
+        data = client.idea(7)
+        prompt = conv._prompt(data["idea"], data["messages"], data["messages"][2:], {})
+        self.assertNotIn("upload:", prompt)
+        self.assertEqual(prompt.count("[image "), 2)
