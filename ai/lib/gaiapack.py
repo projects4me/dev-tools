@@ -42,6 +42,16 @@ BUNDLE_CHECKS = {
     "D": ("check behavior",),
     "E": ("check live-events",),
 }
+# Bundle letter -> the gaia-dev scaffolder that writes its touchpoints (tools/gaia-dev/README.md); {model} is the
+# first model the issue names, else <Name>.
+BUNDLE_SCAFFOLDS = {
+    "A": "scaffold api-cases <METHOD> /api/v1/<endpoint> --profile=<profile> --catalog=acl|client [--dry-run]",
+    "B": "scaffold resource {model} [--parent=Project] --fields=name:type[:length][:required] "
+         "[--acl=<profile>:allow|members|deny]",
+    "C": "scaffold action {model} <verb> [--domain=<DomainClass>]",
+    "D": "scaffold behavior <name> --model={model} --events=beforeSave",
+    "E": "scaffold live-events {model} --events=created,updated --fields=<fields>",
+}
 
 
 def pack_cap():
@@ -94,6 +104,12 @@ def check_commands(letter, models):
         else:
             out.append(c)
     return out
+
+
+def scaffold_command(letter, models):
+    """The gaia-dev scaffolder arguments for the bundle, or None when it has no scaffolder."""
+    c = BUNDLE_SCAFFOLDS.get(letter)
+    return c.format(model=models[0] if models else "<Name>") if c else None
 
 
 def gaia_dev(root, args, timeout=120):
@@ -149,7 +165,9 @@ def build(root, text, endpoints, run=gaia_dev, sections=kb_sections, cap=None):
         guide = f"docs/generated/bundles/{letter}.md"
         blocks.append((f"bundle {letter} (closest to this issue)",
                        [f"guide: ai kb section {guide}#touchpoints-in-order"] +
-                       ([f"exemplar PR: {ex}"] if ex else [])))
+                       ([f"exemplar PR: {ex}"] if ex else []) +
+                       ([f"generate it, don't hand-write it: php {GAIA_DEV} {sc}"]
+                        if (sc := scaffold_command(letter, models)) else [])))
     hits = sections(text)
     if hits:
         blocks.append(("doc sections", [f"{k} ({s} lines) {t}" for k, s, t in hits]))
