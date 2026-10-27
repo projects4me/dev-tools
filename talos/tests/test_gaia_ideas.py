@@ -249,7 +249,7 @@ class GaiaFlowTest(TempDb):
         self.assertEqual([(x["key"], x["issueNumber"]) for x in self.tools.plan_issues], [("ui", 5001), ("api", 5002)])
         self.assertEqual(self.tracker.attached, [(5001, "list.png", b"PNG:list")])
         self.assertEqual(self.tracker.created[0][2], OWNER)                # assigned to who created the idea
-        self.assertIn("Created 2 issue(s) from plan v1: aprom-5001 (ui), agaia-5002 (api).", self.thread()[-1][1])
+        self.assertIn("Created 2 issue(s) from plan v1: aprom-5001 (ui, external request to A Prometheus), agaia-5002 (api).", self.thread()[-1][1])
 
     def test_a_plan_written_before_the_last_message_is_kept(self):
         # the agent answers with its plan and screen, edits its knowledge map, then sums up "plan and screen above"

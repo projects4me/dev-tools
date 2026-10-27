@@ -19,17 +19,27 @@ FLUSH_SECONDS = 0.3          # text is published in small batches, not per token
 
 class Conversation:
     def __init__(self, agent, client, progress, launcher, kb, project_codes, map_path, milestones=None,
-                 renderer=None):
+                 renderer=None, project_ids=None):
         self.agent, self.client, self.progress, self.launcher, self.kb = agent, client, progress, launcher, kb
         self.project_codes, self.map_path = project_codes, map_path
         self.milestones = milestones          # project name -> its milestone names (None: not checked)
+        self.project_ids = project_ids        # () -> project name -> id (None: home project not named)
         self.renderer = renderer              # render.Renderer: screens -> PNG
 
-    def system_prompt(self):
+    def home_line(self, idea):
+        """Which project the idea belongs to, or "" when unknown (an idea without a project, e.g. in the sim)."""
+        pid = (idea or {}).get("projectId")
+        if not pid or not self.project_ids:
+            return ""
+        codes = self.project_codes()
+        name = next((n for n, i in self.project_ids().items() if str(i) == str(pid)), None)
+        return f"- This idea belongs to {name} (short code {codes[name]}).\n" if name in codes else ""
+
+    def system_prompt(self, idea=None):
         projects = "\n".join(f"- {name} (short code {code})" for name, code in self.project_codes().items())
         return (f"{self.agent.role_prompt}\n\n## This session\n- Today is {date.today().isoformat()}. You work for "
                 f"{self.agent.reviewer_name}; they approve your plans, and the issues are created assigned to them.\n"
-                f"- Projects you can plan issues in:\n{projects}\n"
+                f"{self.home_line(idea)}- Projects you can plan issues in:\n{projects}\n"
                 f"- Your knowledge map: {self.map_path.as_posix()}")
 
     def has_unanswered(self, idea_id):
@@ -108,7 +118,7 @@ class Conversation:
                                run_log.IDEA, started.isoformat(timespec="seconds"), summary=idea.get("title"))
         result, session, cost, run = None, session_id, None, None
         try:
-            run = self.launcher.start(prompt, model, self.system_prompt(), session_id=session_id,
+            run = self.launcher.start(prompt, model, self.system_prompt(idea), session_id=session_id,
                                       new_session_id=None if session_id else live_id,
                                       label=f"{self.agent.name}-idea{idea['id']}")
             on_run(run)
