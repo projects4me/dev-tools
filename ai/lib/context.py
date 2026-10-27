@@ -10,6 +10,7 @@ import re
 import subprocess
 from pathlib import Path
 
+from . import gaiapack
 from .common import PROJECT_FOR_REPO, git, repo_dir, say, strip_html, tracker_call
 
 _PHP_DECL = re.compile(r"^\s*(?:abstract\s+|final\s+)?(?:class|interface|trait)\s+\w+"
@@ -144,4 +145,8 @@ def cmd_context(args):
         for catalog, ids in cases.items():
             say(f"\napi-tester {catalog} cases for {e} ({len(ids)}): " + ", ".join(ids[:20])
                 + (" …" if len(ids) > 20 else ""))
+    if repo == "gaia":
+        say("\n== Gaia pack")
+        for line in gaiapack.build(repo_dir(repo), text, endpoints):
+            say(line)
     say("\nNext: read only the line ranges you need (Read offset/limit), not whole files.")

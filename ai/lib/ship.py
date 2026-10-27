@@ -27,11 +27,22 @@ import html
 import json
 from pathlib import Path
 
-from . import cost, results, workflow
+from . import cost, gaiapack, results, workflow
 from .common import (AiError, PROJECT_FOR_REPO, REPOS, STATE_DIR, base_branch, config, git, ody, say)
 
 SHORTCODE = {"A Gaia": "agaia", "A Prometheus": "aprom", "A Hermes": "ah", "A Ares": "aa", "A Dev Tool": "adt"}
 REQUIRED = ("title", "files", "what", "why")
+
+
+def gaia_dev_gate(repo):
+    """Run the gaia-dev check set for a Gaia PR; a failing check stops the ship, an unavailable one is reported."""
+    failed = []
+    for name, ok, out in gaiapack.run_checks(repo):
+        say(f"gaia-dev {name}: " + {True: "ok", False: "FAILED", None: "skipped (" + out + ")"}[ok])
+        if ok is False:
+            failed.append("\n".join([f"gaia-dev {name}", *out.splitlines()[-15:]]))
+    if failed:
+        raise AiError("\n".join(["gaia-dev checks failed; fix and re-run:", *failed]))
 
 
 def load_spec(path):
@@ -138,6 +149,9 @@ def cmd_ship(args):
     else:
         test_lines = (["(tests not applicable: " + args.no_tests + ")"] if args.no_tests else test_gate(repo))
     message, body, notes = commit_message(spec, ref), pr_body(spec, ref, test_lines), notes_html(spec, test_lines)
+
+    if not committed and repo == "gaia":
+        gaia_dev_gate(repo)
 
     if args.dry_run:
         say("--- commit message ---\n" + message + "\n--- files ---\n" + "\n".join(spec["files"]))
