@@ -78,7 +78,7 @@ Firefox uses its own certificate store: set `security.enterprise_roots.enabled =
 | `p4m build [svc…]` | Rebuild images (`--pull` for newer bases, `--deps` to reinstall node_modules) |
 | `p4m hosts` | Add/refresh the `*.P4M_DOMAIN` block in the hosts file (`--show` to print it) |
 | `p4m trust` | Trust the local CA in Windows (or macOS) |
-| `p4m db migrate` | `php cli.php migration migrate` in gaia-dev |
+| `p4m db migrate` | `php cli.php migration migrate` for the workspace gaia (in gaia-dev if it mounts this checkout, else a throwaway container) |
 | `p4m db prepare-test` | Create + seed `pr4m_test` for the api-tester |
 | `p4m db psql [db]` / `dump [db] -o f.sql` | psql shell / dump |
 | `p4m db reset [--with-test]` | Wipe the DB volume, re-import the dump, migrate |
