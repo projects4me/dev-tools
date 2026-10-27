@@ -1124,10 +1124,14 @@ def cmd_doctor(args) -> int:
 # --------------------------------------------------------------------------- #
 
 def migrate() -> None:
-    info("Running gaia migrations (pr4m)")
+    """Migrate pr4m with this workspace's gaia metadata. A shared gaia-dev that mounts another checkout would
+    drop the columns its older metadata doesn't know, so then a throwaway container is used instead."""
+    src = ROOT / "gaia"
+    info(f"Running gaia migrations (pr4m) from {src}")
     if not is_running("gaia-dev"):
         compose("gaia", "up", "-d", "gaia")
-    run(["docker", "exec", "-w", "/var/www/html", "gaia-dev", "php", "cli.php", "migration", "migrate"])
+    container = _test_container("gaia-dev", src, "/var/www/html")
+    run(["docker", "exec", "-w", "/var/www/html", container, "php", "cli.php", "migration", "migrate"])
 
 
 def prepare_test_db(src: Path | None = None) -> None:

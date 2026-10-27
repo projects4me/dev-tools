@@ -295,6 +295,40 @@ class GaiaContainerTest(unittest.TestCase):
         self.assertNotEqual(self.box.name, other.name)
 
 
+class BindContainerChoiceTest(unittest.TestCase):
+    """Which container a checkout's gaia commands (tests, migrations) run in."""
+
+    def setUp(self):
+        self.checkout = Path(tempfile.gettempdir()).resolve() / "ws-gaia"
+        self.old = testenv.inspect, testenv._docker
+        self.created = []
+
+    def tearDown(self):
+        testenv.inspect, testenv._docker = self.old
+
+    def _shared(self, source):
+        return {"Config": {"Image": "gaia", "Env": [], "Cmd": [], "Entrypoint": []},
+                "State": {"Running": True}, "NetworkSettings": {"Networks": {"backend": {}}},
+                "Mounts": [{"Type": "bind", "Source": str(source), "Destination": "/var/www/html"}]}
+
+    def _resolve(self, source):
+        shared = self._shared(source)
+        testenv.inspect = lambda name: shared if name == "gaia-dev" else None
+        testenv._docker = lambda *a, **k: self.created.append(a) or subprocess.CompletedProcess(a, 0, "", "")
+        return testenv.BindTestContainer("gaia-dev", self.checkout, "/var/www/html").resolve()
+
+    def test_shared_container_serving_the_checkout_is_used(self):
+        self.assertEqual(self._resolve(self.checkout), ("gaia-dev", ""))
+        self.assertEqual(self.created, [])
+
+    def test_shared_container_with_another_checkout_gets_a_throwaway(self):
+        name, note = self._resolve(self.checkout.parent / "other-gaia")
+        self.assertTrue(name.startswith("p4m-test-gaia-dev-"))
+        self.assertIn("started", note)
+        run = next(c for c in self.created if c[0] == "run")
+        self.assertIn(f"{self.checkout.as_posix()}:/var/www/html", run)
+
+
 class CleanMatchTest(unittest.TestCase):
     """`p4m test clean --src <path>` finds the container started for that path, however --src is spelt."""
 
