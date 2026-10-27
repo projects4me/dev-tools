@@ -65,6 +65,16 @@ class GaiaMappingTest(unittest.TestCase):
         self.assertEqual(flt, "issue|setting")
         self.assertEqual(unmapped, ["core/libs/utils/SmtpSettings.php"])
 
+    def test_gaia_dev_and_generated_docs_are_covered_by_phpunit_not_the_api_filter(self):
+        flt, terms, unmapped = testmap.gaia_api_filter(".", "origin/dev", [
+            "tools/gaia-dev/src/Scaffold/ResourceSeed.php", "docs/generated/graph.json"])
+        self.assertIsNone(flt)
+        self.assertEqual((terms, unmapped), ([], []))
+
+    def test_phpunit_folders_are_the_ones_gaia_ci_runs(self):
+        self.assertEqual(tests.PHPUNIT_FOLDERS,
+                         ("tests/libraries/security", "tests/libraries/utils", "tests/tools"))
+
 
 class FoldTest(unittest.TestCase):
     BODY = ("**Major**\n<details>\n<summary>🧩 Analysis chain</summary>\nscript output\n</details>\n"

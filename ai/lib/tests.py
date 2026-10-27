@@ -23,7 +23,7 @@ from pathlib import Path
 from . import baseline, results, testmap
 from .common import STATE_DIR, WORKSPACE, base_branch, config, git, p4m, repo_dir, say
 
-PHPUNIT_FOLDERS = ("tests/libraries/security", "tests/libraries/utils")
+PHPUNIT_FOLDERS = ("tests/libraries/security", "tests/libraries/utils", "tests/tools")
 
 
 @dataclass
@@ -232,7 +232,7 @@ def targets_for(repo, src):
     elif repo == "gaia":
         flt, terms, unmapped = testmap.gaia_api_filter(src, base_ref, changed)
         notes = [f"api filter: {flt}" if flt else "api: nothing mapped: running everything",
-                 "phpunit: always both folders (fast)"]
+                 "phpunit: always every folder in full (fast)"]
     else:
         return {}, [f"{repo}: no targeting rules, running everything"]
     if unmapped:
