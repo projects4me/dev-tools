@@ -8,9 +8,13 @@ A plan left "creating" (Talos stopped mid-approval) is taken up again the same w
 window is left: if Talos dies between Gaia creating an issue and the idea recording it, carrying on creates that
 one issue a second time (the failure message says to check Gaia first)."""
 
+import html
+
 from ..config import log
 from . import plan as plans
 from . import policy, state
+
+REQUEST = "External Request:"
 
 
 class Approval:
@@ -30,11 +34,16 @@ class Approval:
         for screen in data.get("screens") or []:
             latest[screen["key"]] = screen["id"]
         unattached = []
+        home = self._home(idea)
         try:
             for issue in plans.ordered(issues):
                 if issue["key"] in refs:
                     continue
-                made = self.tracker.create_issue(issue["project"], issue["subject"], self.description(issue, refs),
+                subject, text = issue["subject"], self.description(issue, refs)
+                if home and issue["project"] != home:
+                    subject = subject if subject.startswith(REQUEST) else f"{REQUEST} {subject}"
+                    text = self.request_notice(home, idea, self.agent.reviewer_name) + text
+                made = self.tracker.create_issue(issue["project"], subject, text,
                                                  issue["type"], issue["priority"], issue["complexity"], idea["owner"],
                                                  issue.get("milestone") or plans.DEFAULT_MILESTONE)
                 # attach before recording it: a recorded issue is skipped on retry, so its screens would never come
@@ -55,6 +64,20 @@ class Approval:
         self._tell(idea, plan, refs)
         self._tell_unattached(idea_id, unattached)
         return refs
+
+    def _home(self, idea):
+        """Name of the project the idea belongs to (None when it has none, as in the sim)."""
+        pid = idea.get("projectId")
+        if not pid:
+            return None
+        return next((name for name, i in self.tracker.project_ids().items() if str(i) == str(pid)), None)
+
+    @staticmethod
+    def request_notice(home, idea, owner):
+        """First paragraph of an issue planned outside the idea's own project."""
+        return (f'<p><strong>External Request</strong> from {html.escape(home)} '
+                f'(idea "{html.escape(idea.get("title") or "")}", raised by {html.escape(owner)}). Evaluate it '
+                f"before implementing it: accept, adapt or decline it on this issue.</p>")
 
     def _tell_unattached(self, idea_id, unattached):
         if unattached:
@@ -85,7 +108,12 @@ class Approval:
 
     def _tell(self, idea, plan, refs, failed=None):
         """A line in the idea for the engineer, and a note the agent gets at the start of its next turn."""
-        listed = ", ".join(f"{ref} ({key})" for key, ref in refs.items()) or "none"
+        home = self._home(idea)
+        project = {i["key"]: i["project"] for i in plan["body"]["issues"]}
+
+        def label(key):
+            return f"{key}, external request to {project[key]}" if home and project.get(key, home) != home else key
+        listed = ", ".join(f"{ref} ({label(key)})" for key, ref in refs.items()) or "none"
         total = len(plan["body"]["issues"])
         if failed:
             chat = (f"Created {len(refs)} of {total} issues from plan v{plan['version']}, then it stopped: {failed}. "

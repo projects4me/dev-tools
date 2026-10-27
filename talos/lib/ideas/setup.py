@@ -103,7 +103,7 @@ def start(agent, cfg, claude):
     launcher = Launcher(claude, agent, env, mcp=mcp_config(STATE_DIR / agent.name / "mcp.json"))
     kb = KbSync(sync_as(env), int(cfg.get("kbMaxAgeMinutes", 10)))
     conversation = Conversation(agent, client, progress, launcher, kb, project_codes, knowledge_map(agent),
-                                milestones=tracker.milestones, renderer=Renderer(cfg.get("browserBin"), agent.reviewer_name,
+                                milestones=tracker.milestones, project_ids=tracker.project_ids, renderer=Renderer(cfg.get("browserBin"), agent.reviewer_name,
                                                   cfg.get("prometheusUrl")))
     approval = Approval(agent, client, tracker)
     worker = IdeaWorker(agent, client, progress, conversation, approval, user_id, job_for=job_for)

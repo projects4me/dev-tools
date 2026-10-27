@@ -396,6 +396,9 @@ class FakeTracker:
         return {"issueNumber": self.next, "projectShortcode": {"A Gaia": "agaia"}.get(project, "aprom"),
                 "subject": subject, "url": f"http://prom/{self.next}"}
 
+    def project_ids(self):
+        return {"A Gaia": "p-gaia", "A Prometheus": "p-prom"}
+
     def attach_png(self, number, name, png):
         if getattr(self, "attach_fails", False):
             raise RuntimeError("upload refused")
@@ -476,6 +479,41 @@ class IdeasFlowTest(TempDb):
         self.turn("thanks", "ok")
         self.assertIn("agaia-5001 (api), aprom-5002 (ui)", self.launcher.calls[-1][0])
         self.assertFalse(state.get("nestor", 7)["note"])                          # delivered once
+
+    def home_in_prometheus(self):
+        self.client.ideas_[7]["projectId"] = "p-prom"
+        self.conv.project_ids = self.tracker.project_ids
+
+    def test_the_prompt_names_the_ideas_project(self):
+        self.assertNotIn("belongs to", self.conv.system_prompt(self.client.ideas_[7]))   # no project (sim)
+        self.home_in_prometheus()
+        self.assertIn("This idea belongs to A Prometheus (short code aprom)", self.conv.system_prompt(self.client.ideas_[7]))
+
+    def test_issues_in_other_projects_are_external_requests(self):
+        self.home_in_prometheus()
+        self.turn("go", block(issue("api", type="Story"), issue("ui", "A Prometheus", ["api"]),
+                              issue("again", subject="External Request: Do again")))
+        plan_id = self.client.plans[0]["id"]
+        self.client.set_plan_status(plan_id, "approved")
+        self.worker.handle(("approve", 7, plan_id))
+        made = {s: d for s, d, _ in self.tracker.created}
+        self.assertEqual(sorted(made), ["Do ui", "External Request: Do again", "External Request: Do api"])
+        self.assertEqual(made["Do ui"], "<p>ui</p><p><strong>Depends on:</strong> agaia-5001</p>")
+        self.assertTrue(made["External Request: Do api"].startswith(
+            '<p><strong>External Request</strong> from A Prometheus (idea "Recurring issues", raised by Hammad Hassan)'))
+        self.assertEqual(made["External Request: Do again"].count("External Request</strong>"), 1)
+        self.turn("thanks", "ok")
+        note = self.launcher.calls[-1][0]
+        self.assertIn("agaia-5001 (api, external request to A Gaia)", note)
+        self.assertIn("aprom-5002 (ui)", note)
+        self.assertTrue(any("agaia-5001 (api, external request to A Gaia)" in m["body"] for m in self.client.messages if m["role"] == "system"))
+
+    def test_without_a_project_nothing_is_marked(self):
+        self.turn("go", block(issue("api")))
+        plan_id = self.client.plans[0]["id"]
+        self.client.set_plan_status(plan_id, "approved")
+        self.worker.handle(("approve", 7, plan_id))
+        self.assertEqual([s for s, _, _ in self.tracker.created], ["Do api"])
 
     def test_a_failed_approval_resumes_where_it_stopped(self):
         self.tracker.fail_on = "ui"

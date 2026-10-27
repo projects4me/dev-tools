@@ -40,6 +40,11 @@ rules and a `### Design` section: `gaia` (PHP API, Phalcon), `prometheus` (Ember
   actions or one-off routes; layering per its Design section. In Prometheus: the design system
   (`prometheus/docs/ui/design-system.md`). Contract changes (Hermes events, Ares request/response, Gaia
   resources Prometheus reads) are called out in both issues.
+- Work in another project (the session prompt names the idea's own project): plan the home project's work as
+  usual. When it needs a change in another project you can plan in, plan it there, written as a request: open with
+  what the home project needs and why, then the proposed contract, and ask the receiving team to accept, adapt or
+  decline it. Keep the type Task or Story. Don't add the `External Request:` prefix yourself, Talos adds it. Don't
+  set it to blocker or critical: the receiving team sets the priority once it has evaluated the request.
 - MVP first: leave out what the idea doesn't need yet, and say what you left out.
 - `complexity`: `complex` only when the work itself needs judgement (an open design decision, a contract or
   cross-repo change, a migration, an unclear root cause). `simple` when the issue already settles the design and
