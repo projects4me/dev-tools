@@ -2,8 +2,10 @@
 Run: python -m unittest discover -s tests (from dev-tools/nestor)"""
 
 import json
+import socket
 import sys
 import threading
+import time
 import unittest
 import urllib.error
 import urllib.request
@@ -13,6 +15,40 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from lib.server import serve  # noqa: E402
+
+
+def wait_accepting(port, budget=10):
+    """Block until the server's socket accepts a connection (the thread may not be scheduled yet)."""
+    deadline = time.monotonic() + budget
+    while True:
+        try:
+            socket.create_connection(("127.0.0.1", port), timeout=1).close()
+            return
+        except OSError:
+            if time.monotonic() > deadline:
+                raise
+            time.sleep(0.05)
+
+
+class Client:
+    """urlopen without the system proxy lookup; the first request gets a bounded retry on a timeout."""
+    def __init__(self):
+        self.opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        self.warm = False
+
+    def open(self, req, timeout=5):
+        attempts = 1 if self.warm else 3
+        for attempt in range(attempts):
+            try:
+                resp = self.opener.open(req, timeout=timeout)
+                self.warm = True
+                return resp
+            except urllib.error.HTTPError:
+                self.warm = True
+                raise
+            except (socket.timeout, TimeoutError, ConnectionError):
+                if attempt == attempts - 1:
+                    raise
 
 
 class StubSim(BaseHTTPRequestHandler):
@@ -60,6 +96,8 @@ class NestorServerTest(unittest.TestCase):
         self.httpd = serve(cfg, 0)
         self.port = self.httpd.server_address[1]
         threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+        wait_accepting(self.port)
+        self.client = Client()
 
     def tearDown(self):
         for s in (self.httpd, self.sim):
@@ -70,7 +108,7 @@ class NestorServerTest(unittest.TestCase):
         req = urllib.request.Request(f"http://127.0.0.1:{self.port}{path}", method=method,
                                      data=None if body is None else json.dumps(body).encode(), headers=headers or {})
         try:
-            with urllib.request.urlopen(req, timeout=5) as r:
+            with self.client.open(req) as r:
                 return r.status, r.read()
         except urllib.error.HTTPError as e:
             with e:
