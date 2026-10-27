@@ -263,3 +263,42 @@ class BaselineContainerTest(unittest.TestCase):
         calls, src = self._require({"api": []}, ["api"])
         self.assertEqual(len(calls), 1)
         self.assertEqual(calls[0][-4:], ["test", "clean", "--src", str(src)])
+
+
+class FixtureDriftTest(unittest.TestCase):
+    def _run(self, harness_writes):
+        from types import SimpleNamespace
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as d:
+            fixture = Path(d) / tests.FIXTURE
+            fixture.parent.mkdir(parents=True)
+            fixture.write_text("committed", encoding="utf-8")
+
+            def run_suite(repo, suite, src, targets=None):
+                if suite == "api":
+                    fixture.write_text(harness_writes, encoding="utf-8")
+                return tests.SuiteResult(suite, "OK (1 test)", [], Path(d), 0, 0, 1)
+
+            out = []
+            with mock.patch.object(tests, "run_suite", run_suite), \
+                    mock.patch.object(tests, "say", out.append), \
+                    mock.patch.object(tests.results, "tree_fingerprint", return_value="t"), \
+                    mock.patch.object(tests.results, "changed_since", return_value=False), \
+                    mock.patch.object(tests.results, "record"), \
+                    mock.patch.object(tests, "git", return_value=""), \
+                    mock.patch.object(tests, "known_failures", return_value=set()):
+                rc = tests._run_and_record(SimpleNamespace(no_baseline=True), "gaia", d, {}, True)
+            return rc, "\n".join(out), fixture.read_text(encoding="utf-8")
+
+    def test_api_runs_before_tests_tools(self):
+        self.assertEqual(tests.SUITES["gaia"][0], "api")
+
+    def test_harness_rewrite_that_differs_fails_and_restores_the_file(self):
+        rc, out, content = self._run("rewritten")
+        self.assertEqual(rc, 1)
+        self.assertIn(tests.FIXTURE_DRIFT, out)
+        self.assertEqual(content, "committed")
+
+    def test_matching_harness_output_passes(self):
+        rc, _, _ = self._run("committed")
+        self.assertEqual(rc, 0)

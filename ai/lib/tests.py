@@ -197,8 +197,13 @@ def devtools(src):
                        ran_total)
 
 
+FIXTURE = "tools/api-tester/fixtures/default.json"
+FIXTURE_DRIFT = ("fixtures/default.json differs from what prepare-test-db.sh writes: "
+                 "add the value to the harness")
+
 SUITES = {
-    "gaia": [*(f"phpunit-{f.split('/')[-1]}" for f in PHPUNIT_FOLDERS), "api"],
+    # api first: it prepares the test DB, and the harness rewrites the fixture that tests/tools read (as CI does)
+    "gaia": ["api", *(f"phpunit-{f.split('/')[-1]}" for f in PHPUNIT_FOLDERS)],
     "prometheus": ["ember"],
     "hermes": ["hermes"],
     "dev-tools": ["unittest"],
@@ -369,7 +374,12 @@ def cmd_test(args):
 def _run_and_record(args, repo, src, targets, full):
     """Run the suites, classify failures against the baseline, print and record the verdict."""
     started = results.tree_fingerprint(repo)     # the tree the run tests: see results.changed_since
+    fixture = Path(src) / FIXTURE
+    committed = fixture.read_bytes() if repo == "gaia" and fixture.exists() else None
     runs = [run_suite(repo, s, src, targets) for s in SUITES[repo]]
+    drifted = committed is not None and fixture.read_bytes() != committed
+    if drifted:
+        fixture.write_bytes(committed)           # leave the tree as it was; the harness output is the bug
 
     sha = git(repo, "merge-base", "HEAD", f"origin/{base_branch(repo)}", check=False) or ""
     base = baseline.load(repo, sha) if sha else {}
@@ -387,6 +397,9 @@ def _run_and_record(args, repo, src, targets, full):
         for f in r.failures:
             lines.append(f"  FAIL {f}" + ("  (known)" if f in known else "  <-- unexpected"))
         ok &= suite_ok
+    if drifted:
+        lines.append(f"FAIL {FIXTURE_DRIFT}")
+        ok = False
     for l in lines:
         say(l)
     verdict = "PASS" if ok else "FAIL"
