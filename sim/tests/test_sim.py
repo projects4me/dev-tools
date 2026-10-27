@@ -4,9 +4,11 @@ import base64
 import contextlib
 import io
 import json
+import socket
 import sys
 import tempfile
 import threading
+import time
 import unittest
 import urllib.error
 import urllib.request
@@ -18,6 +20,40 @@ from lib.bus import Bus, InvalidEnvelope, envelope, validate  # noqa: E402
 from lib.ideas import Forbidden, Ideas, NotFound  # noqa: E402
 from lib.server import serve  # noqa: E402
 from lib.store import Store  # noqa: E402
+
+
+def wait_accepting(port, budget=10):
+    """Block until the server's socket accepts a connection (the thread may not be scheduled yet)."""
+    deadline = time.monotonic() + budget
+    while True:
+        try:
+            socket.create_connection(("127.0.0.1", port), timeout=1).close()
+            return
+        except OSError:
+            if time.monotonic() > deadline:
+                raise
+            time.sleep(0.05)
+
+
+class Client:
+    """urlopen without the system proxy lookup; the first request gets a bounded retry on a timeout."""
+    def __init__(self):
+        self.opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        self.warm = False
+
+    def open(self, req, timeout=5):
+        attempts = 1 if self.warm else 3
+        for attempt in range(attempts):
+            try:
+                resp = self.opener.open(req, timeout=timeout)
+                self.warm = True
+                return resp
+            except urllib.error.HTTPError:
+                self.warm = True
+                raise
+            except (socket.timeout, TimeoutError, ConnectionError):
+                if attempt == attempts - 1:
+                    raise
 
 OWNER, AGENT = "1", "nestor"
 
@@ -149,6 +185,8 @@ class ServerTest(unittest.TestCase):
         self.httpd = serve(Ideas(self.store, self.bus), self.bus, "127.0.0.1", 0, "secret")
         self.port = self.httpd.server_address[1]
         threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+        wait_accepting(self.port)
+        self.client = Client()
 
     def tearDown(self):
         self.httpd.shutdown()
@@ -161,7 +199,7 @@ class ServerTest(unittest.TestCase):
                                      data=None if body is None else json.dumps(body).encode(),
                                      headers={"X-Sim-Actor": actor, **(headers or {})})
         try:
-            with urllib.request.urlopen(req, timeout=5) as r:
+            with self.client.open(req) as r:
                 return r.status, json.loads(r.read())
         except urllib.error.HTTPError as e:
             with e:
@@ -169,9 +207,9 @@ class ServerTest(unittest.TestCase):
 
     def test_resources_publish_and_sse(self):
         intents = json.dumps([{"projectId": f"user:{AGENT}", "eventName": "idea.message.created"}])
-        stream = urllib.request.urlopen(urllib.request.Request(
+        stream = self.client.open(urllib.request.Request(
             f"http://127.0.0.1:{self.port}/hermes/events?intents={urllib.parse.quote(intents)}",
-            headers={"X-Sim-Actor": AGENT}), timeout=5)
+            headers={"X-Sim-Actor": AGENT}))
         lines = iter(stream)
         self.assertEqual(next(lines), b"event: ready\n")
         self.assertEqual(json.loads(next(lines)[6:])["accepted"][0]["eventName"], "idea.message.created")
@@ -194,7 +232,7 @@ class ServerTest(unittest.TestCase):
                                                                   "png_base64": "not base64!"}, actor=AGENT)[0], 400)
         req = urllib.request.Request(f"http://127.0.0.1:{self.port}/api/v1/ideascreen/{made['data']['id']}",
                                      headers={"X-Sim-Actor": OWNER})
-        with urllib.request.urlopen(req, timeout=5) as r:
+        with self.client.open(req) as r:
             self.assertEqual((r.headers["Content-Type"], r.read()), ("image/png", png))
         env = envelope("idea.agent.progress", f"user:{OWNER}", "idea", 1, AGENT, {"phase": "started"})
         self.assertEqual(self.call("POST", "/publish", env, headers={"X-Hermes-Secret": "wrong"})[0], 401)
