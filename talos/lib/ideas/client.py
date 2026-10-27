@@ -51,6 +51,10 @@ class GaiaIdeasClient:
         """{idea, messages (oldest first), plans (each with issues), screens}."""
         return to_idea(self._tool("get_idea", {"idea": str(idea_id)}), self.user_id)
 
+    def download(self, upload_id):
+        """An upload's bytes (an image attached to a message)."""
+        return self.tracker.download(upload_id)
+
     def screen_png(self, upload_id):
         return self.tracker.download(upload_id)
 

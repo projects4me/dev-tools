@@ -7,9 +7,10 @@ from datetime import date, datetime
 
 from .. import runner
 from .. import runs as run_log
-from ..config import log
+from ..config import STATE_DIR, log
 from . import plan as plans
 from . import policy, screens, state
+from .images import Images
 
 FIX_PLAN = ("The nestor-plan block in your last reply could not be used: {error}. Reply with only the corrected "
             "nestor-plan block (your answer and screens were kept).")
@@ -19,12 +20,13 @@ FLUSH_SECONDS = 0.3          # text is published in small batches, not per token
 
 class Conversation:
     def __init__(self, agent, client, progress, launcher, kb, project_codes, map_path, milestones=None,
-                 renderer=None, project_ids=None):
+                 renderer=None, project_ids=None, images=None):
         self.agent, self.client, self.progress, self.launcher, self.kb = agent, client, progress, launcher, kb
         self.project_codes, self.map_path = project_codes, map_path
         self.milestones = milestones          # project name -> its milestone names (None: not checked)
         self.project_ids = project_ids        # () -> project name -> id (None: home project not named)
         self.renderer = renderer              # render.Renderer: screens -> PNG
+        self.images = images or Images(client, STATE_DIR / "ideas", agent.name)   # image references -> files
 
     def home_line(self, idea):
         """Which project the idea belongs to, or "" when unknown (an idea without a project, e.g. in the sim)."""
@@ -64,7 +66,7 @@ class Conversation:
         return True
 
     def _prompt(self, idea, messages, new, st):
-        said = "\n\n".join(m["body"] for m in new)
+        said = "\n\n".join(self.images.resolve(idea["id"], m["body"]) for m in new)
         note = f"[Note from Talos] {st['note']}\n\n" if st.get("note") else ""
         if st.get("session_id"):
             return f"{note}{said}"
@@ -72,7 +74,7 @@ class Conversation:
         earlier = [m for m in before if m["role"] in ("user", "agent")][-HISTORY:]
         history = ""
         if earlier:
-            lines = [f"{'Engineer' if m['role'] == 'user' else 'You'}: {m['body'][:1500]}" for m in earlier]
+            lines = [f"{'Engineer' if m['role'] == 'user' else 'You'}: {self.images.resolve(idea['id'], m['body'])[:1500]}" for m in earlier]
             history = "Earlier in this conversation (your previous session is gone):\n\n" + "\n\n".join(lines) + "\n\n"
         return f"{note}Idea #{idea['id']}: {idea['title']}\n\n{history}The engineer says:\n\n{said}"
 
