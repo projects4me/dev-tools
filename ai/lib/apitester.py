@@ -8,11 +8,14 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-from .common import AiError, LOCAL_DIR, WORKSPACE, say
+from .common import AiError, LOCAL_DIR, repo_dir, say
 
-CATALOGS = WORKSPACE / "gaia" / "tools" / "api-tester" / "apis"
-FIXTURES = WORKSPACE / "gaia" / "tools" / "api-tester" / "fixtures" / "default.json"
 INLINE_KEYS = ("query", "expects", "store")  # acl.json keeps these on one line
+
+
+def _api_tester():
+    """gaia/tools/api-tester in the run's workspace (the issue's worktree) or the workspace itself."""
+    return repo_dir("gaia") / "tools" / "api-tester"
 
 
 def _render_acl(case):
@@ -38,7 +41,7 @@ def _render_indented(case):
 
 def cmd_api_cases(args):
     """Append cases (JSON list in a file) to apis/<catalog>.json, matching that file's style."""
-    path = CATALOGS / f"{args.catalog}.json"
+    path = _api_tester() / "apis" / f"{args.catalog}.json"
     if args.catalog == "backend":
         raise AiError("backend.json is generated (bin/generate-backend-apis.php); add cases to client or acl")
     cases = json.loads(Path(args.file).read_text(encoding="utf-8"))
@@ -56,7 +59,7 @@ def cmd_api_cases(args):
     text = text[: -len(tail)] + "\n    },\n" + ",\n".join(render(c) for c in cases) + "\n  ]\n}\n"
     json.loads(text)
     path.write_text(text, encoding="utf-8", newline="\n")
-    say(f"appended {len(cases)} case(s) to {path.relative_to(WORKSPACE)}")
+    say(f"appended {len(cases)} case(s) to {path}")
 
 
 # --- calling the API ------------------------------------------------------------------------
@@ -87,7 +90,7 @@ def _credentials(target, profile):
                 env[k.strip()] = v.strip().strip('"').strip("'")
         base = env.get("GAIA_URL", "https://api.local-projects4.me")
         return base, env["GAIA_CLIENT_ID"], env["GAIA_CLIENT_SECRET"], env["GAIA_EMAIL"], env["GAIA_PASSWORD"]
-    fixtures = json.loads(FIXTURES.read_text(encoding="utf-8"))
+    fixtures = json.loads((_api_tester() / "fixtures" / "default.json").read_text(encoding="utf-8"))
     auth = dict(fixtures["auth"])
     if profile and profile != "default":
         if profile not in fixtures["authProfiles"]:

@@ -6,9 +6,9 @@ import threading
 import uuid
 from datetime import datetime
 
-from . import policy, runner, sessions
+from . import policy, runner, sessions, workspaces
 from . import runs as run_log
-from .config import TalosError, log
+from .config import DEV_TOOLS, WORKSPACE, TalosError, log
 
 
 def _now():
@@ -20,7 +20,7 @@ def _iso(moment):
 
 
 class Dispatcher:
-    """Serial worker for one agent (its runs share working trees and the local stack)."""
+    """Serial worker for one agent (its runs share the local stack; each issue has its own workspace)."""
 
     def __init__(self, agent, tracker, claude, dry_run=False, mcp=None):
         self.agent = agent
@@ -112,9 +112,10 @@ class Dispatcher:
                         live_session_id=live_id, started_at=_iso(started))
         self._mark_picked_up(issue)
         try:
-            result, log_path = runner.run(cmd, {**self.tracker.child_env(), **self.agent.env},
-                                          self.agent.name, number, prompt)
-        except Exception as e:  # e.g. the Claude binary vanished; still close the run and hand off
+            cwd, env = self._workspace(number, repo)
+            result, log_path = runner.run(cmd, {**self.tracker.child_env(), **self.agent.env, **env},
+                                          self.agent.name, number, prompt, cwd=cwd)
+        except Exception as e:  # e.g. the Claude binary vanished or no worktree; still close the run and hand off
             result, log_path = {"is_error": True, "subtype": "talos error", "result": str(e)}, None
         ended = _now()
         new_session = result.get("session_id") or live_id
@@ -166,6 +167,15 @@ class Dispatcher:
                 body += f"<pre>{html.escape(comment)}</pre>"
             self._hand_off(number, "failed", f"{self.agent.display_name}: run failed", body, escaped=True)
         return outcome
+
+    @staticmethod
+    def _workspace(number, repo):
+        """(cwd, env) for a run: the issue's own workspace with its repo as a git worktree, so runs on different
+        issues never switch branches under each other. The workspace root repo (pr4m) has no worktree."""
+        if not repo or repo == "pr4m":
+            return WORKSPACE, {}
+        folder = workspaces.ensure(WORKSPACE, DEV_TOOLS, number, repo)
+        return folder, workspaces.env(folder)
 
     def _mark_picked_up(self, issue):
         """Show on the board that the agent is working it, before Claude starts."""

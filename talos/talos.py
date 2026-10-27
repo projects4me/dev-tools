@@ -11,9 +11,9 @@ import sys
 import time
 import urllib.request
 
-from lib import db, policy, runner, sessions
+from lib import db, policy, runner, sessions, workspaces
 from lib import runs as run_log
-from lib.config import LISTENER, STATE_DIR, TALOS_DIR, TalosError, claude_bin, log, settings
+from lib.config import LISTENER, STATE_DIR, TALOS_DIR, WORKSPACE, TalosError, claude_bin, log, settings
 from lib.dispatcher import Dispatcher
 from lib.ideas import setup as ideas_setup
 from lib.hermes import Listener
@@ -139,6 +139,17 @@ def cmd_reset(args):
     return 0
 
 
+def cmd_clean(args):
+    """Remove a finished issue's workspace (.runs/issue-N): its links, worktrees and folder; branches stay."""
+    try:
+        removed = workspaces.remove(WORKSPACE, args.issue, force=args.force)
+    except workspaces.WorkspaceError as e:
+        raise TalosError(str(e))
+    print(f"#{args.issue}: workspace " + ("removed" if removed else "not found")
+          + f" ({workspaces.path(WORKSPACE, args.issue)})")
+    return 0
+
+
 def cmd_agents(args):
     """List the registry, with each agent's Gaia identity and projects resolved."""
     for agent in load_agents(args.agent):
@@ -223,6 +234,11 @@ def build_parser():
     sp.add_argument("issue", type=int)
     sp.add_argument("--model", action="store_true", help="also drop a past escalation (back to complexity/default)")
     sp.set_defaults(func=cmd_reset)
+
+    sp = sub.add_parser("clean", help="remove a finished issue's workspace (.runs/issue-N); its branch stays")
+    sp.add_argument("issue", type=int)
+    sp.add_argument("--force", action="store_true", help="also when it has uncommitted changes (discards them)")
+    sp.set_defaults(func=cmd_clean)
 
     sp = sub.add_parser("agents", help="list registered agents")
     sp.add_argument("--agent")

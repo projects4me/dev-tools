@@ -136,13 +136,14 @@ def recent_steps(path, count=10):
     return steps[-count:]
 
 
-def run(cmd, env, agent_name, issue, prompt):
-    """Run Claude from the workspace root, the prompt on stdin; keep the raw output in state/logs.
+def run(cmd, env, agent_name, issue, prompt, cwd=None):
+    """Run Claude in cwd (the issue's workspace, see workspaces.py; default the workspace root), the prompt on
+    stdin; keep the raw output in state/logs.
     Returns (result dict|None, log path). The log path exists before launch, so a launch failure is written there."""
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     log_path = LOG_DIR / f"{agent_name}-{issue}-{now_stamp()}.json"
     try:
-        proc = subprocess.run(cmd, cwd=WORKSPACE, env=env, capture_output=True, text=True,
+        proc = subprocess.run(cmd, cwd=cwd or WORKSPACE, env=env, capture_output=True, text=True,
                               encoding="utf-8", errors="replace", input=prompt)
     except OSError as e:
         log_path.write_text(f"--- launch failed ---\n{e}\n", encoding="utf-8")

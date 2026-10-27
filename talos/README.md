@@ -23,6 +23,7 @@ dev-tools/talos/talos dispatch odysseus 3714 [--dry-run]   # work one issue now,
 dev-tools/talos/talos status [--steps 20]                  # what is running now (issues, idea turns) + the latest steps
 dev-tools/talos/talos runs [--issue 3714] [--limit 50]     # per-run stats (issues and idea turns): model, outcome, cost, turns, context
 dev-tools/talos/talos reset odysseus 3714 [--model]        # after a manual look: fresh iteration allowance
+dev-tools/talos/talos clean 3714 [--force]                 # issue finished: remove its .runs/issue-N workspace
 python -m unittest discover -s dev-tools/talos/tests       # unit tests (from dev-tools/talos: -s tests)
 ```
 
@@ -48,15 +49,33 @@ the tooling its agents call therefore run from a separate copy: `<workspace>/.de
   (and runs `npm ci` when the lock file changed), refusing while `talos.db` lists an active run (`--force` for a
   stale one) or the copy has local changes. Then restart `talos run`. `p4m runtime status` shows where it is.
 
+### Per-issue workspaces: each run has its own worktree
+
+Every issue run works in `<workspace>/.runs/issue-N/` (`lib/workspaces.py`), so two runs on issues in the same
+repo never switch branches under each other:
+
+- `<repo>/` is a `git worktree` of the main checkout on `claude-issue-N` (an existing branch is reused, a new one
+  starts at `origin/<base>`). git refuses a branch checked out in two worktrees, which keeps two runs off one branch.
+- `dev-tools` and `.dev-tools-runtime` link to the copy Talos runs from (a junction on Windows, a symlink on Linux;
+  for a dev-tools issue `dev-tools/` is the worktree and the `.dev-tools-runtime` link sends `dev-tools/ai/ai` to
+  the tooling), `.claude` links to the workspace's, and `CLAUDE.md` is copied. So the prompts, skills and
+  `allowedTools` keep saying `dev-tools/ai/ai`.
+- Claude runs with that folder as cwd and `P4M_WORKSPACE` set to it; `ai` then resolves the repos there
+  (`ai/lib/common.py` `repo_dir`) and `ai start` branches from `origin/<base>` without checking out the base branch.
+  Per-machine files stay under `dev-tools/` (`LOCAL_DIR`). Without `P4M_WORKSPACE` (interactive use) nothing changes.
+- The workspace is sticky: uncommitted work survives a `needs_input` pause. `talos clean <issue>` removes it when
+  the issue is finished (links, worktrees and folder; the branch stays), refusing uncommitted changes unless
+  `--force`. Issues in the workspace repo itself (`pr4m`) run in the workspace root as before.
+
 ## How an assignment is handled
 
 1. **Event**: `issue.assignee.changed` where the new assignee is the agent and the actor is in the agent's
    `acceptAssignmentsFrom` (Gaia user ids). Everything else is ignored.
 2. **Re-read**: the issue is fetched from Gaia; the event is only a hint. It must still be assigned to the
    agent, in one of its `projects` and `milestones`, in a status that has an `action`.
-3. **Queue**: one queue per agent, one run at a time (runs share working trees and the local stack).
+3. **Queue**: one queue per agent, one run at a time (runs share the local stack; each issue has its own workspace).
    Repeats for an issue already queued or running are dropped.
-4. **Run**: the issue is first moved to the agent's `pickupStatus` (`in_progress` for Odysseus), then `claude -p "<action prompt>"` from the workspace root, with the agent's model, role prompt
+4. **Run**: the issue is first moved to the agent's `pickupStatus` (`in_progress` for Odysseus), then `claude -p "<action prompt>"` in the issue's workspace (see above), with the agent's model, role prompt
    (`--append-system-prompt`), permission mode and allowed tools, and the agent's `GAIA_*`
    credentials in the environment (so the `gaia` MCP server and `dev-tools/ai` act as that agent).
    Actions with `"resume": true` continue the issue's previous Claude session, **but only while its prompt
@@ -209,6 +228,7 @@ The pre-SQLite `state/sessions.json` is imported when `talos run`/`dispatch` sta
 | `lib/policy.py` | pure decisions: which events count, whether to run, prompt filling, outcome parsing |
 | `lib/dispatcher.py` | per-agent queue; runs a job and applies the outcome to the tracker |
 | `lib/runner.py` | builds and runs the `claude -p` command, keeps its output |
+| `lib/workspaces.py` | per-issue workspaces: `.runs/issue-N` with the repo's worktree and the tooling linked in |
 | `lib/mcp.py` | the agent's MCP config: only the gaia server from the copy Talos runs from |
 | `lib/tracker.py` | Gaia as one agent, through the `gaia-mcp` client |
 | `lib/db.py` | SQLite connection, schema, one-time import of `sessions.json` |

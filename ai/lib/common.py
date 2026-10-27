@@ -47,10 +47,20 @@ def config():
     return cfg
 
 
+def run_workspace():
+    """The per-issue workspace Talos runs this session in (P4M_WORKSPACE, <workspace>/.runs/issue-N with the
+    issue's repo as a git worktree), or None for interactive use in the workspace itself."""
+    path = os.environ.get("P4M_WORKSPACE")
+    return Path(path) if path else None
+
+
 def repo_dir(repo):
+    """The repo's folder: in the run's workspace when P4M_WORKSPACE is set. The workspace root repo (pr4m) is
+    never a worktree, so it always resolves to WORKSPACE."""
     if repo not in REPOS:
         raise AiError(f"unknown repo '{repo}' (one of: {', '.join(REPOS)})")
-    return (WORKSPACE / REPO_PATH.get(repo, repo)).resolve()
+    root = run_workspace() if repo != "pr4m" else None
+    return ((root or WORKSPACE) / REPO_PATH.get(repo, repo)).resolve()
 
 
 def base_branch(repo):

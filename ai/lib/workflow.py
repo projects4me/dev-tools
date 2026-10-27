@@ -9,7 +9,7 @@ from pathlib import Path
 import sys
 
 from .common import (AiError, PROJECT_FOR_REPO, REPOS, base_branch, config, git, git_dir, issue_repo,
-                     load_timers, now, ody, repo_dir, save_timers, say, start_timer, strip_html, succeeds,
+                     load_timers, now, ody, repo_dir, run_workspace, save_timers, say, start_timer, strip_html, succeeds,
                      tracker_call)
 
 
@@ -19,10 +19,19 @@ def branch_name(issue):
 
 # --- sync / start ---------------------------------------------------------------------------
 
+def in_run_workspace(repo):
+    """Whether the repo is a Talos per-issue worktree: there the base branch is never checked out (it may be
+    checked out in the main checkout, and git refuses one branch in two worktrees)."""
+    return repo != "pr4m" and run_workspace() is not None
+
+
 def sync_dev(repo):
-    """Fetch origin and fast-forward the local base branch (dev, or main for the tooling); returns its head."""
+    """Fetch origin and fast-forward the local base branch (dev, or main for the tooling); returns its head.
+    In a per-issue worktree only fetches, and returns the head of origin/<base>, the branch point."""
     base = base_branch(repo)
     git(repo, "fetch", "-q", "origin")
+    if in_run_workspace(repo):
+        return git(repo, "log", "--oneline", "-1", f"origin/{base}")
     git(repo, "checkout", "-q", base)
     git(repo, "merge", "--ff-only", "-q", f"origin/{base}")
     return git(repo, "log", "--oneline", "-1")
@@ -40,6 +49,9 @@ def cmd_start(args):
     if exists:
         git(repo, "checkout", "-q", branch)
         say(f"branch {branch} exists; checked out (not reset)")
+    elif in_run_workspace(repo):
+        git(repo, "checkout", "-q", "-b", branch, f"origin/{base_branch(repo)}")
+        say(f"branch {branch} created from origin/{base_branch(repo)} ({head})")
     else:
         git(repo, "checkout", "-q", "-b", branch)
         say(f"branch {branch} created from dev ({head})")
