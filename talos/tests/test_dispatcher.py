@@ -49,12 +49,15 @@ class DispatcherTest(unittest.TestCase):
     def setUp(self):
         tmp = Path(tempfile.mkdtemp())
         self.patches = [mock.patch.object(db, "DB_FILE", tmp / "talos.db"),
-                        mock.patch.object(dispatcher_mod, "log", lambda *a, **k: None)]  # keep talos.log real
+                        mock.patch.object(dispatcher_mod, "log", lambda *a, **k: None),  # keep talos.log real
+                        mock.patch.object(dispatcher_mod.workspaces, "ensure",
+                                          lambda root, tools, number, repo: tmp / f"issue-{number}")]
         for p in self.patches:
             p.start()
         self.models = []
         self.calls = []
         self.envs = []
+        self.cwds = []
 
     def tearDown(self):
         for p in self.patches:
@@ -64,8 +67,9 @@ class DispatcherTest(unittest.TestCase):
         tracker = StubTracker(issue)
         replies = iter(outcomes)
 
-        def fake_run(cmd, env, agent, number, prompt):
+        def fake_run(cmd, env, agent, number, prompt, cwd=None):
             self.calls[-1]["prompt"] = prompt
+            self.cwds.append(cwd)
             self.models.append(cmd[cmd.index("--model") + 1])
             self.envs.append(env)
             return next(replies), Path("log.json")
@@ -117,6 +121,22 @@ class DispatcherTest(unittest.TestCase):
                          (42, 1, "sonnet", "needs_input"))
         self.assertIsNotNone(run["ended_at"])
         self.assertEqual(sessions.get("odysseus", 42)["running"], 0)
+
+    def test_run_works_in_the_issue_workspace(self):
+        self.dispatch(make_issue(), [result("needs_input")])
+        self.assertEqual(self.cwds[0].name, "issue-42")
+        self.assertEqual(self.envs[0]["P4M_WORKSPACE"], str(self.cwds[0]))
+
+    def test_workspace_failure_becomes_failed_run(self):
+        tracker = StubTracker(make_issue())
+
+        def refuse(*a):
+            raise dispatcher_mod.workspaces.WorkspaceError("branch is checked out elsewhere")
+
+        with mock.patch.object(dispatcher_mod.workspaces, "ensure", refuse):
+            outcome = dispatcher_mod.Dispatcher(make_agent(), tracker, "claude").handle(42)
+        self.assertEqual(outcome, "failed")
+        self.assertEqual(tracker.handoffs, [("pending", "1")])
 
     def test_runner_exception_becomes_failed_run(self):
         tracker = StubTracker(make_issue())
