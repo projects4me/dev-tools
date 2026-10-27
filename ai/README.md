@@ -76,3 +76,11 @@ dev-tools/ai/ai sync gaia              # after merge (start does this too)
 - `ember test` is stopped (and its Chrome killed in the container) when nothing matches the filter, a QUnit
   global/load failure is reported, it exceeds 15 minutes, or the run is interrupted. A new run first clears
   leftovers of an earlier one.
+
+## Guard hooks (`hooks/guard.py`)
+PreToolUse hook on Bash and Read, wired in the workspace `.claude/settings.json`. It redirects, never truncates:
+reads of `RestController.php`, `Acl.php`, `Model.php`, `tools/api-tester/{src,apis,harness}/**` and
+`fixtures/default.json` are denied with the `gaia-dev` command that answers the question (escape: the file is in the
+branch's changed set, or the command has `--raw` / `# raw`); `docker exec|run` of a test suite is denied in favour of
+`ai test`. Blocks and `--raw` uses go to `state/hooks.jsonl`; `ai cost` reports the bypass rate. `ai ship` adds a
+warning to the PR and tracker comment when the issue's output tokens exceed the repo's per-issue median (never blocks).

@@ -133,6 +133,14 @@ def cost_note(issue):
     return f"<p>{html.escape(line)}</p>" if line else ""
 
 
+def cost_warning(repo, issue):
+    """Warning line when the issue's cost is above the repo's rolling median; never blocks a ship."""
+    try:
+        return cost.regression_warning(issue, repo)
+    except Exception:  # noqa: BLE001 - accounting is best effort
+        return None
+
+
 def cmd_ship(args):
     repo, issue = args.repo, args.issue
     spec = load_spec(args.file)
@@ -148,7 +156,10 @@ def cmd_ship(args):
         say(f"resuming: {head[:8]} already committed and pushed")
     else:
         test_lines = (["(tests not applicable: " + args.no_tests + ")"] if args.no_tests else test_gate(repo))
+    warning = cost_warning(repo, issue)
     message, body, notes = commit_message(spec, ref), pr_body(spec, ref, test_lines), notes_html(spec, test_lines)
+    if warning:
+        body += "\n\n" + warning
 
     if not committed and repo == "gaia":
         gaia_dev_gate(repo)
@@ -170,7 +181,7 @@ def cmd_ship(args):
     if not progress.get("pr"):
         progress["pr"] = existing_pr(repo, issue) or workflow.open_pr(repo, issue, spec["title"], body)
         save_progress(repo, issue, progress)
-    notes += cost_note(issue)
+    notes += cost_note(issue) + (f"<p>{html.escape(warning)}</p>" if warning else "")
     workflow.pr_hand_off(issue, progress["pr"], git(repo, "rev-parse", "--short", "HEAD"),
                          git(repo, "rev-parse", "--short", f"origin/{base_branch(repo)}"),
                          spec.get("timeNote") or f"commit and PR ({spec['title']})", notes_html=notes)
