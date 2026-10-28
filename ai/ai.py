@@ -74,6 +74,10 @@ def build_parser():
     sp.add_argument("--slot", type=int, metavar="K",
                     help="gaia: run in test slot K (own container and database; see `p4m test slots`)")
 
+    sp = add("devstack", workflow.cmd_devstack, "run a command under the dev-stack lock (one browser check at a "
+                                                "time on gaia-dev and Prometheus :4200)")
+    sp.add_argument("command", nargs=argparse.REMAINDER, help="-- <command> [args...]")
+
     sp = add("doctor", doctor.cmd_doctor, "check the Gaia test environment; each failure prints its fix")
     sp.add_argument("repo", choices=["gaia"])
     sp.add_argument("--json", action="store_true")

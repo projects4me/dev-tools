@@ -54,6 +54,7 @@ class DispatcherTest(unittest.TestCase):
         tmp = Path(tempfile.mkdtemp())
         self.patches = [mock.patch.object(db, "DB_FILE", tmp / "talos.db"),
                         mock.patch.object(dispatcher_mod, "log", lambda *a, **k: None),  # keep talos.log real
+                        mock.patch.object(dispatcher_mod, "lease_file", lambda name: tmp / f"{name}-leases.json"),
                         mock.patch.object(dispatcher_mod.workspaces, "ensure",
                                           lambda root, tools, number, repo: tmp / f"issue-{number}")]
         for p in self.patches:
@@ -88,6 +89,11 @@ class DispatcherTest(unittest.TestCase):
             if holder is not None:
                 holder["d"] = d
             return d.handle(42), tracker
+
+    def test_run_leases_a_slot_for_its_environment_and_releases_it(self):
+        outcome, _ = self.dispatch(make_issue(), [result("needs_input")], test_slots=2)
+        self.assertEqual(self.envs[0]["P4M_TEST_SLOT"], "1")
+        self.assertEqual(outcome, "needs_input")
 
     def feedback_agent(self):
         return dict(actions={"feedback": make_agent().actions["feedback"]})

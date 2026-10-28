@@ -3,14 +3,15 @@
 Each command is a fixed sequence of steps that used to be separate tool calls.
 """
 
+import subprocess
 from datetime import datetime
 from pathlib import Path
 
 import sys
 
 from .common import (AiError, PROJECT_FOR_REPO, REPOS, base_branch, config, git, git_dir, issue_repo,
-                     load_timers, now, ody, repo_dir, run_workspace, save_timers, say, start_timer, strip_html, succeeds,
-                     tracker_call)
+                     devstack_locked, load_timers, now, ody, repo_dir, run_workspace, save_timers, say, start_timer,
+                     strip_html, succeeds, timers_locked, tracker_call)
 
 
 def branch_name(issue):
@@ -83,8 +84,10 @@ def log_elapsed(issue, description, dry_run=False):
     if start.date() != end.date():
         say(f"warning: checkpoint is from {start.date()}; logging {minutes}m anyway, check it")
     tracker_call("log_time", issue_number=issue, hours=hours, minutes=mins, description=text)
-    entry["checkpoint"] = end.isoformat(timespec="seconds")
-    save_timers(timers)
+    with timers_locked():       # re-read: another run may have saved its own timer while the tracker call ran
+        timers = load_timers()
+        timers.setdefault(str(issue), entry)["checkpoint"] = end.isoformat(timespec="seconds")
+        save_timers(timers)
     say(f"logged {hours}h {mins}m on #{issue}: {text}")
     return minutes
 
@@ -97,6 +100,15 @@ def cmd_timer(args):
     """Start or reset an issue's checkpoint without touching git or status."""
     start_timer(args.issue, args.repo or issue_repo(args.issue) or "gaia")
     say(f"timer for #{args.issue} set to {now().strftime('%H:%M')}")
+
+
+def cmd_devstack(args):
+    """Run a command (a browser check) while holding the dev-stack lock, so parallel runs take turns on it."""
+    command = [c for c in args.command if c != "--"] if args.command[:1] == ["--"] else args.command
+    if not command:
+        raise AiError("usage: ai devstack -- <command> [args...]")
+    with devstack_locked():
+        return subprocess.run(command, stdin=subprocess.DEVNULL).returncode
 
 
 # --- commit / push --------------------------------------------------------------------------

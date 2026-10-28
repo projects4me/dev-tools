@@ -79,6 +79,7 @@ class Tracker:
             "status": (i.get("issuestatus") or {}).get("name") or i.get("status"),
             "assignee": str(i.get("assignee") or ""),
             "modifiedUser": str(i.get("modifiedUser") or ""),
+            "priority": str(i.get("priority") or "").lower(),
             "project": (i.get("project") or {}).get("name"),
             "milestone": (i.get("issuemilestone") or {}).get("name"),
             "complexity": gaia_mcp.read_complexity(i.get("description")),
