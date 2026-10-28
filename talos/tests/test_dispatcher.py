@@ -10,6 +10,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from lib.config import TalosError  # noqa: E402
 from lib import db, dispatcher as dispatcher_mod, policy, runs as run_log, sessions  # noqa: E402
 from test_policy import AGENT_ID, make_agent, make_issue  # noqa: E402
 
@@ -41,6 +42,9 @@ class StubTracker:
         return {}
 
     def statuses_of(self, numbers):
+        if getattr(self, "unreadable", False):
+            raise TalosError("Gaia is down")
+        self.read = list(getattr(self, "read", [])) + list(numbers)
         return {n: self.dependencies.get(n) for n in numbers}
 
 
@@ -351,25 +355,79 @@ class DispatcherTest(unittest.TestCase):
         self.assertEqual(tracker.handoffs, [("pending", "1")])
 
 
+    def held_dispatcher(self, tracker, **agent):
+        queued = []
+        with mock.patch.object(dispatcher_mod.runner, "gaia_pack", lambda n, folder=None: ""):
+            d = dispatcher_mod.Dispatcher(make_agent(**agent), tracker, "claude")
+        d.submit = lambda number, source, reconcile=False: queued.append(number)
+        return d, queued
+
     def test_issue_waits_on_an_unfinished_dependency_then_is_released(self):
         tracker = StubTracker(make_issue(dependsOn=[7]))
         tracker.dependencies = {7: "in_review"}
-        queued = []
-        with mock.patch.object(dispatcher_mod.runner, "gaia_pack", lambda n, folder=None: ""):
-            d = dispatcher_mod.Dispatcher(make_agent(), tracker, "claude")
-        d.submit = lambda number, source, reconcile=False: queued.append(number)
+        d, queued = self.held_dispatcher(tracker)
         self.assertEqual(d.handle(42), "held")
         self.assertEqual(d.handle(42), "held")
         self.assertEqual(len(tracker.comments), 1)          # "waiting on #7" is not repeated
         self.assertIn("#7", tracker.comments[0])
         self.assertEqual(sessions.get("odysseus", 42), {})   # no run, no iteration
-        d.on_event({"eventName": "issue.status.changed"})
+        d.release_held("status changed", 7)
         self.assertEqual(queued, [])                         # still in review: stays held
         tracker.dependencies = {7: "done"}
-        d.on_event({"eventName": "issue.status.changed"})
+        d.release_held("status changed", 7)
         self.assertEqual(queued, [42])
+
+    def test_status_event_is_handed_to_the_release_worker(self):
+        d, queued = self.held_dispatcher(StubTracker(make_issue(dependsOn=[7])))
+        d.on_event({"eventName": "issue.status.changed", "meta": {"issueNumber": 7}})
+        self.assertTrue(d._releases.empty())                 # nothing is held: no re-check is queued
+        d.handle(42)                                         # held; queues a re-check of its dependency
+        d._releases.get_nowait()
+        d.on_event({"eventName": "issue.status.changed", "meta": {"issueNumber": 7}})
+        self.assertEqual(d._releases.get_nowait(), 7)        # nothing read from Gaia on the listener thread
+
+    def test_unreadable_dependency_is_held_without_a_comment(self):
+        tracker = StubTracker(make_issue(dependsOn=[7]))
+        tracker.unreadable = True
+        d, queued = self.held_dispatcher(tracker)
+        self.assertEqual(d.handle(42), "held")
+        self.assertEqual(tracker.comments, [])
+        self.assertTrue(d._deps.is_held(42))
+        tracker.unreadable = False
+        tracker.dependencies = {7: "done"}
+        d.release_held("status changed", 99)                 # any status change retries an unreadable one
+        self.assertEqual(queued, [42])
+
+    def test_release_rechecks_only_issues_that_depend_on_the_changed_one(self):
+        tracker = StubTracker(make_issue(dependsOn=[7]))
+        tracker.dependencies = {7: "in_review"}
+        d, queued = self.held_dispatcher(tracker)
+        d.handle(42)
+        tracker.dependencies = {7: "done"}
+        tracker.read = []
+        d.release_held("status changed", 99)
+        self.assertEqual((queued, tracker.read), ([], []))   # #99 is not one of #42's dependencies
         d.release_held("reconnect")
-        self.assertEqual(queued, [42])                       # released once
+        self.assertEqual(queued, [42])
+
+    def test_dependency_done_statuses_come_from_config(self):
+        tracker = StubTracker(make_issue(dependsOn=[7]))
+        tracker.dependencies = {7: "Merged"}
+        d, queued = self.held_dispatcher(tracker, dependency_done_statuses=("merged",))
+        self.assertEqual(d._deps.unmet([7], {7: "Merged"}), [])
+        self.assertEqual(d._deps.unmet([7], {7: "done"}), [7])   # the default list is replaced
+
+    def test_held_issue_that_is_no_longer_actionable_is_logged_and_dropped(self):
+        tracker = StubTracker(make_issue(dependsOn=[7]))
+        tracker.dependencies = {7: "in_review"}
+        d, queued = self.held_dispatcher(tracker)
+        d.handle(42)
+        tracker._issue["assignee"] = "someone-else"
+        tracker.dependencies = {7: "done"}
+        with mock.patch.object(dispatcher_mod, "log") as log:
+            self.assertIsNone(d.handle(42))
+        self.assertFalse(d._deps.is_held(42))
+        self.assertIn("left the held set", log.call_args[0][0])
 
     def test_dependency_done_at_start_runs_normally(self):
         tracker_issue = make_issue(dependsOn=[7])

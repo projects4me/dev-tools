@@ -205,6 +205,7 @@ their events), and an env file with its `GAIA_*` credentials.
 | `builtinTools`, `deniedTools` | `claude --tools` (only these built-in tools are loaded, which keeps the fixed context small) and `--disallowedTools` |
 | `env` | extra environment for the Claude process (not `GAIA_*`: the credentials come from `gaiaEnv`). Odysseus sets `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1`: subagents and commands run in the foreground, so no turns go to waiting and no late task notification arrives after the outcome |
 | `resumeMaxIdleMinutes` | resume a session only if its last run ended this recently (0 = always; default 55) |
+| `dependencyDoneStatuses` | statuses a "Depends on" issue must be in before the dependent issue starts (case-insensitive; default `["done", "closed"]`) |
 | `maxParallel` | worker threads: issues run at once, each in its own workspace and test slot (default 1) |
 | `maxParallelByRepo`, `maxParallelByModel` | caps on runs at once per repo and per model (model default `{"opus": 1}`) |
 | `testSlots` | test slots leased among the runs (default `maxParallel`; at most `TEST_SLOTS` in `p4m.env`) |

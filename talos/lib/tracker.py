@@ -9,7 +9,7 @@ import threading
 import time
 from pathlib import Path
 
-from . import policy
+from .dependency_gate import parse_dependencies
 from .config import GAIA_MCP, TalosError
 
 sys.path.insert(0, str(GAIA_MCP))
@@ -83,18 +83,18 @@ class Tracker:
             "project": (i.get("project") or {}).get("name"),
             "milestone": (i.get("issuemilestone") or {}).get("name"),
             "complexity": gaia_mcp.read_complexity(i.get("description")),
-            "dependsOn": policy.parse_dependencies(i.get("description")),
+            "dependsOn": parse_dependencies(i.get("description")),
         }
 
+    def status_of(self, number):
+        """The issue's status name alone (no other relations); TalosError when Gaia can't be read."""
+        i = self._call(self.gaia.issue_by_number, number, rels="issuestatus")
+        return (i.get("issuestatus") or {}).get("name") or i.get("status")
+
     def statuses_of(self, numbers):
-        """{issue number: status name, or None when it can't be read} for the given issues."""
-        found = {}
-        for number in numbers:
-            try:
-                found[number] = self.issue(number)["status"]
-            except TalosError:
-                found[number] = None
-        return found
+        """{issue number: status name or None when it has none}; a TalosError when any can't be read, which is not
+        the same as the dependency being unfinished."""
+        return {number: self.status_of(number) for number in numbers}
 
     def assigned_issue_numbers(self, project_id, user_id):
         rows = self._call(self.gaia.find, "issue",

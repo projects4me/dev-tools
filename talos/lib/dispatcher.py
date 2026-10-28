@@ -1,11 +1,13 @@
 """One agent's work queue: re-read the issue, run Claude, apply the outcome to the tracker."""
 
 import html
+import queue
 import threading
 import uuid
 from datetime import datetime
 
 from . import memory, policy, pool, runner, sessions, workspaces
+from .dependency_gate import DependencyGate
 from .usage_pause import UsagePause
 from . import runs as run_log
 from .config import STATE_DIR, WORKSPACE, TalosError, log
@@ -43,35 +45,46 @@ class Dispatcher:
         self._pending = set()
         self._lock = threading.Lock()
         self._pause = UsagePause()  # no dispatching while a Claude usage limit holds
-        self._held = {}             # issue number -> reconcile flag, for issues waiting on "Depends on" issues
-        self._notified = {}         # issue number -> waiting-on numbers last commented, so it isn't repeated
+        self._deps = DependencyGate(agent.dependency_done_statuses)   # issues waiting on "Depends on" issues
+        self._releases = queue.Queue()      # changed issue numbers (None = unknown) for the release worker
 
     # -- queueing ----------------------------------------------------------------------------
 
     def on_event(self, envelope):
-        """An issue assignment from Hermes: work it when it hands this agent work from an allowed user."""
+        """An issue assignment from Hermes: work it when it hands this agent work from an allowed user. A status change
+        is only handed to the release worker: this runs on the listener thread, which must not wait on Gaia."""
         if policy.is_status_event(envelope):
-            self.release_held("status changed")
+            if self._deps.any_held():       # nothing waiting: no Gaia read is worth making
+                self._releases.put(policy.event_issue_number(envelope))
             return
         number = policy.event_issue(envelope, self.agent, self.user_id)
         if number is not None:
             self.submit(number, f"assigned by user {envelope.get('actorId')}")
 
-    def release_held(self, source):
-        """Queue held issues whose dependencies are now done; the rest stay held."""
-        with self._lock:
-            held = dict(self._held)
-        for number, reconcile in held.items():
+    def _release_loop(self):
+        while True:
+            changed = self._releases.get()
             try:
-                issue = self.tracker.issue(number)
-                waiting = policy.unmet_dependencies(issue["dependsOn"], self.tracker.statuses_of(issue["dependsOn"]))
+                self.release_held("status changed", changed)
+            except Exception as e:  # never let one re-check stop the release worker
+                log(f"held re-check failed: {e}", self.agent.name)
+
+    def _recheck(self, dependencies):
+        """A dependency may have turned done between reading its status and holding the issue; that status event found
+        nothing held, so look again now that it is."""
+        for dependency in dependencies:
+            self._releases.put(dependency)
+
+    def release_held(self, source, changed=None):
+        """Queue held issues whose dependencies are now done; the rest stay held. Only the held issues that depend on
+        `changed` (and those whose dependencies could not be read) are re-checked; all of them when it is None."""
+        for number, reconcile, dependencies in self._deps.candidates(changed):
+            try:
+                waiting = self._deps.unmet(dependencies, self.tracker.statuses_of(dependencies))
             except TalosError as e:
                 log(f"#{number} held re-check failed: {e}", self.agent.name)
                 continue
-            if not waiting:
-                with self._lock:
-                    self._held.pop(number, None)
-                    self._notified.pop(number, None)
+            if not waiting:                 # handle() takes it out of the held set, and says if it isn't actionable
                 self.submit(number, f"released ({source})", reconcile=reconcile)
 
     def submit(self, number, source, reconcile=False):
@@ -103,6 +116,7 @@ class Dispatcher:
     def start(self):
         for n in range(self.agent.max_parallel):
             threading.Thread(target=self._loop, name=f"worker-{self.agent.name}-{n + 1}", daemon=True).start()
+        threading.Thread(target=self._release_loop, name=f"release-{self.agent.name}", daemon=True).start()
 
     def _loop(self):
         while True:
@@ -126,15 +140,23 @@ class Dispatcher:
 
     def handle(self, number, reconcile=False):
         issue = self.tracker.issue(number)
+        dependencies = issue.get("dependsOn") or []
+        try:
+            statuses = self.tracker.statuses_of(dependencies)
+        except TalosError as e:       # Gaia failed: that says nothing about the dependencies, so no comment
+            self._deps.hold(number, reconcile, dependencies)
+            self._recheck(dependencies)
+            log(f"#{number} held: dependency status unreadable, retrying on the next status change ({e})",
+                self.agent.name)
+            return "held"
         decision = policy.decide(issue, self.agent, self.user_id, require_allowed_modifier=reconcile,
-                                 dependency_statuses=self.tracker.statuses_of(issue.get("dependsOn") or []))
+                                 dependency_statuses=statuses, done_statuses=self._deps.done_statuses)
         if decision.waiting_on:
-            return self._hold(number, decision, reconcile)
-        with self._lock:
-            self._held.pop(number, None)
-            self._notified.pop(number, None)
+            return self._hold(number, decision, reconcile, dependencies)
+        was_held = self._deps.clear(number)
         if not decision.run:
-            log(f"#{number} skipped: {decision.reason}", self.agent.name)
+            log(f"#{number} skipped: {decision.reason}" + (" (left the held set)" if was_held else ""),
+                self.agent.name)
             return None
         state = sessions.get(self.agent.name, number)
         session_id, why = policy.resume_session(decision.action, state, _now(), self.agent.resume_max_idle_minutes)
@@ -169,13 +191,11 @@ class Dispatcher:
                        f"This did not count as an iteration.</p>", escaped=True)
         return "needs_input"
 
-    def _hold(self, number, decision, reconcile):
+    def _hold(self, number, decision, reconcile, dependencies):
         """Keep the issue out of the queue until its dependencies are done; comment once per waiting set.
         Held time is not a run, so it counts toward neither iterations nor runs."""
-        with self._lock:
-            self._held[number] = reconcile
-            first = self._notified.get(number) != decision.waiting_on
-            self._notified[number] = decision.waiting_on
+        first = self._deps.hold(number, reconcile, dependencies, decision.waiting_on)
+        self._recheck(dependencies)
         log(f"#{number} held: {decision.reason}", self.agent.name)
         if first and not self.dry_run:
             try:
@@ -374,4 +394,4 @@ class Dispatcher:
         for name, pid in project_ids.items():
             for number in self.tracker.assigned_issue_numbers(pid, self.user_id):
                 self.submit(number, f"reconcile {name}", reconcile=True)
-        self.release_held("reconnect")
+        self._releases.put(None)        # status changes may have been missed while the listener was down

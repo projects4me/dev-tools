@@ -36,6 +36,7 @@ class Agent:
     enabled: bool = True
     pickup_status: str = None           # status set when Talos starts work on an issue (None = leave it)
     resume_max_idle_minutes: int = 55   # resume a session only if its last run ended this recently (0 = always)
+    dependency_done_statuses: tuple = ("done", "closed")   # statuses a "Depends on" issue must be in (any case)
     max_turns: int = 0                  # turns per run before Claude stops and the issue goes back (0 = no limit)
     limit_comment_hours: float = 1.0    # comment on the issue when a Claude usage-limit pause lasts longer than this
     kind: str = "issues"                # "issues": works assigned issues; "ideas": brainstorms ideas (Gaia, or the sim)
@@ -122,6 +123,7 @@ def load_agent(folder):
         enabled=raw.get("enabled", True),
         pickup_status=raw.get("pickupStatus"),
         resume_max_idle_minutes=int(raw.get("resumeMaxIdleMinutes", 55)),
+        dependency_done_statuses=tuple(raw.get("dependencyDoneStatuses") or ("done", "closed")),
         max_turns=int(raw.get("maxTurns", 0)),
         limit_comment_hours=float(raw.get("limitCommentHours", 1.0)),
         kind=kind,
