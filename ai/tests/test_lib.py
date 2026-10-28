@@ -73,7 +73,12 @@ class GaiaMappingTest(unittest.TestCase):
 
     def test_phpunit_folders_are_the_ones_gaia_ci_runs(self):
         self.assertEqual(tests.PHPUNIT_FOLDERS,
-                         ("tests/libraries/security", "tests/libraries/utils", "tests/tools"))
+                         ("tests/libraries/security", "tests/libraries/utils", "tests/services", "tests/tools"))
+
+    def test_services_and_tasks_are_covered_by_phpunit_not_the_api_filter(self):
+        flt, terms, unmapped = testmap.gaia_api_filter(".", "origin/dev", [
+            "core/services/NotificationRelatedEntityResolver.php", "core/tasks/Backfill.php"])
+        self.assertEqual((flt, terms, unmapped), (None, [], []))
 
 
 class FoldTest(unittest.TestCase):

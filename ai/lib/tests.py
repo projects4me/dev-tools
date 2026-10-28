@@ -23,7 +23,7 @@ from pathlib import Path
 from . import baseline, results, testmap
 from .common import STATE_DIR, WORKSPACE, base_branch, config, git, p4m, repo_dir, say
 
-PHPUNIT_FOLDERS = ("tests/libraries/security", "tests/libraries/utils", "tests/tools")
+PHPUNIT_FOLDERS = ("tests/libraries/security", "tests/libraries/utils", "tests/services", "tests/tools")
 
 
 @dataclass
