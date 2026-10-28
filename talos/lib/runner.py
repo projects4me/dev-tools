@@ -171,12 +171,20 @@ class Runner:
         """The MCP config file to name in the argv."""
         return host_mcp
 
+    def prepare(self, issue, repo):
+        """Set up what the run works in before it starts; returns the issue's workspace folder, or None when the
+        run has none on this machine. Raises workspaces.BranchCheckedOut when the branch is held elsewhere."""
+        return None
+
     def execute(self, job):
         raise NotImplementedError
 
 
 class LocalRunner(Runner):
     """On this machine, in the issue's own workspace (workspaces.py)."""
+
+    def prepare(self, issue, repo):
+        return self.workspace(issue, repo)[0] if workspaces.applies(repo) else None
 
     def execute(self, job):
         cwd, env = self.workspace(job.issue, job.repo)
@@ -186,7 +194,7 @@ class LocalRunner(Runner):
     def workspace(number, repo):
         """(cwd, env) for a run: the issue's own workspace with its repo as a git worktree, so runs on different
         issues never switch branches under each other. The workspace root repo (pr4m) has no worktree."""
-        if not repo or repo == "pr4m":
+        if not workspaces.applies(repo):
             return WORKSPACE, {}
         folder = workspaces.ensure(WORKSPACE, DEV_TOOLS, number, repo)
         return folder, workspaces.env(folder)
@@ -235,11 +243,13 @@ def run(cmd, env, agent_name, issue, prompt, cwd=None):
     return result, log_path
 
 
-def gaia_pack(number, timeout=300):
-    """`ai context <issue>` output for a Gaia issue, or "" when it can't be built (the run goes on without it)."""
+def gaia_pack(number, folder=None, timeout=300):
+    """`ai context <issue>` output for a Gaia issue, or "" when it can't be built (the run goes on without it).
+    Built from the issue's workspace folder when there is one, so the pack describes the branch's code."""
     try:
         r = subprocess.run([sys.executable, str(DEV_TOOLS / "ai" / "ai.py"), "context", str(number), "--repo", "gaia"],
-                           cwd=WORKSPACE, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                           cwd=folder or WORKSPACE, env={**os.environ, **(workspaces.env(folder) if folder else {})},
+                           capture_output=True, text=True, encoding="utf-8", errors="replace",
                            stdin=subprocess.DEVNULL, timeout=timeout)
     except (OSError, subprocess.TimeoutExpired) as e:
         print(f"talos: no Gaia pack for #{number}: {e}", file=sys.stderr)
