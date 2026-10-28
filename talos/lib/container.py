@@ -8,6 +8,10 @@ local run. Talos stays the coordinator: it starts `docker run` from here and rea
 Credentials are never in the image or on the docker command line: `docker run -e NAME` copies NAME from the docker
 CLI's environment, which Talos fills from the agent's environment and the credential files; key files are mounted
 read-only.
+
+The image runs as the non-root user `talos`. On a Linux or macOS host with the `bind` claude home the container runs
+as this machine's uid:gid, so the files it writes in the mounted folders are the engineer's. The host's docker
+socket, which is root on the Docker host, is mounted only when agent.json asks for it (`dockerSocket`).
 """
 
 import os
@@ -19,7 +23,8 @@ from . import memory, runner
 from .config import CONTAINER_DIR, LOCAL_DIR, WORKSPACE, TalosError
 
 WORK = "/work"                                   # the issue's work volume: workspace, runtime and repo clones
-CLAUDE_HOME = "/root/.claude"
+CLAUDE_HOME = "/home/talos/.claude"            # the image user's home (talos/container/Dockerfile)
+DOCKER_SOCKET = "/var/run/docker.sock"
 SECRETS = "/run/secrets/talos"                   # key files, mounted read-only
 MCP = WORK + "/.talos/mcp.json"                  # written by the entrypoint: the gaia server from the runtime clone
 MEMORY = "/memory"                               # the workspace's auto-memory folder, mounted (claudeHome "bind")
@@ -64,9 +69,10 @@ class ContainerRunner(runner.Runner):
     """agent.json `runner`: {"type": "container", "image": ..., and optionally
     "dockerHost" (the Docker host to run on; default the docker CLI's own), "network", "addHosts" (["host:ip"]),
     "claudeHome" ("bind" a host folder, default; "volume" a named volume, for a remote Docker host; "none": no
-    sessions kept, every run starts cold), "testDockerHost" (DOCKER_HOST inside, for the test suites; default the
-    host's /var/run/docker.sock mounted in), "envFiles" (credential files under <workspace>/dev-tools),
-    "gitBase" / "pushBase" (where repos are cloned from and pushed to), "dockerArgs" (extra `docker run` args)}."""
+    sessions kept, every run starts cold), "dockerSocket" (true: mount the Docker host's socket for the test suites,
+    which gives the agent root on that host; default false), "dockerSocketGroup" (the socket's group id in the
+    container; default probed once per runner with `docker run` on the image), "testDockerHost" (DOCKER_HOST inside, for the test suites), "envFiles"
+    (credential files under <workspace>/dev-tools), "gitBase" / "pushBase" (where repos are cloned from and pushed to), "dockerArgs" (extra `docker run` args)}."""
 
     def __init__(self, agent):
         self.agent_name = agent.name
@@ -77,6 +83,7 @@ class ContainerRunner(runner.Runner):
         if self.home not in CLAUDE_HOMES:
             raise TalosError(f"{agent.name}: runner.claudeHome must be one of {', '.join(CLAUDE_HOMES)}")
         self.resumable = self.home != "none"
+        self.socket_group = self.settings.get("dockerSocketGroup")
 
     def claude_bin(self, host_claude):
         return "claude"
@@ -106,7 +113,10 @@ class ContainerRunner(runner.Runner):
         memory_dir = self.mounted_memory()
         if memory_dir:
             memory_dir.mkdir(parents=True, exist_ok=True)     # else docker creates it, owned by root on Linux
-        cmd = docker_command(self.settings, self.agent_name, job, sorted(values), files, self.home, memory_dir)
+        if self.settings.get("dockerSocket") and self.socket_group is None:
+            self.socket_group = docker_socket_group(self.settings["image"], cli_env)
+        cmd = docker_command(self.settings, self.agent_name, job, sorted(values), files, self.home, memory_dir,
+                             host_user(self.home), self.socket_group)
         # a container left running by a stopped Talos would hold the name; --rm removes it once it exits
         subprocess.run(["docker", "rm", "-f", container_name(self.agent_name, job.issue)], env=cli_env,
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
@@ -160,9 +170,32 @@ class ContainerRunner(runner.Runner):
         return values, files
 
 
-def docker_command(settings, agent_name, job, names, files, home, memory_dir=None):
+def host_user(home):
+    """`uid:gid` to run the container as, so the files it writes in this machine's bind-mounted folders are the
+    engineer's; None (the image's `talos` user) on Windows, where Docker Desktop maps bind-mount ownership itself,
+    and for the `volume` and `none` homes, which mount no host folder."""
+    if os.name == "nt" or home != "bind":
+        return None
+    return f"{os.getuid()}:{os.getgid()}"
+
+
+def docker_socket_group(image, cli_env):
+    """The group that owns the docker socket as the container sees it (the host's `docker` group on Linux, root
+    under Docker Desktop): the non-root user is added to it so it can use the socket."""
+    cp = subprocess.run(["docker", "run", "--rm", "--entrypoint", "stat", "-v", f"{DOCKER_SOCKET}:{DOCKER_SOCKET}",
+                         image, "-c", "%g", DOCKER_SOCKET], env=cli_env, capture_output=True, text=True,
+                        stdin=subprocess.DEVNULL)
+    if cp.returncode != 0 or not cp.stdout.strip().isdigit():
+        raise TalosError(f"runner.dockerSocket: can't read the docker socket's group on the Docker host "
+                         f"({cp.stderr.strip() or cp.stdout.strip()}); set runner.dockerSocketGroup")
+    return cp.stdout.strip()
+
+
+def docker_command(settings, agent_name, job, names, files, home, memory_dir=None, user=None, socket_group=None):
     """The `docker run` argv. Variables go by name only (`-e NAME`), so no value is on the command line."""
     cmd = ["docker", "run", "--rm", "-i", "--name", container_name(agent_name, job.issue)]
+    if user:
+        cmd += ["--user", user]
     if settings.get("network"):
         cmd += ["--network", settings["network"]]
     for host in settings.get("addHosts", []):
@@ -178,8 +211,8 @@ def docker_command(settings, agent_name, job, names, files, home, memory_dir=Non
         cmd += ["-v", f"{memory_dir}:{MEMORY}"]
     if settings.get("testDockerHost"):
         cmd += ["-e", f"DOCKER_HOST={settings['testDockerHost']}"]
-    else:
-        cmd += ["-v", "/var/run/docker.sock:/var/run/docker.sock"]
+    if settings.get("dockerSocket"):
+        cmd += ["-v", f"{DOCKER_SOCKET}:{DOCKER_SOCKET}", "--group-add", str(socket_group)]
     for host, inside in files.items():
         cmd += ["-v", f"{host}:{inside}:ro"]
     cmd += [str(a) for a in settings.get("dockerArgs", [])]

@@ -101,7 +101,9 @@ docker build -t p4m-talos-runner dev-tools/talos/container
 | `dockerHost` | the Docker host to run on (`DOCKER_HOST` for the `docker` CLI; default its own) |
 | `network`, `addHosts`, `dockerArgs` | `docker run --network`, `--add-host` entries (e.g. the local Gaia name to `host-gateway`), extra args |
 | `claudeHome` | the container's `~/.claude`: `bind` (default) a per-issue host folder `state/containers/<agent>-<issue>/claude`, so sessions resume and the run stats and `talos status` read its transcripts; `volume` a named volume `talos-<agent>-<issue>-claude` (a remote Docker host, where a host folder isn't there; sessions resume, the stats come from the result only); `none`: nothing kept, every run starts cold with the catch-up prompt |
-| `testDockerHost` | `DOCKER_HOST` inside the container for the test suites; default the host's `/var/run/docker.sock` is mounted in |
+| `dockerSocket` | `true`: mount the Docker host's `/var/run/docker.sock` for the test suites (see the security notes below); default `false`, and then `docker` in the container says the run has no Docker access, so tests that need Docker fail with that message |
+| `dockerSocketGroup` | the group id that owns the socket inside the container, added to the container user with `--group-add`; default probed once per Talos start (`stat` in a throwaway container from the image: the host's `docker` group on Linux, `0` under Docker Desktop) |
+| `testDockerHost` | `DOCKER_HOST` inside the container for the test suites, e.g. a rootless or dedicated Docker host instead of the socket |
 | `envFiles` | credential files under `<workspace>/dev-tools` (default `odysseus/odysseus.env`, `talos/container.env`) |
 | `gitBase`, `pushBase` | where repos are cloned from (default `https://github.com/projects4me`) and pushed to (default `git@github-odysseus:projects4me`, the `odysseus` remote) |
 
@@ -128,16 +130,44 @@ read-only under `/run/secrets/talos`. Only what the run needs crosses over, neve
 Known limits: the test suites that bind-mount a checkout into the stack's containers (`p4m test`) need that
 checkout on the Docker host the tests run on, so for those repos a remote `testDockerHost` doesn't work yet; and
 `talos gc` doesn't remove container volumes. Key files and the `bind` claude home are mounted by their path on
-this machine, so with a remote `dockerHost` they must exist at the same path on that host. Without `testDockerHost`
-the host's docker socket is mounted, which gives the agent root on the Docker host: use a dedicated Docker host or
-a rootless `testDockerHost` where that matters. A container left by a stopped Talos is removed before the next run
-of that issue.
+this machine, so with a remote `dockerHost` they must exist at the same path on that host (see "Keys on a remote
+Docker host" below). A container left by a stopped Talos is removed before the next run of that issue.
+
+**Security notes.**
+- The image runs as the non-root user `talos` (uid 1000, home `/home/talos`). On a Linux or macOS host with the
+  `bind` claude home, Talos runs it as this machine's uid:gid (`docker run --user`), so the files it writes in the
+  mounted `~/.claude` and memory folders are the engineer's; the entrypoint gives that uid a passwd entry through
+  nss_wrapper (ssh needs one). On Windows, Docker Desktop maps bind-mount ownership itself, so the image user stays.
+- The docker socket is opt-in (`dockerSocket: true`). Whoever can use the socket is root on that Docker host, and the
+  agent's session (and anything a prompt injection in an issue makes it run) can use it: start containers with the
+  host's `/` mounted, read other containers' secrets. Turn it on only for agents whose repos' tests need Docker,
+  and prefer a dedicated Docker host, or a rootless one as `testDockerHost`.
+- Credentials passed by name still show in `docker inspect` on the Docker host, and the session can read them in its
+  environment and the key files under `/run/secrets/talos`; the container user can't change the image, but it
+  has the agent's GitHub and Gaia access for the run.
+- Volumes and folders made by the image before it ran as non-root are owned by root; the entrypoint stops with a
+  message naming the path. Remove the issue's `talos-<agent>-<issue>-*` volumes (or `chown` the
+  `state/containers/<agent>-<issue>` folder) and rebuild the image.
+
+**Keys on a remote Docker host** (not built yet). The `bind` claude home has the `volume` alternative already; the
+key files (`ODYSSEUS_SSH_KEY` and its `.pub`, `GAIA_CA_FILE`) are mounted from this machine's paths. The options:
+
+| option | how | for | against |
+|---|---|---|---|
+| docker secrets | `docker secret create`, the run as a swarm service with `--secret` | the key is encrypted at rest in the swarm and mounted on tmpfs | needs swarm mode and `docker service`, which has no `docker run -i`: the prompt on stdin and the result on stdout would need another path |
+| env-only | Talos reads the file and passes its content by name (`-e ODYSSEUS_SSH_KEY_DATA`, like `GH_TOKEN`); the entrypoint writes it to `~/.ssh` with mode 600 | works on any Docker host with no extra step; nothing on the host's disk; same exposure as the tokens already passed (`docker inspect`, the session) | binary or very large files don't fit an environment variable (the keys and a CA bundle do) |
+| per-run volume fed by `docker cp` | `docker create`, `docker cp` the files in, `docker start -ai`; or a `talos-<agent>-<issue>-secrets` volume filled the same way | the files keep their form; no environment entries | more steps per run; the files sit on the remote host's disk (container layer or volume) until it is removed; a crash leaves them there |
+
+Recommendation: **env-only**. It keeps one `docker run`, crosses over the same way as the GitHub and Claude tokens
+(so it adds no new exposure: anyone who can `docker inspect` already has `GH_TOKEN`), and leaves nothing on the
+remote host's disk once the `--rm` container is gone. Use it only when `dockerHost` is set (or a `keysBy: "env"`
+setting), keeping the read-only mounts for the local host. Docker secrets are worth it only if the runners move to
+a swarm.
 
 Auto-memory in a container: with the `bind` claude home the workspace's auto-memory folder is mounted at `/memory`
 and the run pointed at it, as for a local run; `volume` and `none` homes (meant for a Docker host without this
-machine's folders) keep the container's own, empty memory. The container runs as root, so on a Linux host the memory
-files it writes are owned by root, like the rest of the `bind` home; `chown` them if an interactive session can't
-edit them.
+machine's folders) keep the container's own, empty memory. On a Linux host the container runs as this machine's
+uid:gid with the `bind` home, so the memory files it writes are the engineer's.
 
 ## How an assignment is handled
 

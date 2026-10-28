@@ -40,6 +40,7 @@ class ContainerRunnerTest(unittest.TestCase):
         (self.tmp / "gaia.env").write_text("GAIA_EMAIL=agent@b\n", encoding="utf-8")
         self.runs = []
         self.removed = []
+        self.probes = []
 
     def tearDown(self):
         for p in self.patches:
@@ -51,6 +52,9 @@ class ContainerRunnerTest(unittest.TestCase):
             return {"session_id": "s1"}, Path("log.json")
 
         def fake_subprocess_run(cmd, **kwargs):
+            if "stat" in cmd:                                         # the docker socket's group probe
+                self.probes.append(cmd)
+                return mock.Mock(returncode=0, stdout="998\n", stderr="")
             self.removed.append(cmd)
 
         with mock.patch.object(container.runner, "run", fake_run), \
@@ -159,6 +163,54 @@ class ContainerRunnerTest(unittest.TestCase):
         self.assertIn("DOCKER_HOST=tcp://tests:2375", cmd)
         self.assertNotIn("/var/run/docker.sock:/var/run/docker.sock", cmd)
         self.assertIn("api.local-projects4.me:host-gateway", cmd)
+
+    def test_no_docker_socket_by_default(self):
+        self.execute()
+        cmd = self.runs[0][0]
+        self.assertFalse(any("docker.sock" in a for a in cmd))
+        self.assertNotIn("--group-add", cmd)
+        self.assertEqual(self.probes, [])
+
+    def test_docker_socket_on_request_with_its_group(self):
+        self.execute(dockerSocket=True)
+        cmd = self.runs[0][0]
+        self.assertIn("/var/run/docker.sock:/var/run/docker.sock", cmd)
+        self.assertEqual(cmd[cmd.index("--group-add") + 1], "998")       # probed on the Docker host
+        self.assertEqual(len(self.probes), 1)
+        self.assertLess(cmd.index("--group-add"), cmd.index("p4m-talos-runner"))
+
+    def test_docker_socket_group_from_settings_skips_the_probe(self):
+        self.execute(dockerSocket=True, dockerSocketGroup=0)
+        cmd = self.runs[0][0]
+        self.assertEqual(cmd[cmd.index("--group-add") + 1], "0")
+        self.assertEqual(self.probes, [])
+
+    def test_a_failed_socket_probe_fails_the_run(self):
+        failed = mock.Mock(returncode=1, stdout="", stderr="no such image")
+        with mock.patch.object(container.subprocess, "run", return_value=failed):
+            with self.assertRaises(TalosError):
+                container.docker_socket_group("p4m-talos-runner", {})
+
+    def test_bind_home_runs_as_the_host_user_on_posix(self):
+        with mock.patch.object(container.os, "name", "posix"), \
+                mock.patch.object(container.os, "getuid", create=True, return_value=1001), \
+                mock.patch.object(container.os, "getgid", create=True, return_value=1002):
+            self.assertEqual(container.host_user("bind"), "1001:1002")
+            self.assertIsNone(container.host_user("volume"))
+            self.assertIsNone(container.host_user("none"))
+        with mock.patch.object(container.os, "name", "nt"):
+            self.assertIsNone(container.host_user("bind"))           # Docker Desktop maps bind ownership
+
+    def test_user_goes_before_the_image(self):
+        with mock.patch.object(container, "host_user", return_value="1001:1002"):
+            self.execute()
+        cmd = self.runs[0][0]
+        self.assertEqual(cmd[cmd.index("--user") + 1], "1001:1002")
+        self.assertLess(cmd.index("--user"), cmd.index("p4m-talos-runner"))
+        self.runs.clear()
+        with mock.patch.object(container, "host_user", return_value=None):
+            self.execute()
+        self.assertNotIn("--user", self.runs[0][0])
 
     def test_argv_names_the_containers_claude_and_mcp_config(self):
         r = container.ContainerRunner(container_agent())
