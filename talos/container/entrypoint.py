@@ -12,10 +12,15 @@ finds its clones (and any uncommitted work) again:
   /work/dev-tools          a link to the runtime, unless dev-tools is the issue's repo
   /work/<repo>             the issue's repo on claude-issue-N, with the `odysseus` push remote
 Only Claude's JSON result goes to stdout; everything else goes to stderr.
+
+The image runs as the non-root user `talos`; Talos may start it as the host's uid:gid instead (`docker run --user`,
+so the bind-mounted ~/.claude stays the engineer's). That uid has no /etc/passwd entry, which ssh refuses, so the
+entrypoint gives it one through nss_wrapper for itself and everything it starts.
 """
 
 import json
 import os
+import pwd
 import shutil
 import subprocess
 import sys
@@ -39,6 +44,36 @@ def git(*args, cwd=None, check=True):
     if check and cp.returncode != 0:
         raise SystemExit(f"talos-container: git {' '.join(args)} failed: {cp.stderr.strip()}")
     return cp.stdout.strip()
+
+
+def user():
+    """A passwd (and group) entry for a uid the image doesn't know, through nss_wrapper (LD_PRELOAD)."""
+    uid, gid = os.getuid(), os.getgid()
+    try:
+        pwd.getpwuid(uid)
+        return
+    except KeyError:
+        pass
+    nss = Path("/tmp/talos-nss")
+    nss.mkdir(mode=0o700, exist_ok=True)
+    passwd, group = nss / "passwd", nss / "group"
+    passwd.write_text(Path("/etc/passwd").read_text(encoding="utf-8")
+                      + f"talos-host:x:{uid}:{gid}:Talos:{HOME}:/bin/sh\n", encoding="utf-8")
+    groups = Path("/etc/group").read_text(encoding="utf-8")
+    if not any(line.split(":")[2:3] == [str(gid)] for line in groups.splitlines()):
+        groups += f"talos-host:x:{gid}:\n"
+    group.write_text(groups, encoding="utf-8")
+    os.environ.update({"LD_PRELOAD": "libnss_wrapper.so", "NSS_WRAPPER_PASSWD": str(passwd),
+                       "NSS_WRAPPER_GROUP": str(group)})
+
+
+def writable():
+    """/work and ~ must be the run's: a volume made by an older image that ran as root isn't."""
+    for path in (WORK, HOME / ".claude"):
+        if path.exists() and not os.access(path, os.W_OK):
+            raise SystemExit(f"talos-container: {path} is not writable by uid {os.getuid()}; a volume or folder "
+                             "made by an older image, which ran as root? Remove the issue's talos-<agent>-<issue>-* volumes "
+                             "(or chown the bind-mounted claude folder) and run again.")
 
 
 def credentials():
@@ -115,6 +150,8 @@ def main(argv):
     if "--" not in argv or argv.index("--") == len(argv) - 1:
         raise SystemExit("usage: entrypoint.py -- claude -p ...")
     command = argv[argv.index("--") + 1:]
+    user()
+    writable()
     credentials()
     layout()
     os.chdir(WORK)
