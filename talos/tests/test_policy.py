@@ -9,6 +9,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from lib.dependency_gate import parse_dependencies, unmet_dependencies  # noqa: E402
 from lib import policy, runner  # noqa: E402
 from lib.tracker import gaia_mcp  # noqa: E402
 from lib.registry import Action, Agent  # noqa: E402
@@ -333,18 +334,18 @@ class LimitTest(unittest.TestCase):
 
 class DependencyTest(unittest.TestCase):
     def test_parses_depends_on_lines(self):
-        self.assertEqual(policy.parse_dependencies("<p>Scope</p><p>Depends on: #4160, #4159 and #4160</p>"),
+        self.assertEqual(parse_dependencies("<p>Scope</p><p>Depends on: #4160, #4159 and #4160</p>"),
                          [4159, 4160])
-        self.assertEqual(policy.parse_dependencies("a\ndepends on #12\nDepends on: #7"), [7, 12])
+        self.assertEqual(parse_dependencies("a\ndepends on #12\nDepends on: #7"), [7, 12])
 
     def test_none_or_missing_means_no_dependencies(self):
-        self.assertEqual(policy.parse_dependencies("Depends on: none\nComplexity: simple"), [])
-        self.assertEqual(policy.parse_dependencies("Related to #5"), [])
-        self.assertEqual(policy.parse_dependencies(None), [])
+        self.assertEqual(parse_dependencies("Depends on: none\nComplexity: simple"), [])
+        self.assertEqual(parse_dependencies("Related to #5"), [])
+        self.assertEqual(parse_dependencies(None), [])
 
     def test_only_done_dependencies_are_met(self):
         statuses = {1: "in_review", 2: "done", 3: None, 4: "Closed"}
-        self.assertEqual(policy.unmet_dependencies([1, 2, 3, 4, 5], statuses), [1, 3, 5])
+        self.assertEqual(unmet_dependencies([1, 2, 3, 4, 5], statuses), [1, 3, 5])
 
     def test_issue_with_an_unmet_dependency_is_held(self):
         decision = policy.decide(make_issue(dependsOn=[7]), make_agent(), AGENT_ID, dependency_statuses={7: "in_review"})
