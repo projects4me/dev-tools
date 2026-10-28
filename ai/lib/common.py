@@ -7,6 +7,7 @@ import re
 import shutil
 import subprocess
 import sys
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 
@@ -166,6 +167,39 @@ def _timer_file():
     return STATE_DIR / "timers.json"
 
 
+def _devstack_lock():
+    """installer/dblock.py: heartbeat, so a long browser check keeps it and a killed holder's lock is taken over."""
+    sys.path.insert(0, str(DEV_TOOLS / "installer"))
+    try:
+        import dblock
+    finally:
+        sys.path.remove(str(DEV_TOOLS / "installer"))
+    STATE_DIR.mkdir(exist_ok=True)
+    try:
+        return dblock.held(STATE_DIR / "devstack.lock", wait_seconds=1800,
+                           on_wait=lambda p: say(f"waiting for the dev stack ({dblock.describe_holder(p)})"))
+    except dblock.LockTimeout as e:
+        raise AiError(str(e))
+
+
+@contextmanager
+def timers_locked():
+    """Around every read-modify-write of timers.json: parallel Talos runs share the file."""
+    from . import filelock
+    try:
+        with filelock.held(STATE_DIR / "timers.lock"):
+            yield
+    except filelock.LockTimeout as e:
+        raise AiError(str(e))
+
+
+@contextmanager
+def devstack_locked():
+    """One browser check at a time against the shared dev stack (gaia-dev, Prometheus on :4200)."""
+    with _devstack_lock():
+        yield
+
+
 def load_timers():
     path = _timer_file()
     if not path.exists():
@@ -175,14 +209,17 @@ def load_timers():
 
 
 def save_timers(timers):
-    with open(_timer_file(), "w", encoding="utf-8") as f:
+    tmp = _timer_file().with_suffix(".tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
         json.dump(timers, f, indent=2)
+    os.replace(tmp, _timer_file())          # readers never see a half-written file
 
 
 def start_timer(issue, repo):
-    timers = load_timers()
-    timers[str(issue)] = {"repo": repo, "checkpoint": now().isoformat(timespec="seconds")}
-    save_timers(timers)
+    with timers_locked():
+        timers = load_timers()
+        timers[str(issue)] = {"repo": repo, "checkpoint": now().isoformat(timespec="seconds")}
+        save_timers(timers)
 
 
 def issue_repo(issue):

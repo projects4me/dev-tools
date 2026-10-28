@@ -133,6 +133,9 @@ their events), and an env file with its `GAIA_*` credentials.
 | `builtinTools`, `deniedTools` | `claude --tools` (only these built-in tools are loaded, which keeps the fixed context small) and `--disallowedTools` |
 | `env` | extra environment for the Claude process (not `GAIA_*`: the credentials come from `gaiaEnv`). Odysseus sets `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1`: subagents and commands run in the foreground, so no turns go to waiting and no late task notification arrives after the outcome |
 | `resumeMaxIdleMinutes` | resume a session only if its last run ended this recently (0 = always; default 55) |
+| `maxParallel` | worker threads: issues run at once, each in its own workspace and test slot (default 1) |
+| `maxParallelByRepo`, `maxParallelByModel` | caps on runs at once per repo and per model (model default `{"opus": 1}`) |
+| `testSlots` | test slots leased among the runs (default `maxParallel`; at most `TEST_SLOTS` in `p4m.env`) |
 | `permissionMode`, `allowedTools` | passed to `claude -p` |
 | `rolePrompt` | file appended to the system prompt: the agent's role and headless rules |
 
@@ -237,3 +240,15 @@ The pre-SQLite `state/sessions.json` is imported when `talos run`/`dispatch` sta
 | `lib/runs.py` | run records (`runs` table) and the per-run cost calculation |
 | `lib/simbus.py` | sim Hermes connection (SSE): the event source for ideas agents until Hermes carries idea events |
 | `lib/ideas/` | ideas agents: `setup` (wiring), `policy` (events, what waits), `worker` (queue, stop, reconcile), `conversation` (a turn), `approval` (plan → issues), `stream` (streamed run, command), `client` (Gaia idea resources) and `sim_client` (the sim's), `progress` (live progress on the sim), `plan`, `screens` (blocks) + `render` (= `styles` + `page` + `browser`) + `screen_kit/` (UI screens → PNG), `sanitize`, `steps`, `kb`, `state` |
+
+## Parallel runs
+
+With `maxParallel` above 1 an agent has that many worker threads. The queue hands out resumptions (feedback,
+pending, in_progress, in_review: any status whose action resumes a session) first, then by issue priority, then first
+in, first out; an issue already queued or running is never queued twice. Before Claude starts, a run waits for a free
+slot under the repo and model caps, then leases a test slot: `P4M_TEST_SLOT` is set in its environment and
+`ai test gaia` runs in that slot (`--slot` overrides). The lease is released when the run ends. A ship session or an
+escalation re-run leases again. `talos status` lists every run in flight with its repo and slot.
+
+Shared files: `ai/state/timers.json` is changed under a lock (`state/timers.lock`). Browser checks against the shared
+dev stack (gaia-dev, Prometheus on :4200) take turns with `dev-tools/ai/ai devstack -- <command>`.

@@ -302,3 +302,31 @@ class FixtureDriftTest(unittest.TestCase):
     def test_matching_harness_output_passes(self):
         rc, _, _ = self._run("committed")
         self.assertEqual(rc, 0)
+
+
+class TestSlotAndTimerLock(unittest.TestCase):
+    def test_slot_comes_from_the_flag_then_from_talos(self):
+        from unittest import mock
+        from lib import tests as ai_tests
+        args = type("A", (), {"slot": None})()
+        with mock.patch.dict("os.environ", {"P4M_TEST_SLOT": "2"}):
+            self.assertEqual(ai_tests.slot_of(args), 2)
+            args.slot = 1
+            self.assertEqual(ai_tests.slot_of(args), 1)
+        with mock.patch.dict("os.environ", {}, clear=True):
+            args.slot = None
+            self.assertIsNone(ai_tests.slot_of(args))
+
+    def test_timers_survive_concurrent_starts(self):
+        import tempfile
+        import threading
+        from pathlib import Path
+        from unittest import mock
+        from lib import common
+        with mock.patch.object(common, "STATE_DIR", Path(tempfile.mkdtemp())):
+            threads = [threading.Thread(target=common.start_timer, args=(n, "gaia")) for n in range(1, 9)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+            self.assertEqual(sorted(common.load_timers()), [str(n) for n in range(1, 9)])

@@ -14,11 +14,12 @@ import urllib.request
 from lib import db, policy, runner, sessions, workspaces
 from lib import runs as run_log
 from lib.config import LISTENER, STATE_DIR, TALOS_DIR, WORKSPACE, TalosError, claude_bin, log, settings
-from lib.dispatcher import Dispatcher
+from lib.dispatcher import Dispatcher, lease_file
 from lib.ideas import setup as ideas_setup
 from lib.hermes import Listener
 from lib.mcp import mcp_config
 from lib.registry import load_agents
+from lib.pool import LeaseFile
 from lib.tracker import Tracker
 
 
@@ -80,9 +81,14 @@ def cmd_status(args):
         print(f"RUNNING  {r['agent']} idea {r['issue']} \"{r.get('summary') or ''}\"  on {r.get('model')}"
               f"  since {r.get('started_at') or '?'}")
         _print_live(runner.transcript(r.get("session_id")), args.steps)
+    print_in_flight = len(running)
+    if print_in_flight > 1:
+        print(f"{print_in_flight} runs in flight:")
     for (agent, issue), entry in sorted(running.items()):
+        lease = LeaseFile(lease_file(agent)).read().get(issue, {})
+        where = f"  repo {lease['repo'] or '-'}  slot {lease['slot'] or '-'}" if lease else ""
         print(f"RUNNING  {agent} #{issue}  on {entry.get('last_model')}  iteration {entry.get('runs')}"
-              f"  since {entry.get('started_at') or '?'}")
+              f"  since {entry.get('started_at') or '?'}{where}")
         _print_live(runner.transcript(entry.get("live_session_id")) or runner.transcript_for_issue(issue), args.steps)
     others = sorted((k, v) for k, v in entries.items() if not v.get("running"))
     if others:

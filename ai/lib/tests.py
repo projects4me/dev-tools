@@ -107,6 +107,14 @@ def _tag(src, slot=None):
         + (f"-slot{slot}" if slot else "")
 
 
+def slot_of(args):
+    """The test slot to run in: --slot, else the one Talos leased for this run (P4M_TEST_SLOT), else none."""
+    slot = getattr(args, "slot", None)
+    if slot is None and os.environ.get("P4M_TEST_SLOT", "").isdigit():
+        slot = int(os.environ["P4M_TEST_SLOT"])
+    return slot
+
+
 def _slot_args(slot):
     return ["--slot", str(slot)] if slot else []
 
@@ -338,7 +346,7 @@ def cmd_case(args):
     if bad:
         say(bad)
         return 2
-    r = api(repo_dir("gaia"), args.case, prepare=False, slot=getattr(args, "slot", None))
+    r = api(repo_dir("gaia"), args.case, prepare=False, slot=slot_of(args))
     for line in r.summary.splitlines():
         say(line)
     for f in r.failures:
@@ -383,7 +391,7 @@ def _run_and_record(args, repo, src, targets, full):
     started = results.tree_fingerprint(repo)     # the tree the run tests: see results.changed_since
     fixture = Path(src) / FIXTURE
     committed = fixture.read_bytes() if repo == "gaia" and fixture.exists() else None
-    slot = getattr(args, "slot", None) if repo == "gaia" else None
+    slot = slot_of(args) if repo == "gaia" else None
     runs = [run_suite(repo, s, src, targets, slot=slot) for s in SUITES[repo]]
     drifted = committed is not None and fixture.read_bytes() != committed
     if drifted:

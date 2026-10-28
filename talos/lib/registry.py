@@ -45,6 +45,10 @@ class Agent:
     limits_by_model: dict = field(default_factory=dict)  # model -> {"maxTurns", "maxBudgetUsd"} for that model's runs
     ship_prompt: str = ""               # fresh session that ships after a ready_to_ship outcome ("" = not offered)
     env: dict = field(default_factory=dict)          # extra environment for the Claude process
+    max_parallel: int = 1               # worker threads: issues run at once (1 = one at a time)
+    max_parallel_by_repo: dict = field(default_factory=dict)   # repo -> runs at once
+    max_parallel_by_model: dict = field(default_factory=lambda: {"opus": 1})   # model -> runs at once
+    test_slots: int = 0                 # test slots to lease per run (0 = max_parallel; at most TEST_SLOTS in p4m.env)
     extra: dict = field(default_factory=dict)
 
     def action_for(self, status):
@@ -120,6 +124,10 @@ def load_agent(folder):
         limits_by_model=dict(raw.get("limitsByModel", {})),
         ship_prompt=raw.get("shipPrompt", ""),
         env={str(k): str(v) for k, v in raw.get("env", {}).items()},
+        max_parallel=max(1, int(raw.get("maxParallel", 1))),
+        max_parallel_by_repo={str(k): int(v) for k, v in raw.get("maxParallelByRepo", {}).items()},
+        max_parallel_by_model={str(k): int(v) for k, v in raw.get("maxParallelByModel", {"opus": 1}).items()},
+        test_slots=int(raw.get("testSlots", 0)),
         extra={k: raw[k] for k in ("knowledgeMap", "ideaSource") if k in raw},
     )
 

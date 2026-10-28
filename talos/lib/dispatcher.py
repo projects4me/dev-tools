@@ -1,15 +1,14 @@
 """One agent's work queue: re-read the issue, run Claude, apply the outcome to the tracker."""
 
 import html
-import queue
 import threading
 import time
 import uuid
 from datetime import datetime, timedelta
 
-from . import policy, runner, sessions, workspaces
+from . import policy, pool, runner, sessions, workspaces
 from . import runs as run_log
-from .config import DEV_TOOLS, WORKSPACE, TalosError, log
+from .config import DEV_TOOLS, STATE_DIR, WORKSPACE, TalosError, log
 
 
 def _now():
@@ -20,8 +19,13 @@ def _iso(moment):
     return moment.isoformat(timespec="seconds")
 
 
+def lease_file(agent_name):
+    """Where an agent's leases in flight are written, for `talos status`."""
+    return STATE_DIR / agent_name / "leases.json"
+
+
 class Dispatcher:
-    """Serial worker for one agent (its runs share the local stack; each issue has its own workspace)."""
+    """Worker pool for one agent: `maxParallel` threads, each issue in its own workspace and test slot."""
 
     def __init__(self, agent, tracker, claude, dry_run=False, mcp=None):
         self.agent = agent
@@ -30,7 +34,10 @@ class Dispatcher:
         self.dry_run = dry_run
         self.mcp = mcp          # the agent's MCP config file (mcp.mcp_config)
         self.user_id = tracker.user_id()
-        self._queue = queue.Queue()
+        self._queue = pool.RunQueue()
+        self.leases = pool.LeaseFile(lease_file(agent.name))
+        self._gate = pool.Gate(agent.test_slots or agent.max_parallel, agent.max_parallel_by_repo,
+                               agent.max_parallel_by_model, on_change=self.leases.write)
         self._pending = set()
         self._lock = threading.Lock()
         self._paused_until = None   # datetime: no dispatching until then (Claude usage limit)
@@ -73,12 +80,22 @@ class Dispatcher:
                 log(f"#{number} already queued or running ({source})", self.agent.name)
                 return False
             self._pending.add(number)
-        self._queue.put((number, source, reconcile))
+        self._queue.put(self._order(number), (number, source, reconcile))
         log(f"#{number} queued ({source})", self.agent.name)
         return True
 
+    def _order(self, number):
+        """Where the issue goes in the queue: resumptions first, then by priority (see pool.order_key)."""
+        try:
+            issue = self.tracker.issue(number)
+        except TalosError:
+            return pool.order_key(False, None)
+        action = self.agent.action_for(issue["status"])
+        return pool.order_key(bool(action and action.resume), issue.get("priority"))
+
     def start(self):
-        threading.Thread(target=self._loop, name=f"worker-{self.agent.name}", daemon=True).start()
+        for n in range(self.agent.max_parallel):
+            threading.Thread(target=self._loop, name=f"worker-{self.agent.name}-{n + 1}", daemon=True).start()
 
     def _loop(self):
         while True:
@@ -91,7 +108,7 @@ class Dispatcher:
                 log(f"#{number} failed in Talos: {e}", self.agent.name)
             finally:
                 if requeue:       # a usage limit stopped the run: it stays queued, the pause holds the queue
-                    self._queue.put((number, source, reconcile))
+                    self._queue.put(self._order(number), (number, source, reconcile))
                 else:
                     with self._lock:
                         self._pending.discard(number)
@@ -168,18 +185,24 @@ class Dispatcher:
             log(f"#{number} dry run, not starting Claude: {prompt}", self.agent.name)
             return "dry_run"
 
-        started = _now()
-        run_id = run_log.start(self.agent.name, number, done_runs + 1, model, live_id, bool(session_id),
-                               issue["status"], _iso(started))
-        sessions.update(self.agent.name, number, running=True, runs=done_runs + 1, last_model=model,
-                        live_session_id=live_id, started_at=_iso(started))
-        self._mark_picked_up(issue)
-        try:
-            cwd, env = self._workspace(number, repo)
-            result, log_path = runner.run(cmd, {**self.tracker.child_env(), **self.agent.env, **env},
-                                          self.agent.name, number, prompt, cwd=cwd)
-        except Exception as e:  # e.g. the Claude binary vanished or no worktree; still close the run and hand off
-            result, log_path = {"is_error": True, "subtype": "talos error", "result": str(e)}, None
+        lease = self._gate.acquire(number, repo, model)      # waits for the caps and a free test slot
+        try:                                                  # the lease is released even if the bookkeeping raises
+            started = _now()
+            run_id = run_log.start(self.agent.name, number, done_runs + 1, model, live_id, bool(session_id),
+                                   issue["status"], _iso(started))
+            sessions.update(self.agent.name, number, running=True, runs=done_runs + 1, last_model=model,
+                            live_session_id=live_id, started_at=_iso(started))
+            self._mark_picked_up(issue)
+            try:
+                cwd, env = self._workspace(number, repo)
+                if lease.slot:
+                    env["P4M_TEST_SLOT"] = str(lease.slot)        # `ai test` runs gaia suites in this slot
+                result, log_path = runner.run(cmd, {**self.tracker.child_env(), **self.agent.env, **env},
+                                              self.agent.name, number, prompt, cwd=cwd)
+            except Exception as e:  # e.g. the Claude binary vanished or no worktree; still close the run and hand off
+                result, log_path = {"is_error": True, "subtype": "talos error", "result": str(e)}, None
+        finally:
+            self._gate.release(lease)
         ended = _now()
         new_session = result.get("session_id") or live_id
         reported = result.get("total_cost_usd")
@@ -321,6 +344,7 @@ class Dispatcher:
 
     def recover_interrupted(self):
         """Runs cut off by a Talos restart go back to the human, not silently restarted."""
+        self.leases.write([])                      # nothing is in flight after a restart
         for number in sessions.interrupted(self.agent.name):
             sessions.update(self.agent.name, number, running=False, last_ended_at=_iso(_now()))
             run_log.close_unfinished(self.agent.name, number, _iso(_now()))
