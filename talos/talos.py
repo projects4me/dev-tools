@@ -11,7 +11,7 @@ import sys
 import time
 import urllib.request
 
-from lib import db, policy, runner, sessions, workspaces
+from lib import db, policy, runner, sessions, workspace_gc, workspaces
 from lib import runs as run_log
 from lib.config import LISTENER, STATE_DIR, TALOS_DIR, WORKSPACE, TalosError, claude_bin, log, settings
 from lib.dispatcher import Dispatcher, lease_file
@@ -31,6 +31,13 @@ def cmd_run(args):
     imported = db.import_legacy()
     if imported:
         log(f"imported {imported} issue state(s) from sessions.json into talos.db")
+    if not args.dry_run:
+        try:
+            for issue, action, reason in gc_workspaces():
+                if action == "removed":
+                    log(f"gc: removed the workspace of #{issue} ({reason})")
+        except Exception as e:          # housekeeping never keeps Talos from starting
+            log(f"gc failed: {e}")
     log(f"starting with {len(agents)} agent(s): {', '.join(a.name for a in agents)}; claude {claude}")
     for agent in agents:
         if agent.kind == "ideas":
@@ -156,6 +163,37 @@ def cmd_clean(args):
     return 0
 
 
+def gc_workspaces(dry_run=False):
+    """Remove the workspaces of finished issues (status read from Gaia, runs in flight from talos.db)."""
+    entries = sessions.all_entries()
+    running = {issue for (_, issue), v in entries.items() if v.get("running")}
+    owner = {issue: agent for (agent, issue) in entries}
+    statuses, trackers = {}, {}
+    for issue in workspace_gc.issues_on_disk(WORKSPACE):
+        try:
+            name = owner.get(issue)
+            if name not in trackers:
+                trackers[name] = Tracker(load_agents(name)[0])
+            statuses[issue] = trackers[name].issue(issue)["status"]
+        except Exception:               # status unknown: the workspace is kept
+            statuses[issue] = None
+    results = workspace_gc.collect(WORKSPACE, statuses, running,
+                                   merged=lambda i: workspace_gc.pr_merged(WORKSPACE, i), dry_run=dry_run)
+    if not dry_run:
+        workspaces.prune(WORKSPACE)
+    return results
+
+
+def cmd_gc(args):
+    """List (--dry-run) or remove the workspaces of issues that are done, closed, wont fix or merged."""
+    results = gc_workspaces(args.dry_run)
+    for issue, action, reason in results:
+        print(f"#{issue}: {action} ({reason})")
+    if not results:
+        print("No workspaces.")
+    return 0
+
+
 def cmd_agents(args):
     """List the registry, with each agent's Gaia identity and projects resolved."""
     for agent in load_agents(args.agent):
@@ -245,6 +283,10 @@ def build_parser():
     sp.add_argument("issue", type=int)
     sp.add_argument("--force", action="store_true", help="also when it has uncommitted changes (discards them)")
     sp.set_defaults(func=cmd_clean)
+
+    sp = sub.add_parser("gc", help="remove the workspaces of finished issues (done, closed, wont fix, PR merged)")
+    sp.add_argument("--dry-run", action="store_true", help="list what would be removed and what is kept")
+    sp.set_defaults(func=cmd_gc)
 
     sp = sub.add_parser("agents", help="list registered agents")
     sp.add_argument("--agent")
