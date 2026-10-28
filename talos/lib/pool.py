@@ -72,10 +72,12 @@ class Gate:
     """Admission to a run: per-repo and per-model caps, and a free test slot (1..slots), leased until released.
 
     acquire() blocks until all three allow the run. A cap of 0 or less, or a repo/model without one, is no cap.
-    Slots are only leased when `slots` > 0."""
+    Slots are only leased when `slots` > 0, and, when `slot_repos` is given, only to runs in those repos: the others
+    pass the caps without one (slot 0)."""
 
-    def __init__(self, slots=0, by_repo=None, by_model=None, on_change=None):
+    def __init__(self, slots=0, by_repo=None, by_model=None, on_change=None, slot_repos=None):
         self.slots = slots
+        self.slot_repos = slot_repos
         self.on_change = on_change      # called with the leases after every change, under the gate's lock
         self.by_repo = by_repo or {}
         self.by_model = by_model or {}
@@ -95,7 +97,9 @@ class Gate:
             cap = caps.get(value)
             if cap and cap > 0 and self._count(field, value) >= cap:
                 return None
-        return self._free_slot() if self.slots > 0 else 0
+        if self.slots <= 0 or (self.slot_repos is not None and repo not in self.slot_repos):
+            return 0
+        return self._free_slot()
 
     def acquire(self, issue, repo, model):
         repo = repo or ""

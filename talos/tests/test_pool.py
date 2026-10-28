@@ -49,6 +49,11 @@ class GateTest(unittest.TestCase):
         gate.release(a)
         self.assertEqual(gate.acquire(3, "gaia", "sonnet").slot, a.slot)
 
+    def test_slots_only_for_the_slot_repos(self):
+        gate = pool.Gate(slots=1, slot_repos={"gaia"})
+        self.assertEqual(gate.acquire(1, "prometheus", "sonnet").slot, 0)
+        self.assertEqual(gate.acquire(2, "gaia", "sonnet").slot, 1)
+
     def test_no_slots_means_slot_zero(self):
         self.assertEqual(pool.Gate().acquire(1, "gaia", "sonnet").slot, 0)
 

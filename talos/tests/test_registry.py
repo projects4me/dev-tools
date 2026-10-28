@@ -57,6 +57,31 @@ class RegistryTest(unittest.TestCase):
         self.assertIn("ToolSearch", agent.builtin_tools.split(","))
         self.assertIn("{handoff}", agent.ship_prompt)
 
+    def set_test_slots(self, value):
+        raw = json.loads((self.folder / "agent.json").read_text(encoding="utf-8"))
+        raw["testSlots"] = value
+        (self.folder / "agent.json").write_text(json.dumps(raw), encoding="utf-8")
+        (self.local / "agent.local.json").write_text(json.dumps(
+            {"acceptAssignmentsFrom": ["7"], "handoffTo": "7"}), encoding="utf-8")
+
+    def test_test_slots_above_p4m_env_fail_at_load(self):
+        self.set_test_slots(3)
+        with mock.patch.object(registry, "installed_test_slots", return_value=2):
+            with self.assertRaises(TalosError) as e:
+                registry.load_agent(self.folder)
+        self.assertIn("TEST_SLOTS", str(e.exception))
+
+    def test_test_slots_within_p4m_env_load(self):
+        self.set_test_slots(2)
+        with mock.patch.object(registry, "installed_test_slots", return_value=2):
+            self.assertEqual(registry.load_agent(self.folder).test_slots, 2)
+
+    def test_installed_test_slots_reads_p4m_env(self):
+        (self.local.parents[2] / "p4m.env").write_text("TEST_SLOTS=4\n", encoding="utf-8")
+        with mock.patch.dict(registry.os.environ, clear=False):
+            registry.os.environ.pop("TEST_SLOTS", None)
+            self.assertEqual(registry.installed_test_slots(), 4)
+
     def test_env_may_not_override_credentials(self):
         (self.local / "agent.local.json").write_text(json.dumps(
             {"acceptAssignmentsFrom": ["7"], "handoffTo": "7", "env": {"GAIA_EMAIL": "x"}}), encoding="utf-8")

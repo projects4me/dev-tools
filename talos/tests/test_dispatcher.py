@@ -103,9 +103,18 @@ class DispatcherTest(unittest.TestCase):
         self.assertEqual(self.memories[0], Path("cfg") / "projects" / "-srv-Pr4M" / "memory")
 
     def test_run_leases_a_slot_for_its_environment_and_releases_it(self):
-        outcome, _ = self.dispatch(make_issue(), [result("needs_input")], test_slots=2)
+        outcome, _ = self.dispatch(make_issue(), [result("needs_input")], max_parallel=2, test_slots=2)
         self.assertEqual(self.envs[0]["P4M_TEST_SLOT"], "1")
         self.assertEqual(outcome, "needs_input")
+
+    def test_run_outside_gaia_leases_no_slot(self):
+        self.dispatch(make_issue(project="A Prometheus"), [result("needs_input")],
+                      projects={"A Gaia": "gaia", "A Prometheus": "prometheus"}, max_parallel=2, test_slots=2)
+        self.assertNotIn("P4M_TEST_SLOT", self.envs[0])
+
+    def test_single_worker_leases_no_slot(self):
+        self.dispatch(make_issue(), [result("needs_input")], max_parallel=1, test_slots=2)
+        self.assertNotIn("P4M_TEST_SLOT", self.envs[0])
 
     def feedback_agent(self):
         return dict(actions={"feedback": make_agent().actions["feedback"]})

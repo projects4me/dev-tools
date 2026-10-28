@@ -26,6 +26,9 @@ def lease_file(agent_name):
     return STATE_DIR / agent_name / "leases.json"
 
 
+SLOT_REPO = "gaia"      # the only repo whose test suites run in a slot
+
+
 class Dispatcher:
     """Worker pool for one agent: `maxParallel` threads, each issue in its own workspace (or container) and test
     slot."""
@@ -40,8 +43,10 @@ class Dispatcher:
         self.user_id = tracker.user_id()
         self._queue = pool.RunQueue()
         self.leases = pool.LeaseFile(lease_file(agent.name))
-        self._gate = pool.Gate(agent.test_slots or agent.max_parallel, agent.max_parallel_by_repo,
-                               agent.max_parallel_by_model, on_change=self.leases.write)
+        # only gaia suites use test slots (adt-4159); a single worker needs none and keeps the shared pr4m_test
+        slots = (agent.test_slots or agent.max_parallel) if agent.max_parallel > 1 else 0
+        self._gate = pool.Gate(slots, agent.max_parallel_by_repo, agent.max_parallel_by_model,
+                               on_change=self.leases.write, slot_repos={SLOT_REPO})
         self._pending = set()
         self._lock = threading.Lock()
         self._pause = UsagePause()  # no dispatching while a Claude usage limit holds
