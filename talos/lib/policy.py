@@ -6,6 +6,8 @@ from datetime import datetime
 from typing import NamedTuple
 
 ASSIGNEE_EVENT = "issue.assignee.changed"
+STATUS_EVENT = "issue.status.changed"
+DONE_STATUSES = ("done", "closed")   # a dependency in one of these is finished and merged
 OUTCOMES = ("done", "ready_to_ship", "needs_input", "blocked", "escalate")
 
 
@@ -24,6 +26,7 @@ class Decision:
     reason: str
     action: object = None   # registry.Action when run is True
     repo: str = None
+    waiting_on: tuple = ()  # issue numbers still blocking the run; set when the issue is held
 
 
 def event_issue(envelope, agent, agent_user_id):
@@ -42,11 +45,37 @@ def event_issue(envelope, agent, agent_user_id):
         return None
 
 
-def decide(issue, agent, agent_user_id, require_allowed_modifier=False):
+def is_status_event(envelope):
+    """True for an issue status change, which may release held issues."""
+    return isinstance(envelope, dict) and envelope.get("eventName") == STATUS_EVENT
+
+
+DEPENDS_LINE = re.compile(r"Depends\s+on\s*:?\s*([^\n]*)", re.IGNORECASE)
+
+
+def parse_dependencies(description):
+    """Issue numbers named on "Depends on" lines of a description (HTML tolerated), sorted and unique.
+
+    "Depends on: #4160, #4161" gives [4160, 4161]; "Depends on: none" gives []."""
+    text = re.sub(r"<br\s*/?>|</p>|</li>|</div>", "\n", description or "", flags=re.IGNORECASE)
+    text = re.sub(r"<[^>]+>", " ", text)
+    numbers = set()
+    for line in DEPENDS_LINE.findall(text):
+        numbers.update(int(n) for n in re.findall(r"#(\d+)", line))
+    return sorted(numbers)
+
+
+def unmet_dependencies(dependencies, statuses):
+    """The dependencies not yet done, given {issue number: status name or None}; unknown counts as unmet."""
+    return [n for n in dependencies if str(statuses.get(n) or "").lower() not in DONE_STATUSES]
+
+
+def decide(issue, agent, agent_user_id, require_allowed_modifier=False, dependency_statuses=None):
     """Whether the agent should work this issue now, from the issue as Gaia has it.
 
     require_allowed_modifier is for reconciliation, where there is no event telling us who
     assigned it: only act if the last person to change the issue is allowed to hand off work.
+    dependency_statuses ({number: status}) covers the issue's "Depends on" issues; any not done hold it.
     """
     if issue["assignee"] != agent_user_id:
         return Decision(False, "no longer assigned to the agent")
@@ -60,6 +89,9 @@ def decide(issue, agent, agent_user_id, require_allowed_modifier=False):
     action = agent.action_for(issue["status"])
     if not action:
         return Decision(False, f"no action for status '{issue['status']}'")
+    waiting = unmet_dependencies(issue.get("dependsOn") or [], dependency_statuses or {})
+    if waiting:
+        return Decision(False, "waiting on " + ", ".join(f"#{n}" for n in waiting), waiting_on=tuple(waiting))
     return Decision(True, f"status '{issue['status']}'", action, repo)
 
 

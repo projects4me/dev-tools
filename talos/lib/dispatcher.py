@@ -35,14 +35,36 @@ class Dispatcher:
         self._lock = threading.Lock()
         self._paused_until = None   # datetime: no dispatching until then (Claude usage limit)
         self._limit_streak = 0
+        self._held = {}             # issue number -> reconcile flag, for issues waiting on "Depends on" issues
+        self._notified = {}         # issue number -> waiting-on numbers last commented, so it isn't repeated
 
     # -- queueing ----------------------------------------------------------------------------
 
     def on_event(self, envelope):
         """An issue assignment from Hermes: work it when it hands this agent work from an allowed user."""
+        if policy.is_status_event(envelope):
+            self.release_held("status changed")
+            return
         number = policy.event_issue(envelope, self.agent, self.user_id)
         if number is not None:
             self.submit(number, f"assigned by user {envelope.get('actorId')}")
+
+    def release_held(self, source):
+        """Queue held issues whose dependencies are now done; the rest stay held."""
+        with self._lock:
+            held = dict(self._held)
+        for number, reconcile in held.items():
+            try:
+                issue = self.tracker.issue(number)
+                waiting = policy.unmet_dependencies(issue["dependsOn"], self.tracker.statuses_of(issue["dependsOn"]))
+            except TalosError as e:
+                log(f"#{number} held re-check failed: {e}", self.agent.name)
+                continue
+            if not waiting:
+                with self._lock:
+                    self._held.pop(number, None)
+                    self._notified.pop(number, None)
+                self.submit(number, f"released ({source})", reconcile=reconcile)
 
     def submit(self, number, source, reconcile=False):
         """Queue an issue once; repeats while it is queued or running are dropped."""
@@ -87,7 +109,13 @@ class Dispatcher:
 
     def handle(self, number, reconcile=False):
         issue = self.tracker.issue(number)
-        decision = policy.decide(issue, self.agent, self.user_id, require_allowed_modifier=reconcile)
+        decision = policy.decide(issue, self.agent, self.user_id, require_allowed_modifier=reconcile,
+                                 dependency_statuses=self.tracker.statuses_of(issue.get("dependsOn") or []))
+        if decision.waiting_on:
+            return self._hold(number, decision, reconcile)
+        with self._lock:
+            self._held.pop(number, None)
+            self._notified.pop(number, None)
         if not decision.run:
             log(f"#{number} skipped: {decision.reason}", self.agent.name)
             return None
@@ -100,6 +128,24 @@ class Dispatcher:
         if decision.repo == "gaia" and not session_id:        # a resumed session already has the pack
             prompt = policy.with_pack(prompt, runner.gaia_pack(number))
         return self._run(issue, prompt, model, session_id, why=why, repo=decision.repo)
+
+    def _hold(self, number, decision, reconcile):
+        """Keep the issue out of the queue until its dependencies are done; comment once per waiting set.
+        Held time is not a run, so it counts toward neither iterations nor runs."""
+        with self._lock:
+            self._held[number] = reconcile
+            first = self._notified.get(number) != decision.waiting_on
+            self._notified[number] = decision.waiting_on
+        log(f"#{number} held: {decision.reason}", self.agent.name)
+        if first and not self.dry_run:
+            try:
+                self._comment(number, f"{self.agent.display_name}: {decision.reason}",
+                              "<p>This issue depends on " + ", ".join(f"#{n}" for n in decision.waiting_on) +
+                              ", which is not done yet. Talos will start it once that is done; nothing is "
+                              "needed from you.</p>", escaped=True)
+            except TalosError as e:
+                log(f"#{number} waiting comment failed: {e}", self.agent.name)
+        return "held"
 
     def _run(self, issue, prompt, model, session_id, escalated=False, why=None, repo=None, shipping=False):
         number = issue["number"]
@@ -288,3 +334,4 @@ class Dispatcher:
         for name, pid in project_ids.items():
             for number in self.tracker.assigned_issue_numbers(pid, self.user_id):
                 self.submit(number, f"reconcile {name}", reconcile=True)
+        self.release_held("reconnect")

@@ -9,6 +9,7 @@ import threading
 import time
 from pathlib import Path
 
+from . import policy
 from .config import GAIA_MCP, TalosError
 
 sys.path.insert(0, str(GAIA_MCP))
@@ -81,7 +82,18 @@ class Tracker:
             "project": (i.get("project") or {}).get("name"),
             "milestone": (i.get("issuemilestone") or {}).get("name"),
             "complexity": gaia_mcp.read_complexity(i.get("description")),
+            "dependsOn": policy.parse_dependencies(i.get("description")),
         }
+
+    def statuses_of(self, numbers):
+        """{issue number: status name, or None when it can't be read} for the given issues."""
+        found = {}
+        for number in numbers:
+            try:
+                found[number] = self.issue(number)["status"]
+            except TalosError:
+                found[number] = None
+        return found
 
     def assigned_issue_numbers(self, project_id, user_id):
         rows = self._call(self.gaia.find, "issue",
