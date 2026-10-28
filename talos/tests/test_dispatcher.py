@@ -17,6 +17,7 @@ class StubTracker:
     def __init__(self, issue):
         self._issue = issue
         self.comments, self.handoffs, self.statuses = [], [], []
+        self.dependencies = {}   # dependency issue number -> status
 
     def user_id(self):
         return AGENT_ID
@@ -37,6 +38,9 @@ class StubTracker:
 
     def child_env(self):
         return {}
+
+    def statuses_of(self, numbers):
+        return {n: self.dependencies.get(n) for n in numbers}
 
 
 def result(outcome, session="s1", handoff=""):
@@ -257,6 +261,42 @@ class DispatcherTest(unittest.TestCase):
     def test_done_still_assigned_is_flagged(self):
         outcome, tracker = self.dispatch(make_issue(), [result("done")])
         self.assertEqual(tracker.handoffs, [("pending", "1")])
+
+
+    def test_issue_waits_on_an_unfinished_dependency_then_is_released(self):
+        tracker = StubTracker(make_issue(dependsOn=[7]))
+        tracker.dependencies = {7: "in_review"}
+        queued = []
+        with mock.patch.object(dispatcher_mod.runner, "gaia_pack", lambda n: ""):
+            d = dispatcher_mod.Dispatcher(make_agent(), tracker, "claude")
+        d.submit = lambda number, source, reconcile=False: queued.append(number)
+        self.assertEqual(d.handle(42), "held")
+        self.assertEqual(d.handle(42), "held")
+        self.assertEqual(len(tracker.comments), 1)          # "waiting on #7" is not repeated
+        self.assertIn("#7", tracker.comments[0])
+        self.assertEqual(sessions.get("odysseus", 42), {})   # no run, no iteration
+        d.on_event({"eventName": "issue.status.changed"})
+        self.assertEqual(queued, [])                         # still in review: stays held
+        tracker.dependencies = {7: "done"}
+        d.on_event({"eventName": "issue.status.changed"})
+        self.assertEqual(queued, [42])
+        d.release_held("reconnect")
+        self.assertEqual(queued, [42])                       # released once
+
+    def test_dependency_done_at_start_runs_normally(self):
+        tracker_issue = make_issue(dependsOn=[7])
+        outcome, tracker = self.dispatch_with_dependencies(tracker_issue, {7: "done"})
+        self.assertEqual(outcome, "needs_input")
+
+    def dispatch_with_dependencies(self, issue, dependencies):
+        original = StubTracker.__init__
+
+        def init(tracker, i):
+            original(tracker, i)
+            tracker.dependencies = dependencies
+
+        with mock.patch.object(StubTracker, "__init__", init):
+            return self.dispatch(issue, [result("needs_input")])
 
 
 if __name__ == "__main__":

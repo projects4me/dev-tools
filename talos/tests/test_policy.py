@@ -323,5 +323,36 @@ class LimitTest(unittest.TestCase):
         self.assertEqual(policy.limit_pause_seconds(None, 30, self.NOW), policy.LIMIT_BACKOFF_MAX_S)
 
 
+class DependencyTest(unittest.TestCase):
+    def test_parses_depends_on_lines(self):
+        self.assertEqual(policy.parse_dependencies("<p>Scope</p><p>Depends on: #4160, #4159 and #4160</p>"),
+                         [4159, 4160])
+        self.assertEqual(policy.parse_dependencies("a\ndepends on #12\nDepends on: #7"), [7, 12])
+
+    def test_none_or_missing_means_no_dependencies(self):
+        self.assertEqual(policy.parse_dependencies("Depends on: none\nComplexity: simple"), [])
+        self.assertEqual(policy.parse_dependencies("Related to #5"), [])
+        self.assertEqual(policy.parse_dependencies(None), [])
+
+    def test_only_done_dependencies_are_met(self):
+        statuses = {1: "in_review", 2: "done", 3: None, 4: "Closed"}
+        self.assertEqual(policy.unmet_dependencies([1, 2, 3, 4, 5], statuses), [1, 3, 5])
+
+    def test_issue_with_an_unmet_dependency_is_held(self):
+        decision = policy.decide(make_issue(dependsOn=[7]), make_agent(), AGENT_ID, dependency_statuses={7: "in_review"})
+        self.assertFalse(decision.run)
+        self.assertEqual(decision.waiting_on, (7,))
+        self.assertIn("#7", decision.reason)
+
+    def test_issue_with_met_dependencies_runs(self):
+        decision = policy.decide(make_issue(dependsOn=[7]), make_agent(), AGENT_ID, dependency_statuses={7: "done"})
+        self.assertTrue(decision.run)
+
+    def test_status_event_is_recognised(self):
+        self.assertTrue(policy.is_status_event({"eventName": "issue.status.changed"}))
+        self.assertFalse(policy.is_status_event(envelope()))
+        self.assertFalse(policy.is_status_event(None))
+
+
 if __name__ == "__main__":
     unittest.main()

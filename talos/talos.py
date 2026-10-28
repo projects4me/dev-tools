@@ -46,7 +46,7 @@ def cmd_run(args):
                                 mcp=mcp_config(STATE_DIR / agent.name / "mcp.json"))
         dispatcher.recover_interrupted()
         dispatcher.start()
-        Listener(agent, tracker, [policy.ASSIGNEE_EVENT], dispatcher.on_event, dispatcher.reconcile,
+        Listener(agent, tracker, [policy.ASSIGNEE_EVENT, policy.STATUS_EVENT], dispatcher.on_event, dispatcher.reconcile,
                  cfg["hermesUrl"], cfg.get("nodeBin", "node"), cfg.get("reconnectSeconds", 10)).start()
     try:
         while True:
