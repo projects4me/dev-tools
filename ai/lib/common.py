@@ -7,7 +7,7 @@ import re
 import shutil
 import subprocess
 import sys
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from datetime import datetime
 from pathlib import Path
 
@@ -167,36 +167,44 @@ def _timer_file():
     return STATE_DIR / "timers.json"
 
 
-def _devstack_lock():
-    """installer/dblock.py: heartbeat, so a long browser check keeps it and a killed holder's lock is taken over."""
+def _filelock():
+    """installer/filelock.py, the one lock module every dev tool shares."""
     sys.path.insert(0, str(DEV_TOOLS / "installer"))
     try:
-        import dblock
+        import filelock
     finally:
         sys.path.remove(str(DEV_TOOLS / "installer"))
+    return filelock
+
+
+def _devstack_lock():
+    """A long browser check holds it; the OS drops it if the holder is killed."""
+    filelock = _filelock()
     STATE_DIR.mkdir(exist_ok=True)
-    try:
-        return dblock.held(STATE_DIR / "devstack.lock", wait_seconds=1800,
-                           on_wait=lambda p: say(f"waiting for the dev stack ({dblock.describe_holder(p)})"))
-    except dblock.LockTimeout as e:
-        raise AiError(str(e))
+    return filelock.held(STATE_DIR / "devstack.lock", wait_seconds=1800,
+                         on_wait=lambda p: say(f"waiting for the dev stack ({filelock.describe_holder(p)})"))
 
 
 @contextmanager
 def timers_locked():
     """Around every read-modify-write of timers.json: parallel Talos runs share the file."""
-    from . import filelock
-    try:
-        with filelock.held(STATE_DIR / "timers.lock"):
-            yield
-    except filelock.LockTimeout as e:
-        raise AiError(str(e))
+    filelock = _filelock()
+    with ExitStack() as stack:
+        try:
+            stack.enter_context(filelock.held(STATE_DIR / "timers.lock"))
+        except filelock.LockTimeout as e:
+            raise AiError(str(e))
+        yield
 
 
 @contextmanager
 def devstack_locked():
     """One browser check at a time against the shared dev stack (gaia-dev, Prometheus on :4200)."""
-    with _devstack_lock():
+    with ExitStack() as stack:
+        try:
+            stack.enter_context(_devstack_lock())
+        except _filelock().LockTimeout as e:
+            raise AiError(str(e))
         yield
 
 

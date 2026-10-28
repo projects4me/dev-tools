@@ -52,7 +52,7 @@ import webbrowser
 from dataclasses import dataclass
 from pathlib import Path
 
-import dblock
+import filelock
 import runtime
 import testenv
 import testslots
@@ -1447,13 +1447,17 @@ def ares_probe_output(model: str) -> str:
     return _cap(["docker", "exec", "ares-dev", "python", "-c", ARES_PROBE, model], timeout=90)
 
 
+@contextlib.contextmanager
 def _db_lock(db: str):
-    try:
-        return dblock.held(STATE_DIR / f"{db}.lock",
-                           on_wait=lambda p: info(f"waiting for another {db} user to finish ({p}, held by "
-                                                  f"{dblock.describe_holder(p)}; kill it if it is orphaned)"))
-    except dblock.LockTimeout as e:
-        raise P4MError(str(e))
+    with contextlib.ExitStack() as stack:
+        try:
+            stack.enter_context(filelock.held(
+                STATE_DIR / f"{db}.lock", wait_seconds=3600,
+                on_wait=lambda p: info(f"waiting for another {db} user to finish ({p}, held by "
+                                       f"{filelock.describe_holder(p)}; kill it if it is orphaned)")))
+        except filelock.LockTimeout as e:
+            raise P4MError(str(e))
+        yield
 
 
 def test_db_lock(slot: int | None = None):
@@ -1549,7 +1553,7 @@ def _slots_status(slots: testslots.Slots, src: Path) -> None:
             print(f"  slot {k}: {db} {'exists' if exists else 'missing'}; {box.name} "
                   + (f"{'running' if testenv._running(container) else 'stopped'}, holds {holds}" if container
                      else "not created")
-                  + (f"; in use by {dblock.describe_holder(lock)}" if lock.exists() else ""))
+                  + (f"; in use by {filelock.describe_holder(lock)}" if filelock.is_held(lock) else ""))
     except (testslots.SlotError, testenv.TestEnvError) as e:
         raise P4MError(str(e))
 
