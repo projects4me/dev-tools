@@ -1,5 +1,6 @@
 """Unit tests for Talos decisions and the Claude command. Run: python -m unittest discover -s tests"""
 
+import json
 import sys
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -258,6 +259,13 @@ class BuildCommandTest(unittest.TestCase):
         cmd = runner.build_command("claude", make_agent(), "sonnet", mcp=Path("m.json"))
         self.assertEqual(cmd[cmd.index("--mcp-config") + 1], "m.json")
         self.assertIn("--strict-mcp-config", cmd)
+
+    def test_memory_folder_goes_in_as_a_setting(self):
+        self.assertNotIn("--settings", runner.build_command("claude", make_agent(), "sonnet"))
+        cmd = runner.build_command("claude", make_agent(), "sonnet", memory=Path("home/projects/W/memory"))
+        settings = json.loads(cmd[cmd.index("--settings") + 1])
+        self.assertEqual(settings, {"autoMemoryDirectory": str(Path("home/projects/W/memory"))})
+        self.assertEqual(runner.LocalRunner().memory_dir(Path("m")), Path("m"))
 
     def test_resume(self):
         cmd = runner.build_command("claude", make_agent(), "opus", session_id="abc")

@@ -63,6 +63,7 @@ class DispatcherTest(unittest.TestCase):
         self.calls = []
         self.envs = []
         self.cwds = []
+        self.memories = []
 
     def tearDown(self):
         for p in self.patches:
@@ -79,8 +80,9 @@ class DispatcherTest(unittest.TestCase):
             self.envs.append(env)
             return next(replies), Path("log.json")
 
-        def fake_build(claude, agent, model, sid=None, new_session_id=None, limits=None, mcp=None):
+        def fake_build(claude, agent, model, sid=None, new_session_id=None, limits=None, mcp=None, memory=None):
             self.calls.append({"resume": sid, "limits": limits})
+            self.memories.append(memory)
             return ["claude", "--model", model]
 
         with mock.patch.object(dispatcher_mod.runner, "run", fake_run), \
@@ -89,6 +91,11 @@ class DispatcherTest(unittest.TestCase):
             if holder is not None:
                 holder["d"] = d
             return d.handle(42), tracker
+
+    def test_run_shares_the_workspaces_memory(self):
+        with mock.patch.dict(dispatcher_mod.memory.os.environ, {"CLAUDE_CONFIG_DIR": "cfg"}),                 mock.patch.object(dispatcher_mod, "WORKSPACE", Path("/srv/Pr4M")):
+            self.dispatch(make_issue(), [result("needs_input")])
+        self.assertEqual(self.memories[0], Path("cfg") / "projects" / "-srv-Pr4M" / "memory")
 
     def test_run_leases_a_slot_for_its_environment_and_releases_it(self):
         outcome, _ = self.dispatch(make_issue(), [result("needs_input")], test_slots=2)

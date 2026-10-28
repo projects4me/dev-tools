@@ -14,13 +14,14 @@ import os
 import subprocess
 from pathlib import Path
 
-from . import runner
-from .config import CONTAINER_DIR, LOCAL_DIR, TalosError
+from . import memory, runner
+from .config import CONTAINER_DIR, LOCAL_DIR, WORKSPACE, TalosError
 
 WORK = "/work"                                   # the issue's work volume: workspace, runtime and repo clones
 CLAUDE_HOME = "/root/.claude"
 SECRETS = "/run/secrets/talos"                   # key files, mounted read-only
 MCP = WORK + "/.talos/mcp.json"                  # written by the entrypoint: the gaia server from the runtime clone
+MEMORY = "/memory"                               # the workspace's auto-memory folder, mounted (claudeHome "bind")
 BASE_BRANCH = {"dev-tools": "main"}
 CLAUDE_CREDENTIALS = ("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY")
 ENV_FILES = ("odysseus/odysseus.env", "talos/container.env")   # under <workspace>/dev-tools; missing ones are skipped
@@ -82,6 +83,15 @@ class ContainerRunner(runner.Runner):
     def mcp_config(self, host_mcp):
         return MCP if host_mcp else None
 
+    def memory_dir(self, host_memory):
+        """The workspace's auto-memory is bind-mounted like the "bind" ~/.claude; a "volume" or "none" home is for
+        a Docker host that doesn't have this machine's folders, so those runs keep Claude's own (empty) memory."""
+        return MEMORY if host_memory and self.mounted_memory() else None
+
+    def mounted_memory(self):
+        """The host folder mounted at MEMORY, or None when this home mounts none."""
+        return memory.folder(WORKSPACE) if self.home == "bind" else None
+
     def execute(self, job):
         if not job.repo or job.repo == "pr4m":
             raise TalosError("the container runner works on a service or dev-tools repo; the workspace repo (pr4m) "
@@ -92,7 +102,10 @@ class ContainerRunner(runner.Runner):
         cli_env = {**os.environ, **values}
         if self.settings.get("dockerHost"):
             cli_env["DOCKER_HOST"] = self.settings["dockerHost"]
-        cmd = docker_command(self.settings, self.agent_name, job, sorted(values), files, self.home)
+        memory_dir = self.mounted_memory()
+        if memory_dir:
+            memory_dir.mkdir(parents=True, exist_ok=True)     # else docker creates it, owned by root on Linux
+        cmd = docker_command(self.settings, self.agent_name, job, sorted(values), files, self.home, memory_dir)
         # a container left running by a stopped Talos would hold the name; --rm removes it once it exits
         subprocess.run(["docker", "rm", "-f", container_name(self.agent_name, job.issue)], env=cli_env,
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
@@ -146,7 +159,7 @@ class ContainerRunner(runner.Runner):
         return values, files
 
 
-def docker_command(settings, agent_name, job, names, files, home):
+def docker_command(settings, agent_name, job, names, files, home, memory_dir=None):
     """The `docker run` argv. Variables go by name only (`-e NAME`), so no value is on the command line."""
     cmd = ["docker", "run", "--rm", "-i", "--name", container_name(agent_name, job.issue)]
     if settings.get("network"):
@@ -160,6 +173,8 @@ def docker_command(settings, agent_name, job, names, files, home):
         cmd += ["-v", f"{claude_home(agent_name, job.issue)}:{CLAUDE_HOME}"]
     elif home == "volume":
         cmd += ["-v", f"{volume(agent_name, job.issue, 'claude')}:{CLAUDE_HOME}"]
+    if memory_dir:
+        cmd += ["-v", f"{memory_dir}:{MEMORY}"]
     if settings.get("testDockerHost"):
         cmd += ["-e", f"DOCKER_HOST={settings['testDockerHost']}"]
     else:

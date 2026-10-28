@@ -31,7 +31,8 @@ class ContainerRunnerTest(unittest.TestCase):
         self.tmp = Path(tempfile.mkdtemp())
         self.patches = [mock.patch.object(container, "LOCAL_DIR", self.tmp),
                         mock.patch.object(container, "CONTAINER_DIR", self.tmp / "containers"),
-                        mock.patch.object(container, "FILES", {"ODYSSEUS_SSH_KEY": None, "GAIA_CA_FILE": None})]
+                        mock.patch.object(container, "FILES", {"ODYSSEUS_SSH_KEY": None, "GAIA_CA_FILE": None}),
+                        mock.patch.dict(container.os.environ, {"CLAUDE_CONFIG_DIR": str(self.tmp / "claude")})]
         for p in self.patches:
             p.start()
         (self.tmp / "odysseus").mkdir()
@@ -164,6 +165,21 @@ class ContainerRunnerTest(unittest.TestCase):
         self.assertEqual(r.claude_bin("C:/bin/claude.exe"), "claude")
         self.assertEqual(r.mcp_config(Path("host/mcp.json")), container.MCP)
         self.assertIsNone(r.mcp_config(None))
+
+    def test_bind_home_mounts_the_workspaces_memory(self):
+        self.assertEqual(container.ContainerRunner(container_agent()).memory_dir(Path("host/memory")), container.MEMORY)
+        self.execute()
+        host = container.memory.folder(container.WORKSPACE)
+        self.assertTrue(host.is_dir())
+        self.assertTrue(str(host).startswith(str(self.tmp / "claude")))
+        self.assertIn(f"{host}:{container.MEMORY}", self.runs[0][0])
+
+    def test_volume_and_none_homes_keep_their_own_memory(self):
+        for home in ("volume", "none"):
+            self.assertIsNone(container.ContainerRunner(container_agent(claudeHome=home)).memory_dir(Path("m")))
+            self.runs.clear()
+            self.execute(claudeHome=home)
+            self.assertFalse(any(a.endswith(":" + container.MEMORY) for a in self.runs[0][0]))
 
     def test_read_env_file(self):
         path = self.tmp / "x.env"
