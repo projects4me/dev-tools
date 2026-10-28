@@ -24,6 +24,14 @@ class OrderTest(unittest.TestCase):
         self.assertEqual([q.get() for _ in range(6)],
                          ["resume-blocker", "resume-low", "new-high", "new-high-later", "new-unknown", "new-low"])
 
+    def test_front_items_come_first_and_none_keys_are_ranked_at_get(self):
+        q = pool.RunQueue()
+        q.put(None, "a")
+        q.put(None, "b")
+        q.put(None, "limited", front=True)
+        ranks = {"a": (1, 4), "b": (1, 0)}
+        self.assertEqual([q.get(ranks.get) for _ in range(3)], ["limited", "b", "a"])
+
     def test_get_waits_for_a_put(self):
         q, got = pool.RunQueue(), []
         t = threading.Thread(target=lambda: got.append(q.get()))

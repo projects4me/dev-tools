@@ -39,6 +39,7 @@ def cmd_run(args):
         except Exception as e:          # housekeeping never keeps Talos from starting
             log(f"gc failed: {e}")
     log(f"starting with {len(agents)} agent(s): {', '.join(a.name for a in agents)}; claude {claude}")
+    dispatchers = []
     for agent in agents:
         if agent.kind == "ideas":
             if args.dry_run:
@@ -54,12 +55,15 @@ def cmd_run(args):
                                 mcp=mcp_config(STATE_DIR / agent.name / "mcp.json"))
         dispatcher.recover_interrupted()
         dispatcher.start()
+        dispatchers.append(dispatcher)
         Listener(agent, tracker, [policy.ASSIGNEE_EVENT, policy.STATUS_EVENT], dispatcher.on_event, dispatcher.reconcile,
                  cfg["hermesUrl"], cfg.get("nodeBin", "node"), cfg.get("reconnectSeconds", 10)).start()
     try:
         while True:
             time.sleep(3600)
     except KeyboardInterrupt:
+        for dispatcher in dispatchers:
+            dispatcher.stop()
         log("stopped")
     return 0
 
