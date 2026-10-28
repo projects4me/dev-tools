@@ -63,7 +63,7 @@ class DispatcherTest(unittest.TestCase):
         for p in self.patches:
             p.stop()
 
-    def dispatch(self, issue, outcomes, **agent_overrides):
+    def dispatch(self, issue, outcomes, holder=None, **agent_overrides):
         tracker = StubTracker(issue)
         replies = iter(outcomes)
 
@@ -81,10 +81,26 @@ class DispatcherTest(unittest.TestCase):
         with mock.patch.object(dispatcher_mod.runner, "run", fake_run), \
                 mock.patch.object(dispatcher_mod.runner, "build_command", fake_build):
             d = dispatcher_mod.Dispatcher(make_agent(**agent_overrides), tracker, "claude")
+            if holder is not None:
+                holder["d"] = d
             return d.handle(42), tracker
 
     def feedback_agent(self):
         return dict(actions={"feedback": make_agent().actions["feedback"]})
+
+    def test_usage_limit_pauses_and_requeues_without_counting_an_iteration(self):
+        reset = dispatcher_mod._now() + timedelta(hours=3)
+        limit = {"is_error": True, "subtype": "success", "session_id": "s1",
+                 "result": f"Claude AI usage limit reached|{int(reset.timestamp())}"}
+        d_holder = {}
+        outcome, tracker = self.dispatch(make_issue(), [limit], holder=d_holder)
+        self.assertEqual(outcome, "limited")
+        self.assertEqual(tracker.handoffs, [])
+        self.assertEqual(tracker._issue["assignee"], AGENT_ID)
+        self.assertEqual(sessions.get("odysseus", 42)["runs"], 0)
+        self.assertEqual(run_log.recent(1)[0]["outcome"], "limited")
+        self.assertGreater(d_holder["d"]._paused_until, reset)
+        self.assertEqual(len(tracker.comments), 1)   # 3h pause is longer than the 1h default
 
     def test_warm_session_is_resumed_and_run_cost_is_incremental(self):
         recent = dispatcher_mod._iso(dispatcher_mod._now() - timedelta(minutes=10))

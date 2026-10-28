@@ -125,6 +125,7 @@ their events), and an env file with its `GAIA_*` credentials.
 | `handoffStatuses` | status for `needs_input`, `blocked`, `failed`, `limit` (defaults `feedback`, `pending`, `pending`, `pending`) |
 | `actions` | status → `{prompt, resume}`; placeholders `{issue}`, `{repo}`, `{project}`, `{status}` (never issue text) |
 | `model.default`, `model.byComplexity`, `model.escalate` | e.g. `sonnet`; `{simple: sonnet, complex: opus}`; `opus` |
+| `limitCommentHours` | A Claude usage/rate-limit pause pauses the whole queue until the reset (exponential backoff when none is given) and re-queues the issue without counting an iteration; the issue gets one comment only when the pause is longer than this many hours (default 1) |
 | `maxIterations` | Claude runs per issue before a human must look (0 = no limit; default 10) |
 | `maxTurns` | turns per run (`claude --max-turns`); when reached, the issue goes back as `needs_input` with the session kept, so assigning it back resumes it (0 = no limit; Odysseus: 80) |
 | `limitsByModel` | model → `{maxTurns, maxBudgetUsd}` for runs on that model, in place of `maxTurns`; `maxBudgetUsd` is `claude --max-budget-usd` and, when reached, hands the issue back like the turn cap (Odysseus: sonnet 80 turns; opus 150 turns and $15 per run) |
