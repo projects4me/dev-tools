@@ -12,16 +12,24 @@ import server  # noqa: E402
 
 
 class FakeGaia:
-    def __init__(self, milestones=("Agents",)):
+    # issue types after agaia-4152: the name is a value, the en-us label comes from GET issuetype
+    TYPES = [{"id": "t-task", "name": "task"}, {"id": "t-sub", "name": "sub_task"}, {"id": "t-cr", "name": "change_request"}]
+    LABELS = {"task": "Task", "sub_task": "Sub Task", "change_request": "Change Request"}
+
+    def __init__(self, milestones=("Agents",), types=TYPES, labels=LABELS):
         self.milestones = [{"id": f"m-{n}", "name": n} for n in milestones]
+        self.types, self.labels = list(types), dict(labels)
         self.posts = []
+
+    def type_labels(self):
+        return self.labels
 
     def me(self):
         return {"id": "u-agent", "name": "Agent Nestor"}
 
     def project(self, name, rels=None):
         return {"id": "p-1", "name": "A Dev Tool", "shortCode": "adt", "milestones": list(self.milestones),
-                "issuetypes": [{"id": "t-task", "name": "Task"}], "members": [{"id": "1", "name": "Hammad Hassan"}]}
+                "issuetypes": list(self.types), "members": [{"id": "1", "name": "Hammad Hassan"}]}
 
     def project_options(self, project):
         return self.project(project), [{"id": "s-new", "name": "new"}]
@@ -42,7 +50,8 @@ class FakeGaia:
     flatten = staticmethod(server.Gaia.flatten)
 
     def issue_by_number(self, number, rels=None):
-        return {"issueNumber": number, "subject": "x", "projectShortcode": "adt"}
+        return {"issueNumber": number, "subject": "x", "projectShortcode": "adt", "id": "i-1", "projectId": "p-1",
+                "issuetype": {"id": "t-sub", "name": "sub_task"}}
 
 
 class MilestoneTest(unittest.TestCase):
@@ -95,6 +104,9 @@ class IssueGaia:
                          {"context": "est", "days": 1, "dateCreated": "2026-10-01 00:00:00"}]
         self.issue_rels, self.finds = None, []
 
+    def type_labels(self):
+        return {}
+
     def issue_by_number(self, number, rels=None):
         self.issue_rels = rels
         return dict(self.issue)
@@ -143,6 +155,79 @@ class GetIssueTest(unittest.TestCase):
         q = next(f for f in self.g.finds if f["module"] == "timelog")
         self.assertIn("i-1", q["query"])
         self.assertGreater(q["limit"], 0)
+
+
+class IssueTypeTest(unittest.TestCase):
+    def setUp(self):
+        self.g = FakeGaia()
+        self.tools = server.Tools(self.g)
+
+    def type_id(self, type_arg=None, **kw):
+        args = dict({"project": "adt", "subject": "S", "complexity": "simple"}, **kw)
+        if type_arg is not None:
+            args["type"] = type_arg
+        self.g.posts.clear()
+        self.tools.create_issue(args)
+        return next(b["data"]["attributes"] for m, path, b in self.g.posts if path == "issue")["typeId"]
+
+    def test_a_type_is_found_by_value_or_en_us_label_in_any_case(self):
+        for arg in ("Sub Task", "sub task", "sub_task", "SUB_TASK", "t-sub"):
+            self.assertEqual(self.type_id(arg), "t-sub", arg)
+        self.assertEqual(self.type_id("change request"), "t-cr")
+
+    def test_the_default_type_is_task(self):
+        self.assertEqual(self.type_id(), "t-task")
+
+    def test_types_without_labels_still_match_their_name(self):
+        # before the migration: names are display text and Gaia sends no translations
+        self.g = FakeGaia(types=[{"id": "t-task", "name": "Task"}, {"id": "t-sub", "name": "Sub Task"}], labels={})
+        self.tools = server.Tools(self.g)
+        self.assertEqual(self.type_id(), "t-task")
+        self.assertEqual(self.type_id("sub task"), "t-sub")
+
+    def test_an_unknown_type_lists_the_labels(self):
+        with self.assertRaises(server.GaiaError) as e:
+            self.type_id("Story")
+        self.assertIn("Options: Change Request, Sub Task, Task.", str(e.exception))
+
+    def test_update_issue_matches_the_label(self):
+        out = self.tools.update_issue({"issue_number": 4100, "type": "Change Request"})
+        patched = next(b["data"]["attributes"] for m, path, b in self.g.posts if m == "PATCH")
+        self.assertEqual(patched["typeId"], "t-cr")
+        self.assertEqual(out["updated"]["type"], "Sub Task")
+
+    def test_project_options_lists_type_labels(self):
+        self.assertEqual(self.tools.project_options({"project": "adt"})["types"], ["Change Request", "Sub Task", "Task"])
+
+    def test_issue_output_shows_the_label_and_falls_back_to_the_value(self):
+        issue = {"issuetype": {"name": "sub_task"}}
+        self.assertEqual(server.summarize_issue(issue, type_labels={"sub_task": "Sub Task"})["type"], "Sub Task")
+        self.assertEqual(server.summarize_issue(issue, type_labels={})["type"], "sub_task")
+        self.assertNotIn("type", server.summarize_issue({}))
+
+
+class TypeLabelsTest(unittest.TestCase):
+    def client(self, find):
+        g = server.Gaia()
+        g.find = find
+        return g
+
+    def test_labels_come_from_one_issuetype_read_and_are_cached(self):
+        calls = []
+
+        def find(module, **kw):
+            calls.append((module, kw.get("limit")))
+            return [{"name": "sub_task", "translations": {"en-us": "Sub Task", "de-de": "Unteraufgabe"}},
+                    {"name": "bug", "translations": {}}, {"name": "task"}]
+        g = self.client(find)
+        self.assertEqual(g.type_labels(), {"sub_task": "Sub Task"})
+        g.type_labels()
+        self.assertEqual(calls, [("issuetype", -1)])
+
+    def test_a_failed_read_means_no_labels(self):
+        def find(module, **kw):
+            raise server.GaiaError("Gaia GET issuetype returned 403")
+        self.assertEqual(self.client(find).type_labels(), {})
 
 
 PNG = b"\x89PNG\r\n\x1a\n" + b"0" * 16

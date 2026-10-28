@@ -93,6 +93,7 @@ class Gaia:
         self.expires_at = 0
         self.user = None
         self._projects = None
+        self._type_labels = None
 
     # -- HTTP --------------------------------------------------------------------------------
 
@@ -282,15 +283,31 @@ class Gaia:
             statuses = self.find("issuestatus", "(Issuestatus.system : 1)", limit=-1)
         return p, statuses
 
+    def type_labels(self):
+        """Issue type value -> en-us label. Gaia adds `translations` only when issue types are read directly, not
+        to an issuetype included with a project or issue. Empty when Gaia has no labels or won't list the types."""
+        if self._type_labels is None:
+            try:
+                types = self.find("issuetype", limit=-1)
+            except GaiaError:
+                types = []
+            self._type_labels = {t["name"]: t["translations"]["en-us"] for t in types
+                                 if t.get("name") and isinstance(t.get("translations"), dict)
+                                 and t["translations"].get("en-us")}
+        return self._type_labels
+
     @staticmethod
-    def pick(items, value, label, key="name"):
+    def pick(items, value, label, key="name", alias=None):
+        """The item whose `key`, id or alias (e.g. a translated label) is `value`, ignoring case."""
         if value is None:
             return None
+        alias = alias or (lambda item: None)
         v = str(value).strip().lower()
         for item in items:
-            if v in (str(item.get(key) or "").lower(), str(item.get("id") or "").lower()):
+            if v in (str(item.get(key) or "").lower(), str(item.get("id") or "").lower(),
+                     str(alias(item) or "").lower()):
                 return item
-        options = ", ".join(sorted(str(i.get(key)) for i in items if i.get(key)))
+        options = ", ".join(sorted(str(alias(i) or i.get(key)) for i in items if i.get(key)))
         raise GaiaError(f"Unknown {label} '{value}'. Options: {options or 'none'}.")
 
     def member(self, project, who):
@@ -317,13 +334,19 @@ class Gaia:
 # Tool implementations
 # ---------------------------------------------------------------------------------------------
 
-def summarize_issue(i, base_ui=None):
+def type_label(issuetype, labels):
+    """An issue type's en-us label, falling back to its value."""
+    name = (issuetype or {}).get("name")
+    return labels.get(name) or name
+
+
+def summarize_issue(i, base_ui=None, type_labels=None):
     out = {
         "issueNumber": i.get("issueNumber"),
         "id": i.get("id"),
         "subject": i.get("subject"),
         "status": (i.get("issuestatus") or {}).get("name") or i.get("status"),
-        "type": (i.get("issuetype") or {}).get("name"),
+        "type": type_label(i.get("issuetype"), type_labels or {}),
         "priority": i.get("priority"),
         "project": (i.get("project") or {}).get("name"),
         "projectShortcode": i.get("projectShortcode"),
@@ -377,7 +400,7 @@ class Tools:
         p, statuses = self.g.project_options(args["project"])
         return {
             "project": {"name": p.get("name"), "shortCode": p.get("shortCode"), "id": p.get("id")},
-            "types": sorted(t.get("name") for t in p.get("issuetypes") or []),
+            "types": sorted(type_label(t, self.g.type_labels()) for t in p.get("issuetypes") or []),
             "statuses": sorted(s.get("name") for s in statuses),
             "priorities": list(PRIORITIES),
             "milestones": [{"name": m.get("name"), "id": m.get("id"), "endDate": m.get("endDate")}
@@ -404,7 +427,7 @@ class Tools:
         rows = self.g.find("issue", query, rels="issuestatus,issuetype,assignedTo,issuemilestone",
                            sort="Issue.issueNumber", order="DESC", limit=limit)
         return {"project": p.get("name"), "count": len(rows),
-                "issues": [summarize_issue(r, self.ui) for r in rows]}
+                "issues": [summarize_issue(r, self.ui, self.g.type_labels()) for r in rows]}
 
     COMMENTS_DEFAULT, COMMENTS_MAX = 10, 100
     TIMELOG_LIMIT = 1000
@@ -413,7 +436,7 @@ class Tools:
         # Gaia's limit counts joined rows, so hasMany rels on this limit=1 read would cut the comments and time
         # logs short. Load the issue alone, then each child list in its own query with its own limit.
         i = self.g.issue_by_number(args["issue_number"])
-        out = summarize_issue(i, self.ui)
+        out = summarize_issue(i, self.ui, self.g.type_labels())
         out["complexity"] = read_complexity(i.get("description"))
         out["description"] = i.get("description")
         out["parentId"] = i.get("parentId")
@@ -504,7 +527,9 @@ class Tools:
         if args.get("description") is not None:
             attrs["description"] = args["description"]
         if args.get("type") is not None or creating:
-            attrs["typeId"] = self.g.pick(p.get("issuetypes") or [], args.get("type") or "Task", "type")["id"]
+            labels = self.g.type_labels()
+            attrs["typeId"] = self.g.pick(p.get("issuetypes") or [], args.get("type") or "Task", "type",
+                                          alias=lambda t: labels.get(t.get("name")))["id"]
         if args.get("status") is not None or creating:
             status = self.g.pick(statuses, args.get("status") or "new", "status")
             # Send the name too, as the UI does: Gaia's status notification and activity entry look for a
@@ -589,7 +614,7 @@ class Tools:
         if not created or not created[0].get("issueNumber"):
             raise GaiaError(f"Gaia did not confirm the new issue: {json.dumps(payload)[:1500]}")
         issue = self.g.issue_by_number(created[0]["issueNumber"])
-        out = {"created": summarize_issue(issue, self.ui)}
+        out = {"created": summarize_issue(issue, self.ui, self.g.type_labels())}
         if made:
             out["milestoneCreated"] = milestone.get("name")
         return out
@@ -611,8 +636,8 @@ class Tools:
             raise GaiaError("Nothing to update: pass at least one field to change.")
         self.g.request("PATCH", f"issue/{issue['id']}",
                        body={"data": {"type": "issue", "id": issue["id"], "attributes": attrs}})
-        return {"updated": summarize_issue(self.g.issue_by_number(args["issue_number"]), self.ui),
-                "changedFields": sorted(attrs)}
+        updated = self.g.issue_by_number(args["issue_number"])
+        return {"updated": summarize_issue(updated, self.ui, self.g.type_labels()), "changedFields": sorted(attrs)}
 
     # -- Ideas ---------------------------------------------------------------------------------
 
@@ -759,7 +784,8 @@ COMPLEXITY_ARG = {"type": "string", "enum": list(COMPLEXITIES),
                                  "(size is not complexity). Stored as a 'Complexity: <value>' line at the end of the "
                                  "description."}
 FIELD_ARGS = {
-    "type": {"type": "string", "description": "Issue type name, e.g. Task, Bug, Story, Epic, Sub Task, Research, Change Request."},
+    "type": {"type": "string", "description": "Issue type label or value, any case, e.g. Task, Bug, Story, Epic, Sub Task (sub_task), Research, "
+                                       "Change Request (change_request)."},
     "status": {"type": "string", "description": "Status name, e.g. new, in_progress, in_review, feedback, pending, deferred, done, wont_fix."},
     "priority": {"type": "string", "enum": list(PRIORITIES)},
     "milestone": {"type": "string", "description": "Milestone name or id. Empty string means backlog."},
