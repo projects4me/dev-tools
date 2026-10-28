@@ -7,14 +7,16 @@ allowed tools work unchanged with the folder as cwd. Talos names it in P4M_WORKS
 the repo. A workspace is sticky: it stays (with any uncommitted work) until it is removed when the issue is done.
 """
 
+import importlib.util
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 RUNS_DIR = ".runs"
 RUNTIME_NAME = ".dev-tools-runtime"     # where the `ai` wrapper looks for the tooling (installer/runtime.py)
-BASE_BRANCH = {"dev-tools": "main"}
+NO_WORKTREE = ("pr4m",)                  # the workspace root repo is worked in place, never as a worktree
 REPO_PATH = {}                           # repo name -> folder in the workspace, when they differ
 SHARED = ("CLAUDE.md",)                  # copied from the workspace
 LINKED = (".claude",)                    # linked to the workspace's folder (skills, agents, settings)
@@ -22,6 +24,35 @@ LINKED = (".claude",)                    # linked to the workspace's folder (ski
 
 class WorkspaceError(Exception):
     """A workspace step failed; the message says which and why."""
+
+
+class BranchCheckedOut(WorkspaceError):
+    """claude-issue-N is checked out in another folder, so git refuses a second worktree on it."""
+
+    def __init__(self, branch, folder):
+        self.branch, self.folder = branch, folder
+        super().__init__(f"branch {branch} is checked out in {folder}")
+
+
+def _ai_common():
+    """ai/lib/common.py, the one place that knows each repo's base branch. Loaded by file because `lib` is also
+    the name of this package; common.py's imports are the standard library's."""
+    spec = importlib.util.spec_from_file_location(
+        "ai_common", Path(__file__).resolve().parents[2] / "ai" / "lib" / "common.py")
+    if "ai_common" not in sys.modules:
+        module = importlib.util.module_from_spec(spec)
+        sys.modules["ai_common"] = module
+        spec.loader.exec_module(module)
+    return sys.modules["ai_common"]
+
+
+def base_branch(repo):
+    return _ai_common().base_branch(repo)
+
+
+def applies(repo):
+    """Whether a run on this repo gets a worktree (the workspace root repo and an issue without a repo don't)."""
+    return bool(repo) and repo not in NO_WORKTREE
 
 
 def branch_name(issue):
@@ -84,7 +115,7 @@ def ensure(root, tools, issue, repo):
         ignore.write_text("*\n", encoding="utf-8")
     name = REPO_PATH.get(repo, repo)
     if not (folder / name / ".git").exists():
-        _add_worktree(root / name, folder / name, issue, BASE_BRANCH.get(repo, "dev"))
+        _add_worktree(root / name, folder / name, issue, base_branch(repo))
     # The `ai` wrapper hands over to <its folder>/../../.dev-tools-runtime when that exists, so this link sends
     # the run's `dev-tools/ai/ai` to the tooling Talos runs from, also when dev-tools/ is the issue's worktree.
     links = {RUNTIME_NAME: tools, **{n: root / n for n in LINKED}}
@@ -106,9 +137,26 @@ def _add_worktree(main, dest, issue, base):
     _git(main, "fetch", "-q", "origin")
     _git(main, "worktree", "prune")
     if _git(main, "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}", check=False):
+        held = _checked_out_in(main, branch)
+        if held and held != Path(dest).resolve():
+            raise BranchCheckedOut(branch, held)
+        behind = _git(main, "rev-list", "--count", f"{branch}..origin/{base}", check=False)
+        state = f"{behind} commits behind" if behind not in ("", "0") else "not behind"
+        print(f"talos: reusing {branch} in {main.name}: {state} origin/{base} (not rebased)", file=sys.stderr)
         _git(main, "worktree", "add", str(dest), branch)
     else:
         _git(main, "worktree", "add", "-b", branch, str(dest), f"origin/{base}")
+
+
+def _checked_out_in(main, branch):
+    """The folder where the branch is checked out (the main checkout or a worktree), or None."""
+    folder = None
+    for line in _git(main, "worktree", "list", "--porcelain").splitlines():
+        if line.startswith("worktree "):
+            folder = Path(line[len("worktree "):]).resolve()
+        elif line == f"branch refs/heads/{branch}":
+            return folder
+    return None
 
 
 def worktrees(root, issue):

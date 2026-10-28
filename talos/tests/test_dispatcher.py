@@ -175,6 +175,31 @@ class DispatcherTest(unittest.TestCase):
         self.assertEqual(outcome, "failed")
         self.assertEqual(tracker.handoffs, [("pending", "1")])
 
+    def test_branch_checked_out_elsewhere_hands_back_without_a_run(self):
+        tracker = StubTracker(make_issue())
+
+        def refuse(*a):
+            raise dispatcher_mod.runner.workspaces.BranchCheckedOut("claude-issue-42", "D:/ws/gaia")
+
+        with mock.patch.object(dispatcher_mod.runner.workspaces, "ensure", refuse):
+            outcome = dispatcher_mod.Dispatcher(make_agent(), tracker, "claude").handle(42)
+        self.assertEqual(outcome, "needs_input")
+        self.assertEqual(tracker.handoffs, [("feedback", "1")])
+        self.assertIn("checked out elsewhere", tracker.comments[0])
+        self.assertEqual(sessions.get("odysseus", 42), {})   # no run, no iteration
+
+    def test_gaia_pack_is_built_in_the_issue_workspace(self):
+        seen = {}
+
+        def fake_run(cmd, **kw):
+            seen.update(cwd=kw["cwd"], env=kw["env"])
+            return mock.Mock(returncode=0, stdout="PACK")
+
+        with mock.patch.object(dispatcher_mod.runner.subprocess, "run", fake_run):
+            self.assertEqual(dispatcher_mod.runner.gaia_pack(42, Path("ws/issue-42")), "PACK")
+        self.assertEqual(seen["cwd"], Path("ws/issue-42"))
+        self.assertEqual(seen["env"]["P4M_WORKSPACE"], str(Path("ws/issue-42")))
+
     def test_runner_exception_becomes_failed_run(self):
         tracker = StubTracker(make_issue())
 
@@ -284,7 +309,7 @@ class DispatcherTest(unittest.TestCase):
         tracker = StubTracker(make_issue(dependsOn=[7]))
         tracker.dependencies = {7: "in_review"}
         queued = []
-        with mock.patch.object(dispatcher_mod.runner, "gaia_pack", lambda n: ""):
+        with mock.patch.object(dispatcher_mod.runner, "gaia_pack", lambda n, folder=None: ""):
             d = dispatcher_mod.Dispatcher(make_agent(), tracker, "claude")
         d.submit = lambda number, source, reconcile=False: queued.append(number)
         self.assertEqual(d.handle(42), "held")

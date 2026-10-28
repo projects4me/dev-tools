@@ -265,6 +265,32 @@ class BaselineContainerTest(unittest.TestCase):
         self.assertEqual(calls[0][-4:], ["test", "clean", "--src", str(src)])
 
 
+class RunWorkspaceSrcTest(unittest.TestCase):
+    """In a Talos workspace (P4M_WORKSPACE) the suites run against the worktree, not the main checkout."""
+
+    def test_ai_test_passes_the_worktree_as_src(self):
+        import os
+        from argparse import Namespace
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as d:
+            ws = Path(d).resolve()
+            (ws / "gaia").mkdir()
+            seen = {}
+
+            def record(args, repo, src, targets, full):
+                seen["src"] = src
+                return 0
+
+            args = Namespace(repo="gaia", explain=None, case=None, changed=False, filter=None)
+            with mock.patch.dict(os.environ, {"P4M_WORKSPACE": str(ws)}),                     mock.patch.object(tests, "_run_and_record", record):
+                tests.cmd_test(args)
+            self.assertEqual(Path(seen["src"]), ws / "gaia")
+            with mock.patch.object(tests, "_run_logged", return_value=(0, "OK (1 test)", Path(d))) as logged:
+                tests.phpunit("tests/unit", seen["src"])
+            cmd = logged.call_args.args[1]
+            self.assertEqual(cmd[cmd.index("--src") + 1], str(ws / "gaia"))
+
+
 class FixtureDriftTest(unittest.TestCase):
     def _run(self, harness_writes):
         from types import SimpleNamespace

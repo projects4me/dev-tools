@@ -6,7 +6,7 @@ import time
 import uuid
 from datetime import datetime, timedelta
 
-from . import policy, pool, runner, sessions
+from . import policy, pool, runner, sessions, workspaces
 from . import runs as run_log
 from .config import STATE_DIR, TalosError, log
 
@@ -146,9 +146,30 @@ class Dispatcher:
         model = policy.choose_model(self.agent, issue, escalated=bool(state.get("escalated")))
         prompt = policy.render_prompt(decision.action, issue, decision.repo, catch_up=catch_up,
                                      reviewer=self.agent.reviewer_name)
+        folder = None
+        if not self.dry_run:                  # the workspace first: the pack is built from it
+            try:
+                folder = self.runner.prepare(number, decision.repo)
+            except workspaces.BranchCheckedOut as e:
+                return self._branch_checked_out(number, e, decision.repo)
+            except workspaces.WorkspaceError as e:     # the run itself reports it as a failed run
+                log(f"#{number} workspace not ready before the run: {e}", self.agent.name)
         if decision.repo == "gaia" and not session_id:        # a resumed session already has the pack
-            prompt = policy.with_pack(prompt, runner.gaia_pack(number))
+            prompt = policy.with_pack(prompt, runner.gaia_pack(number, folder))
         return self._run(issue, prompt, model, session_id, why=why, repo=decision.repo)
+
+    def _branch_checked_out(self, number, error, repo):
+        """The issue's branch is checked out in another folder, so no worktree can be made. A person has to free it;
+        no run started, so no iteration is counted."""
+        log(f"#{number} not started: {error}", self.agent.name)
+        folder = html.escape(str(error.folder))
+        self._hand_off(number, "needs_input", f"{self.agent.display_name}: branch is checked out elsewhere",
+                       f"<p>Talos could not start this issue: <code>{html.escape(error.branch)}</code> is checked "
+                       f"out in <code>{folder}</code>, and git allows a branch in one folder only.</p>"
+                       f"<p>To free it, commit or stash what is there and switch that folder to another branch "
+                       f"(<code>git -C {folder} switch {html.escape(workspaces.base_branch(repo))}</code>), then assign the issue back. "
+                       f"This did not count as an iteration.</p>", escaped=True)
+        return "needs_input"
 
     def _hold(self, number, decision, reconcile):
         """Keep the issue out of the queue until its dependencies are done; comment once per waiting set.

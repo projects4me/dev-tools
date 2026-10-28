@@ -93,8 +93,37 @@ class WorkspacesTest(unittest.TestCase):
 
     def test_branch_checked_out_elsewhere_is_refused(self):
         git(self.root / "gaia", "checkout", "-q", "-b", "claude-issue-1")
-        with self.assertRaises(workspaces.WorkspaceError):
+        with self.assertRaises(workspaces.BranchCheckedOut) as caught:
             self.ensure(1)
+        self.assertEqual(caught.exception.folder, (self.root / "gaia").resolve())
+        self.assertIn("claude-issue-1", str(caught.exception))
+
+    def test_reused_branch_logs_whether_it_is_behind_and_is_not_rebased(self):
+        import contextlib
+        import io
+        git(self.root / "gaia", "branch", "claude-issue-1", "dev")
+        out = io.StringIO()
+        with contextlib.redirect_stderr(out):
+            folder = self.ensure(1)
+        self.assertIn("not behind origin/dev", out.getvalue())
+        git(self.root / "gaia", "branch", "claude-issue-2", "dev")
+        git(self.root / "gaia", "commit", "--allow-empty", "-m", "dev moved")
+        git(self.root / "gaia", "push", "origin", "dev")
+        out = io.StringIO()
+        with contextlib.redirect_stderr(out):
+            self.ensure(2)
+        self.assertIn("1 commits behind origin/dev", out.getvalue())
+        self.assertEqual(git(self.root / "gaia", "rev-list", "--count", "claude-issue-2..dev"), "1")
+
+    def test_base_branch_comes_from_ai(self):
+        self.assertEqual(workspaces.base_branch("dev-tools"), "main")
+        self.assertEqual(workspaces.base_branch("gaia"), "dev")
+        self.assertFalse(hasattr(workspaces, "BASE_BRANCH"))
+
+    def test_workspace_root_repo_gets_no_worktree(self):
+        self.assertFalse(workspaces.applies("pr4m"))
+        self.assertFalse(workspaces.applies(None))
+        self.assertTrue(workspaces.applies("gaia"))
 
     def test_dev_tools_issue_gets_a_worktree_and_the_runtime_link(self):
         folder = self.ensure(3, "dev-tools")
