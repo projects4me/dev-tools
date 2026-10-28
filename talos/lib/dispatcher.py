@@ -6,9 +6,9 @@ import time
 import uuid
 from datetime import datetime, timedelta
 
-from . import policy, pool, runner, sessions, workspaces
+from . import policy, pool, runner, sessions
 from . import runs as run_log
-from .config import DEV_TOOLS, STATE_DIR, WORKSPACE, TalosError, log
+from .config import STATE_DIR, TalosError, log
 
 
 def _now():
@@ -25,7 +25,8 @@ def lease_file(agent_name):
 
 
 class Dispatcher:
-    """Worker pool for one agent: `maxParallel` threads, each issue in its own workspace and test slot."""
+    """Worker pool for one agent: `maxParallel` threads, each issue in its own workspace (or container) and test
+    slot."""
 
     def __init__(self, agent, tracker, claude, dry_run=False, mcp=None):
         self.agent = agent
@@ -33,6 +34,7 @@ class Dispatcher:
         self.claude = claude
         self.dry_run = dry_run
         self.mcp = mcp          # the agent's MCP config file (mcp.mcp_config)
+        self.runner = runner.for_agent(agent)
         self.user_id = tracker.user_id()
         self._queue = pool.RunQueue()
         self.leases = pool.LeaseFile(lease_file(agent.name))
@@ -138,6 +140,8 @@ class Dispatcher:
             return None
         state = sessions.get(self.agent.name, number)
         session_id, why = policy.resume_session(decision.action, state, _now(), self.agent.resume_max_idle_minutes)
+        if session_id and not self.runner.resumable:
+            session_id, why = None, "new session (the runner keeps no sessions)"
         catch_up = decision.action.resume and bool(state.get("session_id")) and not session_id
         model = policy.choose_model(self.agent, issue, escalated=bool(state.get("escalated")))
         prompt = policy.render_prompt(decision.action, issue, decision.repo, catch_up=catch_up,
@@ -173,8 +177,9 @@ class Dispatcher:
             return self._iteration_limit(number, done_runs)
         live_id = session_id or str(uuid.uuid4())
         limits = policy.run_limits(self.agent, model)
-        cmd = runner.build_command(self.claude, self.agent, model, session_id,
-                                   new_session_id=None if session_id else live_id, limits=limits, mcp=self.mcp)
+        cmd = runner.build_command(self.runner.claude_bin(self.claude), self.agent, model, session_id,
+                                   new_session_id=None if session_id else live_id, limits=limits,
+                                   mcp=self.runner.mcp_config(self.mcp))
         mode = why or (f"resume {session_id[:8]}" if session_id else "new session")
         if not session_id:
             mode += f", session {live_id[:8]}"
@@ -194,12 +199,11 @@ class Dispatcher:
                             live_session_id=live_id, started_at=_iso(started))
             self._mark_picked_up(issue)
             try:
-                cwd, env = self._workspace(number, repo)
+                env = {**self.tracker.child_env(), **self.agent.env}
                 if lease.slot:
                     env["P4M_TEST_SLOT"] = str(lease.slot)        # `ai test` runs gaia suites in this slot
-                result, log_path = runner.run(cmd, {**self.tracker.child_env(), **self.agent.env, **env},
-                                              self.agent.name, number, prompt, cwd=cwd)
-            except Exception as e:  # e.g. the Claude binary vanished or no worktree; still close the run and hand off
+                result, log_path = self.runner.execute(runner.Job(self.agent.name, number, repo, cmd, env, prompt))
+            except Exception as e:  # e.g. the Claude binary or Docker vanished, or no worktree; close the run, hand off
                 result, log_path = {"is_error": True, "subtype": "talos error", "result": str(e)}, None
         finally:
             self._gate.release(lease)
@@ -279,15 +283,6 @@ class Dispatcher:
                               f"then run this issue again; nothing is needed from you.</p>", escaped=True)
             except TalosError as e:
                 log(f"#{number} limit comment failed: {e}", self.agent.name)
-
-    @staticmethod
-    def _workspace(number, repo):
-        """(cwd, env) for a run: the issue's own workspace with its repo as a git worktree, so runs on different
-        issues never switch branches under each other. The workspace root repo (pr4m) has no worktree."""
-        if not repo or repo == "pr4m":
-            return WORKSPACE, {}
-        folder = workspaces.ensure(WORKSPACE, DEV_TOOLS, number, repo)
-        return folder, workspaces.env(folder)
 
     def _mark_picked_up(self, issue):
         """Show on the board that the agent is working it, before Claude starts."""

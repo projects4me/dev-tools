@@ -68,6 +68,65 @@ repo never switch branches under each other:
   the issue is finished (links, worktrees and folder; the branch stays), refusing uncommitted changes unless
   `--force`. Issues in the workspace repo itself (`pr4m`) run in the workspace root as before.
 
+### Container runs: an agent on any Docker host
+
+An agent's `runner` in `agent.json` (or `agent.local.json`) says where its runs execute. The default is this
+machine (`lib/runner.py` `LocalRunner`, the per-issue workspaces above). `{"type": "container", ...}`
+(`lib/container.py` `ContainerRunner`) runs each `claude -p` in a container instead, on any Docker host that reaches
+Gaia, Hermes, GitHub and the Anthropic API. Talos stays the one coordinator either way: the Hermes listener, the
+policy, the tracker writes and `talos.db` stay here; only the Claude session moves, and its JSON result comes back on
+`docker run`'s stdout as from a local `claude -p`, so the outcome and the `runs` row are the same.
+
+Build the image once per Docker host (`talos/container/Dockerfile`: the Claude CLI, node, python, git, gh and the
+docker CLI; no credentials):
+
+```
+docker build -t p4m-talos-runner dev-tools/talos/container
+```
+
+```json
+"runner": {"type": "container", "image": "p4m-talos-runner",
+           "addHosts": ["api.local-projects4.me:host-gateway"]}
+```
+
+| key | meaning |
+|---|---|
+| `image` | the runner image (required) |
+| `dockerHost` | the Docker host to run on (`DOCKER_HOST` for the `docker` CLI; default its own) |
+| `network`, `addHosts`, `dockerArgs` | `docker run --network`, `--add-host` entries (e.g. the local Gaia name to `host-gateway`), extra args |
+| `claudeHome` | the container's `~/.claude`: `bind` (default) a per-issue host folder `state/containers/<agent>-<issue>/claude`, so sessions resume and the run stats and `talos status` read its transcripts; `volume` a named volume `talos-<agent>-<issue>-claude` (a remote Docker host, where a host folder isn't there; sessions resume, the stats come from the result only); `none`: nothing kept, every run starts cold with the catch-up prompt |
+| `testDockerHost` | `DOCKER_HOST` inside the container for the test suites; default the host's `/var/run/docker.sock` is mounted in |
+| `envFiles` | credential files under `<workspace>/dev-tools` (default `odysseus/odysseus.env`, `talos/container.env`) |
+| `gitBase`, `pushBase` | where repos are cloned from (default `https://github.com/projects4me`) and pushed to (default `git@github-odysseus:projects4me`, the `odysseus` remote) |
+
+In the container the entrypoint (`talos/container/entrypoint.py`) lays out `/work`, the per-issue volume
+`talos-<agent>-<issue>-work`, like a local workspace: the workspace repo and dev-tools `main` (`.workspace`,
+`.dev-tools-runtime`), `CLAUDE.md`, `.claude` and `dev-tools` linked in, and the issue's repo cloned on
+`claude-issue-N` (the pushed branch on `odysseus` when there is one) with the `odysseus` remote. The volume is
+sticky like a workspace; remove it with `docker volume rm` when the issue is done. Issues in the workspace repo
+(`pr4m`) run locally only.
+
+**Credentials** are never in the image or on the `docker run` command line. Talos passes each one by name
+(`docker run -e NAME`, so the docker CLI copies the value from the environment Talos gives it) and mounts key files
+read-only under `/run/secrets/talos`. Only what the run needs crosses over, never the rest of Talos's environment:
+
+| what | from | in the container |
+|---|---|---|
+| Claude | `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`) or `ANTHROPIC_API_KEY`, in `dev-tools/talos/container.env` (git-ignored) or Talos's environment; a run without one fails | the same variable |
+| the agent's Gaia sign-in | `GAIA_*` from the agent's `gaiaEnv` (as for a local run; never from the env files) | the same variables, for the gaia MCP server and `ai` |
+| Odysseus on GitHub | `GH_TOKEN`, `ODYSSEUS_NAME`/`_EMAIL` from `odysseus/odysseus.env` (required: a run without it fails; an engineer's own `GH_TOKEN` in Talos's environment or agent.json `env` is not passed) | `gh` uses `GH_TOKEN`; git over https asks a credential helper that reads it when needed (it is not written to any git config) |
+| the Odysseus SSH key | `ODYSSEUS_SSH_KEY` (default `~/.ssh/agent_odysseus`) and its `.pub`; a run fails when the file is missing | mounted read-only, copied to `~/.ssh` with mode 600 for the `github-odysseus` alias and commit signing |
+| a private CA | `GAIA_CA_FILE` | mounted read-only, the variable pointed at it |
+| `agent.json` `env`, the test slot | as for a local run | the same variables |
+
+Known limits: the test suites that bind-mount a checkout into the stack's containers (`p4m test`) need that
+checkout on the Docker host the tests run on, so for those repos a remote `testDockerHost` doesn't work yet; and
+`talos gc` doesn't remove container volumes. Key files and the `bind` claude home are mounted by their path on
+this machine, so with a remote `dockerHost` they must exist at the same path on that host. Without `testDockerHost`
+the host's docker socket is mounted, which gives the agent root on the Docker host: use a dedicated Docker host or
+a rootless `testDockerHost` where that matters. A container left by a stopped Talos is removed before the next run
+of that issue.
+
 ## How an assignment is handled
 
 1. **Event**: `issue.assignee.changed` where the new assignee is the agent and the actor is in the agent's
@@ -139,6 +198,7 @@ their events), and an env file with its `GAIA_*` credentials.
 | `testSlots` | test slots leased among the runs (default `maxParallel`; at most `TEST_SLOTS` in `p4m.env`) |
 | `permissionMode`, `allowedTools` | passed to `claude -p` |
 | `rolePrompt` | file appended to the system prompt: the agent's role and headless rules |
+| `runner` | where runs execute: this machine (default) or `{"type": "container", "image": ...}`, see "Container runs" |
 
 `config.json`: `hermesUrl`, `claudeBin` (empty = PATH, then the newest VS Code extension binary), `nodeBin`,
 `reconnectSeconds`. `config.local.json` (git-ignored) overrides any of them per engineer.
@@ -232,7 +292,8 @@ The pre-SQLite `state/sessions.json` is imported when `talos run`/`dispatch` sta
 | `lib/hermes.py` + `listener/listen.js` | Hermes connection: Node Socket.IO client, supervised and restarted with a fresh token |
 | `lib/policy.py` | pure decisions: which events count, whether to run, prompt filling, outcome parsing |
 | `lib/dispatcher.py` | per-agent queue; runs a job and applies the outcome to the tracker |
-| `lib/runner.py` | builds and runs the `claude -p` command, keeps its output |
+| `lib/runner.py` | builds and runs the `claude -p` command, keeps its output; the `Runner` interface and `LocalRunner` |
+| `lib/container.py` + `container/` | `ContainerRunner`: the run in a container (`docker run` with the credentials by name); the image and its entrypoint |
 | `lib/workspaces.py` | per-issue workspaces: `.runs/issue-N` with the repo's worktree and the tooling linked in |
 | `lib/mcp.py` | the agent's MCP config: only the gaia server from the copy Talos runs from |
 | `lib/tracker.py` | Gaia as one agent, through the `gaia-mcp` client |

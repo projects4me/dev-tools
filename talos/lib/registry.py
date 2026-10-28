@@ -49,6 +49,7 @@ class Agent:
     max_parallel_by_repo: dict = field(default_factory=dict)   # repo -> runs at once
     max_parallel_by_model: dict = field(default_factory=lambda: {"opus": 1})   # model -> runs at once
     test_slots: int = 0                 # test slots to lease per run (0 = max_parallel; at most TEST_SLOTS in p4m.env)
+    runner: dict = field(default_factory=dict)       # where runs execute: {} / {"type": "local"} or a container (container.py)
     extra: dict = field(default_factory=dict)
 
     def action_for(self, status):
@@ -60,6 +61,7 @@ class Agent:
 
 REQUIRED = ("name", "gaiaEnv", "projects", "acceptAssignmentsFrom", "handoffTo", "actions", "model", "rolePrompt")
 KINDS = ("issues", "ideas")
+RUNNERS = ("local", "container")
 
 
 def load_agent(folder):
@@ -87,6 +89,11 @@ def load_agent(folder):
     reserved = [k for k in raw.get("env", {}) if str(k).upper().startswith("GAIA_")]
     if reserved:
         raise TalosError(f"{path}: env may not set {', '.join(reserved)} (the agent's credentials come from gaiaEnv)")
+    runner = raw.get("runner") or {}
+    if runner.get("type", "local") not in RUNNERS:
+        raise TalosError(f"{path}: runner.type must be one of {', '.join(RUNNERS)}")
+    if runner.get("type") == "container" and not runner.get("image"):
+        raise TalosError(f"{path}: a container runner needs runner.image")
     kind = raw.get("kind", "issues")
     if kind not in KINDS:
         raise TalosError(f"{path}: kind must be one of {', '.join(KINDS)}")
@@ -128,6 +135,7 @@ def load_agent(folder):
         max_parallel_by_repo={str(k): int(v) for k, v in raw.get("maxParallelByRepo", {}).items()},
         max_parallel_by_model={str(k): int(v) for k, v in raw.get("maxParallelByModel", {"opus": 1}).items()},
         test_slots=int(raw.get("testSlots", 0)),
+        runner=dict(runner),
         extra={k: raw[k] for k in ("knowledgeMap", "ideaSource") if k in raw},
     )
 
