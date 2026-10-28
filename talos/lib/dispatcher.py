@@ -6,9 +6,9 @@ import time
 import uuid
 from datetime import datetime, timedelta
 
-from . import policy, pool, runner, sessions, workspaces
+from . import memory, policy, pool, runner, sessions, workspaces
 from . import runs as run_log
-from .config import STATE_DIR, TalosError, log
+from .config import STATE_DIR, WORKSPACE, TalosError, log
 
 
 def _now():
@@ -200,7 +200,8 @@ class Dispatcher:
         limits = policy.run_limits(self.agent, model)
         cmd = runner.build_command(self.runner.claude_bin(self.claude), self.agent, model, session_id,
                                    new_session_id=None if session_id else live_id, limits=limits,
-                                   mcp=self.runner.mcp_config(self.mcp))
+                                   mcp=self.runner.mcp_config(self.mcp),
+                                   memory=self.runner.memory_dir(memory.folder(WORKSPACE)))
         mode = why or (f"resume {session_id[:8]}" if session_id else "new session")
         if not session_id:
             mode += f", session {live_id[:8]}"

@@ -67,6 +67,12 @@ repo never switch branches under each other:
 - The workspace is sticky: uncommitted work survives a `needs_input` pause. `talos clean <issue>` removes it when
   the issue is finished (links, worktrees and folder; the branch stays), refusing uncommitted changes unless
   `--force`. Issues in the workspace repo itself (`pr4m`) run in the workspace root as before.
+- Every run shares the workspace's Claude auto-memory (`~/.claude/projects/<workspace slug>/memory`, `lib/memory.py`):
+  Talos passes `--settings {"autoMemoryDirectory": ...}`, so a run loads the team's `MEMORY.md` and its new memories
+  land there, whatever its cwd. Nothing is linked, so `talos clean`/`gc` never reach the memory. Parallel runs write
+  to the same folder; each memory is its own file and Claude's Edit/Write refuse a file changed since it was read,
+  so a run that loses a race on `MEMORY.md` re-reads it. Two runs writing the same new memory file at once is an
+  accepted risk.
 
 ### Container runs: an agent on any Docker host
 
@@ -126,6 +132,12 @@ this machine, so with a remote `dockerHost` they must exist at the same path on 
 the host's docker socket is mounted, which gives the agent root on the Docker host: use a dedicated Docker host or
 a rootless `testDockerHost` where that matters. A container left by a stopped Talos is removed before the next run
 of that issue.
+
+Auto-memory in a container: with the `bind` claude home the workspace's auto-memory folder is mounted at `/memory`
+and the run pointed at it, as for a local run; `volume` and `none` homes (meant for a Docker host without this
+machine's folders) keep the container's own, empty memory. The container runs as root, so on a Linux host the memory
+files it writes are owned by root, like the rest of the `bind` home; `chown` them if an interactive session can't
+edit them.
 
 ## How an assignment is handled
 
@@ -295,6 +307,7 @@ The pre-SQLite `state/sessions.json` is imported when `talos run`/`dispatch` sta
 | `lib/runner.py` | builds and runs the `claude -p` command, keeps its output; the `Runner` interface and `LocalRunner` |
 | `lib/container.py` + `container/` | `ContainerRunner`: the run in a container (`docker run` with the credentials by name); the image and its entrypoint |
 | `lib/workspaces.py` | per-issue workspaces: `.runs/issue-N` with the repo's worktree and the tooling linked in |
+| `lib/memory.py` | the workspace's Claude auto-memory folder, which every run is pointed at |
 | `lib/mcp.py` | the agent's MCP config: only the gaia server from the copy Talos runs from |
 | `lib/tracker.py` | Gaia as one agent, through the `gaia-mcp` client |
 | `lib/db.py` | SQLite connection, schema, one-time import of `sessions.json` |
