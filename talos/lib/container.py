@@ -11,6 +11,7 @@ read-only.
 """
 
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -184,3 +185,40 @@ def docker_command(settings, agent_name, job, names, files, home, memory_dir=Non
     cmd += [str(a) for a in settings.get("dockerArgs", [])]
     return cmd + [settings["image"], "--", *job.cmd]
 
+
+
+def _docker_env(settings):
+    return {**os.environ, "DOCKER_HOST": settings["dockerHost"]} if settings.get("dockerHost") else None
+
+
+def _docker_names(args, env):
+    cp = subprocess.run(["docker", *args], env=env, capture_output=True, text=True, stdin=subprocess.DEVNULL)
+    if cp.returncode != 0:
+        raise OSError(f"docker {args[0]} failed: {cp.stderr.strip()}")
+    return cp.stdout.split()
+
+
+def leftovers(agent_name, issue, settings):
+    """What the container runner left for the issue: [(kind, name)] of its container, volumes and Claude folder."""
+    env = _docker_env(settings)
+    found = [("container", n) for n in _docker_names(
+        ["ps", "-a", "--format", "{{.Names}}", "--filter", f"name=^{container_name(agent_name, issue)}$"], env)]
+    found += [("volume", n) for n in _docker_names(
+        ["volume", "ls", "-q", "--filter", f"name=^talos-{agent_name}-{issue}-"], env)]
+    folder = claude_home(agent_name, issue).parent
+    if folder.is_dir():
+        found.append(("folder", str(folder)))
+    return found
+
+
+def remove_leftovers(agent_name, issue, settings, found):
+    """Delete what `leftovers` found."""
+    env = _docker_env(settings)
+    for kind, name in found:
+        if kind == "folder":
+            shutil.rmtree(name, ignore_errors=True)
+        else:
+            cmd = ["docker", "rm", "-f", name] if kind == "container" else ["docker", "volume", "rm", "-f", name]
+            cp = subprocess.run(cmd, env=env, capture_output=True, text=True, stdin=subprocess.DEVNULL)
+            if cp.returncode != 0:
+                raise OSError(f"{' '.join(cmd[:3])} failed: {cp.stderr.strip()}")

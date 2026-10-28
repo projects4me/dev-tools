@@ -8,10 +8,11 @@ import json
 import ssl
 import subprocess
 import sys
+import threading
 import time
 import urllib.request
 
-from lib import db, policy, runner, sessions, workspace_gc, workspaces
+from lib import container, db, policy, runner, sessions, workspace_gc, workspaces
 from lib import runs as run_log
 from lib.config import LISTENER, STATE_DIR, TALOS_DIR, WORKSPACE, TalosError, claude_bin, log, settings
 from lib.dispatcher import Dispatcher, lease_file
@@ -31,13 +32,12 @@ def cmd_run(args):
     imported = db.import_legacy()
     if imported:
         log(f"imported {imported} issue state(s) from sessions.json into talos.db")
-    if not args.dry_run:
-        try:
-            for issue, action, reason in gc_workspaces():
-                if action == "removed":
-                    log(f"gc: removed the workspace of #{issue} ({reason})")
-        except Exception as e:          # housekeeping never keeps Talos from starting
-            log(f"gc failed: {e}")
+    try:
+        for issue, action, reason in gc_workspaces(args.dry_run):
+            if action in ("removed", "would-remove"):
+                log(f"gc: {action} #{issue} ({reason})")
+    except Exception as e:              # housekeeping never keeps Talos from starting
+        log(f"gc failed: {e}")
     log(f"starting with {len(agents)} agent(s): {', '.join(a.name for a in agents)}; claude {claude}")
     dispatchers = []
     for agent in agents:
@@ -52,7 +52,8 @@ def cmd_run(args):
             continue
         tracker = Tracker(agent)
         dispatcher = Dispatcher(agent, tracker, claude, dry_run=args.dry_run,
-                                mcp=mcp_config(STATE_DIR / agent.name / "mcp.json"))
+                                mcp=mcp_config(STATE_DIR / agent.name / "mcp.json"),
+                                collector=lambda issue: gc_workspaces(only=issue))
         dispatcher.recover_interrupted()
         dispatcher.start()
         dispatchers.append(dispatcher)
@@ -167,22 +168,37 @@ def cmd_clean(args):
     return 0
 
 
-def gc_workspaces(dry_run=False):
-    """Remove the workspaces of finished issues (status read from Gaia, runs in flight from talos.db)."""
-    entries = sessions.all_entries()
-    running = {issue for (_, issue), v in entries.items() if v.get("running")}
-    owner = {issue: agent for (agent, issue) in entries}
-    statuses, trackers = {}, {}
-    for issue in workspace_gc.issues_on_disk(WORKSPACE):
-        try:
-            name = owner.get(issue)
-            if name not in trackers:
-                trackers[name] = Tracker(load_agents(name)[0])
-            statuses[issue] = trackers[name].issue(issue)["status"]
-        except Exception:               # status unknown: the workspace is kept
-            statuses[issue] = None
-    results = workspace_gc.collect(WORKSPACE, statuses, running,
-                                   merged=lambda i: workspace_gc.pr_merged(WORKSPACE, i), dry_run=dry_run)
+GC_LOCK = threading.Lock()
+
+
+def gc_workspaces(dry_run=False, only=None):
+    """Remove the workspaces and container leftovers of finished issues (see lib/workspace_gc)."""
+    agents, trackers = {}, {}
+
+    def agent_for(name):
+        """The owning agent, or None when there is none or it cannot be loaded (status unknown, workspace kept)."""
+        if not name:
+            return None
+        if name not in agents:
+            try:
+                agents[name] = load_agents(name)[0]
+            except (TalosError, IndexError):
+                agents[name] = None
+        return agents[name]
+
+    def tracker_for(agent):
+        if agent.name not in trackers:
+            trackers[agent.name] = Tracker(agent)
+        return trackers[agent.name]
+
+    with GC_LOCK:       # status events from every dispatcher share one gc; never two at once
+        return _collect(agent_for, tracker_for, dry_run, only)
+
+
+def _collect(agent_for, tracker_for, dry_run, only):
+    results = workspace_gc.collect_all(
+        WORKSPACE, sessions.all_entries(), agent_for, tracker_for,
+        lambda i: workspace_gc.pr_merged(WORKSPACE, i), dry_run, only, container)
     if not dry_run:
         workspaces.prune(WORKSPACE)
     return results

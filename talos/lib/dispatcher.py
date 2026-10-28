@@ -33,12 +33,13 @@ class Dispatcher:
     """Worker pool for one agent: `maxParallel` threads, each issue in its own workspace (or container) and test
     slot."""
 
-    def __init__(self, agent, tracker, claude, dry_run=False, mcp=None):
+    def __init__(self, agent, tracker, claude, dry_run=False, mcp=None, collector=None):
         self.agent = agent
         self.tracker = tracker
         self.claude = claude
         self.dry_run = dry_run
         self.mcp = mcp          # the agent's MCP config file (mcp.mcp_config)
+        self.collector = collector      # collector(issue or None): gc of finished issues, run by the release worker
         self.runner = runner.for_agent(agent)
         self.user_id = tracker.user_id()
         self._queue = pool.RunQueue()
@@ -59,7 +60,7 @@ class Dispatcher:
         """An issue assignment from Hermes: work it when it hands this agent work from an allowed user. A status change
         is only handed to the release worker: this runs on the listener thread, which must not wait on Gaia."""
         if policy.is_status_event(envelope):
-            if self._deps.any_held():       # nothing waiting: no Gaia read is worth making
+            if self._deps.any_held() or self._collects():   # else no Gaia read is worth making
                 self._releases.put(policy.event_issue_number(envelope))
             return
         number = policy.event_issue(envelope, self.agent, self.user_id)
@@ -73,6 +74,22 @@ class Dispatcher:
                 self.release_held("status changed", changed)
             except Exception as e:  # never let one re-check stop the release worker
                 log(f"held re-check failed: {e}", self.agent.name)
+            self.collect_finished(changed)
+
+    def _collects(self):
+        return self.collector is not None and not self.dry_run
+
+    def collect_finished(self, issue=None):
+        """Remove the workspace and container leftovers of the issue that just changed status (all of them when it
+        is None), if it is finished; a run in flight is never touched."""
+        if not self._collects():
+            return
+        try:
+            for number, action, reason in self.collector(issue):
+                if action == "removed":
+                    log(f"gc: removed #{number} ({reason})", self.agent.name)
+        except Exception as e:      # housekeeping never stops the release worker
+            log(f"gc failed: {e}", self.agent.name)
 
     def _recheck(self, dependencies):
         """A dependency may have turned done between reading its status and holding the issue; that status event found
