@@ -55,7 +55,7 @@ class DispatcherTest(unittest.TestCase):
         self.patches = [mock.patch.object(db, "DB_FILE", tmp / "talos.db"),
                         mock.patch.object(dispatcher_mod, "log", lambda *a, **k: None),  # keep talos.log real
                         mock.patch.object(dispatcher_mod, "lease_file", lambda name: tmp / f"{name}-leases.json"),
-                        mock.patch.object(dispatcher_mod.workspaces, "ensure",
+                        mock.patch.object(dispatcher_mod.runner.workspaces, "ensure",
                                           lambda root, tools, number, repo: tmp / f"issue-{number}")]
         for p in self.patches:
             p.start()
@@ -136,6 +136,17 @@ class DispatcherTest(unittest.TestCase):
         self.assertAlmostEqual(run_log.recent(1)[0]["cost_usd"], 0.30)
         self.assertEqual(sessions.get("odysseus", 42)["session_id"], "s2")
 
+    def test_runner_without_sessions_starts_warm_issues_cold_with_catch_up(self):
+        recent = dispatcher_mod._iso(dispatcher_mod._now() - timedelta(minutes=10))
+        sessions.update("odysseus", 42, session_id="s1", session_cost_usd=1.46, last_ended_at=recent)
+        cold = dispatcher_mod.runner.LocalRunner()
+        cold.resumable = False
+        with mock.patch.object(dispatcher_mod.runner, "for_agent", lambda agent: cold):
+            self.dispatch(make_issue(status="feedback"), [result("needs_input", session="s2")],
+                          **self.feedback_agent())
+        self.assertIsNone(self.calls[0]["resume"])
+        self.assertIn("not resumed", self.calls[0]["prompt"])
+
     def test_new_status_never_gets_catch_up_text(self):
         self.dispatch(make_issue(status="new"), [result("needs_input")])
         self.assertNotIn("not resumed", self.calls[0]["prompt"])
@@ -157,9 +168,9 @@ class DispatcherTest(unittest.TestCase):
         tracker = StubTracker(make_issue())
 
         def refuse(*a):
-            raise dispatcher_mod.workspaces.WorkspaceError("branch is checked out elsewhere")
+            raise dispatcher_mod.runner.workspaces.WorkspaceError("branch is checked out elsewhere")
 
-        with mock.patch.object(dispatcher_mod.workspaces, "ensure", refuse):
+        with mock.patch.object(dispatcher_mod.runner.workspaces, "ensure", refuse):
             outcome = dispatcher_mod.Dispatcher(make_agent(), tracker, "claude").handle(42)
         self.assertEqual(outcome, "failed")
         self.assertEqual(tracker.handoffs, [("pending", "1")])

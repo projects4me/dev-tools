@@ -1,4 +1,8 @@
-"""Runs one headless Claude Code session for an agent and returns its JSON result."""
+"""Runs one headless Claude Code session for an agent and returns its JSON result.
+
+A Runner is where the session runs: LocalRunner on this machine in the issue's workspace, ContainerRunner
+(container.py) in a container on a Docker host. The agent's agent.json `runner` picks one; the dispatcher only
+sees the interface."""
 
 import glob
 import json
@@ -6,10 +10,12 @@ import os
 import subprocess
 import sys
 import time
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from .config import DEV_TOOLS, LOG_DIR, OUTCOME_SCHEMA, WORKSPACE, now_stamp
+from . import workspaces
+from .config import CONTAINER_DIR, DEV_TOOLS, LOG_DIR, OUTCOME_SCHEMA, WORKSPACE, now_stamp
 
 
 def build_command(claude, agent, model, session_id=None, new_session_id=None, limits=None, mcp=None):
@@ -51,11 +57,16 @@ def build_command(claude, agent, model, session_id=None, new_session_id=None, li
     return cmd
 
 
+def _project_dirs():
+    """Where Claude keeps transcripts: this user's ~/.claude, and the per-issue ~/.claude of container runs."""
+    return [os.path.expanduser("~/.claude/projects/*"), str(CONTAINER_DIR / "*" / "claude" / "projects" / "*")]
+
+
 def transcript(session_id):
-    """The session's live transcript (~/.claude/projects/<workspace>/<id>.jsonl), or None."""
+    """The session's live transcript (<claude home>/projects/<workspace>/<id>.jsonl), or None."""
     if not session_id:
         return None
-    found = glob.glob(os.path.expanduser(f"~/.claude/projects/*/{session_id}.jsonl"))
+    found = [p for d in _project_dirs() for p in glob.glob(os.path.join(d, f"{session_id}.jsonl"))]
     return Path(max(found, key=os.path.getmtime)) if found else None
 
 
@@ -65,7 +76,7 @@ def transcript_for_issue(issue, max_age_hours=24):
     cutoff = time.time() - max_age_hours * 3600
     needle = f"issue #{issue} "
     found = []
-    for path in glob.glob(os.path.expanduser("~/.claude/projects/*/*.jsonl")):
+    for path in (p for d in _project_dirs() for p in glob.glob(os.path.join(d, "*.jsonl"))):
         if os.path.getmtime(path) < cutoff:
             continue
         with open(path, encoding="utf-8", errors="replace") as f:
@@ -136,12 +147,69 @@ def recent_steps(path, count=10):
     return steps[-count:]
 
 
+@dataclass
+class Job:
+    """One Claude run: the `claude -p` argv (build_command), its environment (this process's, the agent's GAIA_*
+    sign-in, agent.json env and the test slot), the prompt and the issue and repo it is for."""
+    agent_name: str
+    issue: int
+    repo: str
+    cmd: list
+    env: dict
+    prompt: str
+
+
+class Runner:
+    """Where a job's Claude session runs. `execute` returns (result dict|None, log path) like `run`."""
+    resumable = True      # keeps sessions between runs; False = each run starts cold (the catch-up prompt)
+
+    def claude_bin(self, host_claude):
+        """The claude binary to name in the argv."""
+        return host_claude
+
+    def mcp_config(self, host_mcp):
+        """The MCP config file to name in the argv."""
+        return host_mcp
+
+    def execute(self, job):
+        raise NotImplementedError
+
+
+class LocalRunner(Runner):
+    """On this machine, in the issue's own workspace (workspaces.py)."""
+
+    def execute(self, job):
+        cwd, env = self.workspace(job.issue, job.repo)
+        return run(job.cmd, {**job.env, **env}, job.agent_name, job.issue, job.prompt, cwd=cwd)
+
+    @staticmethod
+    def workspace(number, repo):
+        """(cwd, env) for a run: the issue's own workspace with its repo as a git worktree, so runs on different
+        issues never switch branches under each other. The workspace root repo (pr4m) has no worktree."""
+        if not repo or repo == "pr4m":
+            return WORKSPACE, {}
+        folder = workspaces.ensure(WORKSPACE, DEV_TOOLS, number, repo)
+        return folder, workspaces.env(folder)
+
+
+def for_agent(agent):
+    """The runner agent.json's `runner` names (default local)."""
+    if (agent.runner or {}).get("type", "local") == "container":
+        from .container import ContainerRunner
+        return ContainerRunner(agent)
+    return LocalRunner()
+
+
+def new_log(agent_name, issue):
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    return LOG_DIR / f"{agent_name}-{issue}-{now_stamp()}.json"
+
+
 def run(cmd, env, agent_name, issue, prompt, cwd=None):
     """Run Claude in cwd (the issue's workspace, see workspaces.py; default the workspace root), the prompt on
     stdin; keep the raw output in state/logs.
     Returns (result dict|None, log path). The log path exists before launch, so a launch failure is written there."""
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
-    log_path = LOG_DIR / f"{agent_name}-{issue}-{now_stamp()}.json"
+    log_path = new_log(agent_name, issue)
     try:
         proc = subprocess.run(cmd, cwd=cwd or WORKSPACE, env=env, capture_output=True, text=True,
                               encoding="utf-8", errors="replace", input=prompt)

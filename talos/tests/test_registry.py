@@ -64,6 +64,19 @@ class RegistryTest(unittest.TestCase):
             registry.load_agent(self.folder)
         self.assertIn("GAIA_EMAIL", str(e.exception))
 
+    def test_runner_is_local_unless_a_container_is_configured(self):
+        local = {"acceptAssignmentsFrom": ["7"], "handoffTo": "7"}
+        (self.local / "agent.local.json").write_text(json.dumps(local), encoding="utf-8")
+        self.assertEqual(registry.load_agent(self.folder).runner, {})
+        for runner, ok in (({"type": "container", "image": "p4m-talos-runner"}, True),
+                           ({"type": "container"}, False), ({"type": "ssh"}, False)):
+            (self.local / "agent.local.json").write_text(json.dumps({**local, "runner": runner}), encoding="utf-8")
+            if ok:
+                self.assertEqual(registry.load_agent(self.folder).runner, runner)
+            else:
+                with self.assertRaises(TalosError):
+                    registry.load_agent(self.folder)
+
     def test_shipped_prompts_name_no_person(self):
         raw = (ODYSSEUS / "agent.json").read_text(encoding="utf-8") + (ODYSSEUS / "role.md").read_text(encoding="utf-8")
         self.assertNotIn("Hammad", raw)

@@ -18,6 +18,7 @@ LOCAL_DIR = WORKSPACE / "dev-tools"
 AGENTS_DIR = TALOS_DIR / "agents"
 STATE_DIR = LOCAL_DIR / "talos" / "state"
 LOG_DIR = STATE_DIR / "logs"
+CONTAINER_DIR = STATE_DIR / "containers"   # per-issue ~/.claude of container runs (container.py)
 CONFIG_FILE = TALOS_DIR / "config.json"
 OUTCOME_SCHEMA = TALOS_DIR / "schema" / "outcome.json"
 LISTENER = TALOS_DIR / "listener" / "listen.js"
