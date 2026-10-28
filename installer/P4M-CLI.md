@@ -96,11 +96,13 @@ started from the same image, env, network and mounts with the source pointed her
 Gaia suites share the pr4m_test database, so without `--slot` they run one at a time (a lock serialises them).
 **Test slots** let several run at once: slot K (1..`TEST_SLOTS`) owns database `pr4m_test_K` and container
 `p4m-test-gaia-slotK`, and has its own lock. The slot databases are cloned (`CREATE DATABASE … TEMPLATE`, seconds)
-from `pr4m_test_template`, which the api-tester harness seeds once; it is rebuilt when pr4m's schema (a migration)
-or the checkout's seeds (`db/seeds`, the harness script) change. A slot serves any checkout: one synced into a slot
+from a template the api-tester harness seeds once per key: pr4m's schema (a migration) and the checkout's seeds
+(`db/seeds`, the harness script). Each key has its own template, `pr4m_test_tpl_<key>`, so a branch and its baseline
+with different seeds each reuse theirs; at most `TEST_TEMPLATES` are kept and building one more drops the least
+recently used. A slot takes its lock, then the templates' lock. A slot serves any checkout: one synced into a slot
 that last held another is copied in from scratch. `ai test gaia --slot K` runs the gaia suites in slot K.
-`phpunit --slot K` needs the slot's database (`p4m test slots setup K`). There is one template: slots testing
-checkouts with different seeds rebuild it in turn (a full seed each time).
+`phpunit --slot K` needs the slot's database (`p4m test slots setup K`). `p4m test slots status` lists the
+templates with their keys.
 | `p4m repos status` / `sync` / `fix-eol` | Git state; clone + checkout + pull; CRLF→LF for shell scripts |
 | `p4m doctor` | Check tools, WSL, Docker, ports 80/443/5432, hosts file, CA trust, repos |
 | `p4m watch start\|stop\|status` | File sync of the prometheus source into its container (started by `p4m up`) |
@@ -164,6 +166,7 @@ the page works through the proxy.
 | `FILE_WATCH_POLLING` | auto | Polling watchers for ember/nodemon/uvicorn (needed on Windows bind mounts) |
 | `DEFAULT_SERVICES` | all | What `p4m up` starts with no args (`all` or `core`) |
 | `TEST_SLOTS` | 2 | Number of Gaia test slots (`p4m test slots`, `--slot K`), 1–16 |
+| `TEST_TEMPLATES` | 3 | Slot templates (one per migrations + seeds) to keep, 1–16; the least recently used is dropped |
 
 ## Troubleshooting
 

@@ -161,6 +161,8 @@ DEFAULT_SERVICES=all
 
 # Gaia test slots (`p4m test slots`): how many suites can run at once, each on its own database.
 TEST_SLOTS=2
+# How many slot templates (one per migrations + seeds) to keep; the least recently used is dropped.
+TEST_TEMPLATES=3
 """
 
 
@@ -1448,13 +1450,14 @@ def ares_probe_output(model: str) -> str:
 
 
 @contextlib.contextmanager
-def _db_lock(db: str):
+def _lock(name: str):
+    """Lock file `name` in the state folder, waited for up to an hour."""
     with contextlib.ExitStack() as stack:
         try:
             stack.enter_context(filelock.held(
-                STATE_DIR / f"{db}.lock", wait_seconds=3600,
-                on_wait=lambda p: info(f"waiting for another {db} user to finish ({p}, held by "
-                                       f"{filelock.describe_holder(p)}; kill it if it is orphaned)")))
+                STATE_DIR / name, wait_seconds=3600,
+                on_wait=lambda p: info(f"waiting for another {name.removesuffix('.lock')} user to finish ({p}, "
+                                       f"held by {filelock.describe_holder(p)}; kill it if it is orphaned)")))
         except filelock.LockTimeout as e:
             raise P4MError(str(e))
         yield
@@ -1462,21 +1465,17 @@ def _db_lock(db: str):
 
 def test_db_lock(slot: int | None = None):
     """Exclusive use of pr4m_test, or of a slot's database (every api run re-seeds or resets it)."""
-    return _db_lock(testslots.db_name(slot))
-
-
-def template_lock():
-    """Exclusive use of the slot template while it is built or cloned. Always taken after a slot's lock."""
-    return _db_lock(testslots.TEMPLATE_DB)
+    return _lock(testslots.lock_name(slot))
 
 
 def test_slots() -> testslots.Slots:
     try:
-        count = testslots.slot_count(settings())
+        cfg = settings()
+        count, keep = testslots.slot_count(cfg), testslots.template_count(cfg)
     except testslots.SlotError as e:
         raise P4MError(str(e))
-    return testslots.Slots(testslots.Postgres(PG_CONTAINER, PG_USER), STATE_DIR / "test" / "slots", count,
-                           seed=lambda src, db, fixtures: prepare_test_db(src, db, fixtures))
+    return testslots.Slots(testslots.PsqlGateway(PG_CONTAINER, PG_USER), STATE_DIR / "test" / "slots", count,
+                           seed=lambda src, db, fixtures: prepare_test_db(src, db, fixtures), keep=keep)
 
 
 def _slot_arg(args) -> int | None:
@@ -1490,22 +1489,21 @@ def _slot_arg(args) -> int | None:
         raise P4MError(str(e))
 
 
-def prepare_slot(slots: testslots.Slots, slot: int, src: Path, force: bool = False, build: bool = True) -> None:
-    """Slot `slot`'s database freshly cloned from the template (rebuilt first if `build` and `src`'s seeds or
-    pr4m's schema changed), and the template's fixtures written into `src`. Run it under the slot's lock."""
+def prepare_slot(slots: testslots.Slots, slot: int, src: Path, force: bool = False, build: bool = True,
+                 slot_held: bool = False, sync=None) -> None:
+    """Slot `slot`'s database freshly cloned from `src`'s template (built first if `build` and there is none for
+    `src`'s seeds and pr4m's schema; rebuilt with `force`), the template's fixtures written into `src`, then
+    `sync()`. Takes the slot's lock, then the templates' (`slot_held`: the caller already holds the slot's)."""
     if not is_running(PG_CONTAINER):
         raise P4MError("postgres is not running - `p4m up postgres` first")
+    held = testslots.lock_name(slot) if slot_held else None
     try:
-        with template_lock():
-            current, why = (False, "--force") if force else slots.template_current(src) if build else (True, "")
-            if not current:
-                info(f"building {testslots.TEMPLATE_DB} from {src} ({why})")
-                slots.build_template(src, force=True)
-            slots.reset(slot)
-            slots.write_fixtures(src)              # under the lock: another slot may be rebuilding the template
+        template, _ = slots.prepare(
+            slot, src, lambda name: contextlib.nullcontext() if name == held else _lock(name), sync=sync,
+            build=build, force=force, on_build=lambda db, why: info(f"building {db} from {src} ({why})"))
     except testslots.SlotError as e:
         raise P4MError(str(e))
-    info(f"slot {slot}: {testslots.db_name(slot)} reset from {testslots.TEMPLATE_DB}")
+    info(f"slot {slot}: {testslots.db_name(slot)} reset from {template}")
 
 
 def cmd_test_slots(args) -> None:
@@ -1521,18 +1519,9 @@ def cmd_test_slots(args) -> None:
         _slots_status(slots, Path(args.src).resolve() if args.src else ROOT / "gaia")
         return
     src = _test_checkout(args, "gaia")
-    if args.action == "setup" and args.force:      # no slot lock held yet, so the lock order still holds
-        if not is_running(PG_CONTAINER):
-            raise P4MError("postgres is not running - `p4m up postgres` first")
-        with template_lock():
-            info(f"building {testslots.TEMPLATE_DB} from {src} (--force)")
-            try:
-                slots.build_template(src, force=True)
-            except testslots.SlotError as e:
-                raise P4MError(str(e))
-    for k in chosen:                               # slot lock, then the template's: the order every user takes
-        with test_db_lock(k):                      # reset only clones; setup rebuilds a stale template first
-            prepare_slot(slots, k, src, build=args.action == "setup")
+    force = args.action == "setup" and args.force
+    for i, k in enumerate(chosen):                 # reset only clones; setup builds a missing template first
+        prepare_slot(slots, k, src, force=force and i == 0, build=args.action == "setup")
     ok(f"slot(s) {', '.join(map(str, chosen))} ready")
 
 
@@ -1541,7 +1530,14 @@ def _slots_status(slots: testslots.Slots, src: Path) -> None:
         raise P4MError("postgres is not running - `p4m up postgres` first")
     try:
         current, why = slots.template_current(src)
-        info(f"{testslots.TEMPLATE_DB}: {'current' if current else 'stale'} for {src} ({why})")
+        info(f"template for {src}: {'current' if current else 'missing'} ({why})")
+        info(f"templates (most recently used first, {slots.keep} kept):")
+        templates = slots.template_status()
+        for key, db, exists, entry in templates:
+            print(f"  {db}: key {key}, built {entry.get('built')} from {entry.get('src')}, last used "
+                  f"{entry.get('used')}" + ("" if exists else " (database missing)"))
+        if not templates:
+            print("  none yet")
         for k, db, exists in slots.status():
             box = testenv.GaiaTestContainer(src, STATE_DIR / "test", slot=k)
             container = testenv.inspect(box.name)
@@ -1610,11 +1606,12 @@ def _run_api(args, src: Path, slot: int | None, box: testenv.GaiaTestContainer) 
         cmd += ["--hermes-url", f"https://hermes-test.{domain()}"]
     if args.filter:
         cmd += ["--filter", args.filter]
-    if args.prepare and slot:
-        prepare_slot(test_slots(), slot, src)   # a clone of the template, not a re-seed
-    elif args.prepare:
-        prepare_test_db(src)               # raises on failure: never test a half-seeded DB
-    _sync_gaia(box)                        # after prepare: it writes the fixtures into the checkout
+    if args.prepare and slot:              # a clone of the template, not a re-seed; then the sync
+        prepare_slot(test_slots(), slot, src, slot_held=True, sync=lambda: _sync_gaia(box))
+    else:
+        if args.prepare:
+            prepare_test_db(src)           # raises on failure: never test a half-seeded DB
+        _sync_gaia(box)                    # after prepare: it writes the fixtures into the checkout
     if args.regenerate_backend:            # backend.json is generated from the metadata and routes
         gen = run(["docker", "exec", "-w", "/var/www/html", name, "php",
                    "tools/api-tester/bin/generate-backend-apis.php"], check=False, capture=True)
@@ -2094,12 +2091,12 @@ def build_parser() -> argparse.ArgumentParser:
     t.add_argument("--src", help="checkout to test (default: the workspace's prometheus)")
     t.add_argument("--fresh", action="store_true", help="recreate the test container (full rebuild)")
     t = tsub.add_parser("hermes", help="hermes node --test"); t.add_argument("--src", help=src_help)
-    t = tsub.add_parser("slots", help="gaia test slots: setup (build the template if stale, reset the slots), "
+    t = tsub.add_parser("slots", help="gaia test slots: setup (build the checkout's template if missing, reset the slots), "
                                       "status, reset [K ...]")
     t.add_argument("action", choices=["setup", "status", "reset"])
     t.add_argument("slots", nargs="*", type=int, metavar="K", help="slots to set up or reset (default: all)")
-    t.add_argument("--src", help="gaia checkout the template is seeded from (default: the workspace's)")
-    t.add_argument("--force", action="store_true", help="rebuild the template even if it is current")
+    t.add_argument("--src", help="gaia checkout whose template the slots are cloned from (default: the workspace's)")
+    t.add_argument("--force", action="store_true", help="rebuild the checkout's template even if it exists")
     t = tsub.add_parser("clean", help="remove the throwaway test containers (with --src only that checkout's; "
                                       "without, the slot containers too)")
     t.add_argument("--src", help="only the containers for this checkout")
