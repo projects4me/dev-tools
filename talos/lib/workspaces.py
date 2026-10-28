@@ -111,6 +111,25 @@ def _add_worktree(main, dest, issue, base):
         _git(main, "worktree", "add", "-b", branch, str(dest), f"origin/{base}")
 
 
+def worktrees(root, issue):
+    """The git worktrees in the issue's workspace (not the links to the shared folders)."""
+    folder = path(root, issue)
+    if not folder.is_dir():
+        return []
+    return [c for c in folder.iterdir() if not is_link(c) and (c / ".git").is_file()]
+
+
+def dirty(root, issue):
+    """Names of the issue's worktrees that have uncommitted changes."""
+    return [w.name for w in worktrees(root, issue) if _git(w, "status", "--porcelain")]
+
+
+def prune(root):
+    """Drop the git bookkeeping of worktrees whose folders are gone, in every repo of the workspace."""
+    for repo in sorted(p for p in Path(root).iterdir() if (p / ".git").exists()):
+        _git(repo, "worktree", "prune", check=False)
+
+
 def remove(root, issue, force=False):
     """Remove the issue's workspace: the links (never their targets), the worktrees (their branches stay) and the
     folder. Refuses when a worktree has uncommitted changes, unless force. Returns whether anything was there."""
