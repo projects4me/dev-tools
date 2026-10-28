@@ -1,9 +1,30 @@
 """Agent registry: one folder per agent under agents/, each with agent.json and its role prompt."""
 
 import json
+import os
+import sys
 from dataclasses import dataclass, field
 
-from .config import AGENTS_DIR, LOCAL_DIR, TalosError, log
+from .config import AGENTS_DIR, DEV_TOOLS, LOCAL_DIR, TalosError, log
+
+sys.path.insert(0, str(DEV_TOOLS / "installer"))
+import testslots  # noqa: E402  (stdlib only: the slot count p4m uses)
+
+
+def installed_test_slots():
+    """Number of test slots p4m provides: TEST_SLOTS from p4m.env (the real environment wins)."""
+    cfg = {}
+    try:
+        lines = (LOCAL_DIR / "p4m.env").read_text(encoding="utf-8").splitlines()
+    except OSError:
+        lines = []
+    for line in lines:
+        key, sep, value = line.strip().partition("=")
+        if sep and not key.startswith("#"):
+            cfg[key.strip()] = value.strip().strip('"').strip("'")
+    if "TEST_SLOTS" in os.environ:
+        cfg["TEST_SLOTS"] = os.environ["TEST_SLOTS"]
+    return testslots.slot_count(cfg)
 
 
 @dataclass
@@ -98,6 +119,15 @@ def load_agent(folder):
     kind = raw.get("kind", "issues")
     if kind not in KINDS:
         raise TalosError(f"{path}: kind must be one of {', '.join(KINDS)}")
+    test_slots = int(raw.get("testSlots", 0))
+    if test_slots > 0:
+        try:
+            available = installed_test_slots()
+        except testslots.SlotError as e:
+            raise TalosError(f"{path}: {e}")
+        if test_slots > available:
+            raise TalosError(f"{path}: testSlots is {test_slots} but TEST_SLOTS in p4m.env is {available}: "
+                             f"lower testSlots or raise TEST_SLOTS")
     actions = {status: Action(prompt=a["prompt"], resume=bool(a.get("resume")))
                for status, a in raw["actions"].items()}
     return Agent(
@@ -136,7 +166,7 @@ def load_agent(folder):
         max_parallel=max(1, int(raw.get("maxParallel", 1))),
         max_parallel_by_repo={str(k): int(v) for k, v in raw.get("maxParallelByRepo", {}).items()},
         max_parallel_by_model={str(k): int(v) for k, v in raw.get("maxParallelByModel", {"opus": 1}).items()},
-        test_slots=int(raw.get("testSlots", 0)),
+        test_slots=test_slots,
         runner=dict(runner),
         extra={k: raw[k] for k in ("knowledgeMap", "ideaSource") if k in raw},
     )
