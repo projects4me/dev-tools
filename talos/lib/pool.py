@@ -3,7 +3,6 @@
 Pure scheduling, no tracker or Claude: the dispatcher decides what a job is, this decides when it may start.
 """
 
-import heapq
 import itertools
 import json
 import threading
@@ -21,23 +20,43 @@ def order_key(resumption, priority):
 
 
 class RunQueue:
-    """A blocking priority queue: get() returns the lowest key, ties in the order they were put."""
+    """A blocking priority queue. get() returns the front items first (put back after a usage limit), then the lowest
+    key, ties in the order they were put. A key of None is worked out when the item is taken: get(rank) asks
+    `rank(item)` for it, so a priority that changed while the item waited is respected."""
 
     def __init__(self):
-        self._heap = []
+        self._entries = []          # (front, key, seq, item)
         self._seq = itertools.count()
         self._cond = threading.Condition()
 
-    def put(self, key, item):
+    def put(self, key, item, front=False):
         with self._cond:
-            heapq.heappush(self._heap, (key, next(self._seq), item))
+            self._entries.append((0 if front else 1, key, next(self._seq), item))
             self._cond.notify()
 
-    def get(self):
-        with self._cond:
-            while not self._heap:
-                self._cond.wait()
-            return heapq.heappop(self._heap)[2]
+    def get(self, rank=None):
+        while True:
+            with self._cond:
+                while not self._entries:
+                    self._cond.wait()
+                entries = list(self._entries)
+            seq = self._first(entries, rank)
+            with self._cond:        # another worker may have taken it while the keys were being read
+                for entry in self._entries:
+                    if entry[2] == seq:
+                        self._entries.remove(entry)
+                        return entry[3]
+
+    @staticmethod
+    def _first(entries, rank):
+        """The sequence number of the entry to take. `rank` (a tracker call) runs outside the lock, and only for
+        entries that wait for it: front items keep their put order."""
+        def sort_key(entry):
+            front, key, seq, item = entry
+            if key is None:
+                key = (0,) if front == 0 else (float("inf"),) if rank is None else rank(item)
+            return front, key, seq
+        return min(entries, key=sort_key)[2]
 
 
 @dataclass(frozen=True)

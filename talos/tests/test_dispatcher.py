@@ -2,6 +2,7 @@
 
 import sys
 import tempfile
+import threading
 import unittest
 from datetime import timedelta
 from pathlib import Path
@@ -9,7 +10,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from lib import db, dispatcher as dispatcher_mod, runs as run_log, sessions  # noqa: E402
+from lib import db, dispatcher as dispatcher_mod, policy, runs as run_log, sessions  # noqa: E402
 from test_policy import AGENT_ID, make_agent, make_issue  # noqa: E402
 
 
@@ -111,13 +112,51 @@ class DispatcherTest(unittest.TestCase):
                  "result": f"Claude AI usage limit reached|{int(reset.timestamp())}"}
         d_holder = {}
         outcome, tracker = self.dispatch(make_issue(), [limit], holder=d_holder)
-        self.assertEqual(outcome, "limited")
+        self.assertEqual(outcome, policy.LIMITED)
         self.assertEqual(tracker.handoffs, [])
         self.assertEqual(tracker._issue["assignee"], AGENT_ID)
         self.assertEqual(sessions.get("odysseus", 42)["runs"], 0)
-        self.assertEqual(run_log.recent(1)[0]["outcome"], "limited")
-        self.assertGreater(d_holder["d"]._paused_until, reset)
+        self.assertEqual(run_log.recent(1)[0]["outcome"], policy.LIMITED)
+        self.assertGreater(d_holder["d"]._pause.until, reset)
         self.assertEqual(len(tracker.comments), 1)   # 3h pause is longer than the 1h default
+
+    def new_dispatcher(self, **agent_overrides):
+        return dispatcher_mod.Dispatcher(make_agent(**agent_overrides), StubTracker(make_issue()), "claude")
+
+    def test_workers_hitting_a_limit_together_make_one_pause_and_one_comment(self):
+        reset = dispatcher_mod._now() + timedelta(hours=3)
+        limit = {"is_error": True, "subtype": "success", "session_id": "s1",
+                 "result": f"Claude AI usage limit reached|{int(reset.timestamp())}"}
+        d = self.new_dispatcher()
+        outcomes = []
+        with mock.patch.object(dispatcher_mod.runner, "run", lambda *a, **k: (limit, Path("log.json"))),                 mock.patch.object(dispatcher_mod.runner, "build_command", lambda *a, **k: ["claude", "--model", "m"]):
+            threads = [threading.Thread(target=lambda n=n: outcomes.append(d.handle(n))) for n in (41, 42, 43)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(10)
+        self.assertEqual(outcomes, [policy.LIMITED] * 3)
+        self.assertEqual(len(d.tracker.comments), 1)
+        self.assertEqual(d._pause._streak, 1)
+
+    def test_a_limited_issue_goes_back_to_the_front(self):
+        d = self.new_dispatcher()
+        d.submit(1, "a")
+        d.submit(2, "b")
+        first = d._queue.get(d._rank)
+        d._queue.put(None, first, front=True)
+        d.submit(3, "c")
+        self.assertEqual([d._queue.get(d._rank)[0] for _ in range(3)], [first[0], 2, 3])
+
+    def test_queue_order_uses_the_priority_at_pop_time(self):
+        d = self.new_dispatcher()
+        calls = []
+        d.tracker.issue = lambda n: calls.append(n) or make_issue(priority="low" if n == 1 else "medium")
+        d.submit(1, "a")
+        d.submit(2, "b")
+        self.assertEqual(calls, [])                      # nothing is read when queueing
+        d.tracker.issue = lambda n: make_issue(priority="blocker" if n == 1 else "low")
+        self.assertEqual(d._queue.get(d._rank)[0], 1)    # raised while it waited
 
     def test_warm_session_is_resumed_and_run_cost_is_incremental(self):
         recent = dispatcher_mod._iso(dispatcher_mod._now() - timedelta(minutes=10))

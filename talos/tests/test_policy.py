@@ -100,12 +100,12 @@ class ReadOutcomeTest(unittest.TestCase):
     def test_structured_outcome(self):
         r = {"subtype": "success", "session_id": "s",
              "structured_output": {"outcome": "needs_input", "summary": "q", "comment": "<p>?</p>"}}
-        self.assertEqual(policy.read_outcome(r), ("needs_input", "q", "<p>?</p>", ""))
+        self.assertEqual(policy.read_outcome(r), ("needs_input", "q", "<p>?</p>", "", None))
 
     def test_ready_to_ship_carries_the_handoff_note(self):
         r = {"subtype": "success", "structured_output": {"outcome": "ready_to_ship", "summary": "s",
                                                          "handoff": "branch claude-issue-42"}}
-        self.assertEqual(policy.read_outcome(r), ("ready_to_ship", "s", "", "branch claude-issue-42"))
+        self.assertEqual(policy.read_outcome(r), ("ready_to_ship", "s", "", "branch claude-issue-42", None))
 
     def test_error_result_is_failure(self):
         self.assertEqual(policy.read_outcome({"is_error": True, "subtype": "error_during_execution"})[0], "failed")
@@ -121,14 +121,14 @@ class ReadOutcomeTest(unittest.TestCase):
         self.assertEqual(policy.read_outcome(None)[0], "failed")
 
     def test_turn_budget_hands_back_for_input(self):
-        outcome, summary, comment, _ = policy.read_outcome(
+        outcome, summary, comment, *_ = policy.read_outcome(
             {"is_error": True, "subtype": "error_max_turns", "num_turns": 80, "session_id": "s"})
         self.assertEqual(outcome, "needs_input")
         self.assertIn("80-turn budget", summary)
         self.assertIn("assign the issue back", comment)
 
     def test_cost_budget_hands_back_for_input(self):
-        outcome, summary, comment, _ = policy.read_outcome(
+        outcome, summary, comment, *_ = policy.read_outcome(
             {"is_error": True, "subtype": "error_max_budget_usd", "total_cost_usd": 15.2, "session_id": "s"})
         self.assertEqual(outcome, "needs_input")
         self.assertIn("$15.20 cost budget", summary)
