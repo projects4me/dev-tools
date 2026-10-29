@@ -17,6 +17,8 @@ WORKSPACE = DEV_TOOLS.parent
 # This machine's settings and state live in the dev-tools checkout, also when the code runs from the runtime copy
 # (<workspace>/.dev-tools-runtime, see `p4m runtime`), so their paths don't depend on which copy is running.
 LOCAL_DIR = WORKSPACE / "dev-tools"
+# the same name as talos/lib/workspaces.py RUNTIME_NAME
+RUNTIME_NAME = ".dev-tools-runtime"     # the runtime copy of dev-tools (installer/runtime.py)
 ODYSSEUS = DEV_TOOLS / "odysseus" / "odysseus"
 P4M = DEV_TOOLS / "installer" / "p4m.py"
 GAIA_MCP = DEV_TOOLS / "gaia-mcp"
@@ -61,7 +63,12 @@ def repo_dir(repo):
     if repo not in REPOS:
         raise AiError(f"unknown repo '{repo}' (one of: {', '.join(REPOS)})")
     root = run_workspace() if repo != "pr4m" else None
-    return ((root or WORKSPACE) / REPO_PATH.get(repo, repo)).resolve()
+    folder = ((root or WORKSPACE) / REPO_PATH.get(repo, repo)).resolve()
+    if folder.name == RUNTIME_NAME:
+        raise AiError(f"{repo} in {root or WORKSPACE} is the runtime copy ({folder}), the tooling this run uses; it "
+                      f"only changes through `p4m runtime update`. Work on dev-tools needs its own dev-tools issue "
+                      f"(Talos gives it its own worktree): propose one instead of changing the tooling in place.")
+    return folder
 
 
 def base_branch(repo):

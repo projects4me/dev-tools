@@ -92,7 +92,8 @@ class BotReviewTest(unittest.TestCase):
             self.prompts.append(prompt)
             return next(replies), Path("log.json")
 
-        def fake_build(claude, agent, model, sid=None, new_session_id=None, limits=None, mcp=None, memory=None):
+        def fake_build(claude, agent, model, sid=None, new_session_id=None, limits=None, mcp=None, memory=None,
+                       guard=None):
             self.resumed.append(sid)
             return ["claude", "--model", model]
 

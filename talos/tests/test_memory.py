@@ -1,6 +1,5 @@
 """The workspace's auto-memory folder, the one every Talos run shares (memory.py)."""
 
-import json
 import sys
 import unittest
 from pathlib import Path
@@ -28,7 +27,7 @@ class MemoryTest(unittest.TestCase):
             self.assertEqual(memory.claude_home(), Path("me") / ".claude")
 
     def test_settings(self):
-        self.assertEqual(json.loads(memory.settings(Path("m"))), {"autoMemoryDirectory": str(Path("m"))})
+        self.assertEqual(memory.settings(Path("m")), {"autoMemoryDirectory": str(Path("m"))})
 
 
 if __name__ == "__main__":

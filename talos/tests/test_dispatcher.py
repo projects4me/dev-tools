@@ -85,7 +85,8 @@ class DispatcherTest(unittest.TestCase):
             self.envs.append(env)
             return next(replies), Path("log.json")
 
-        def fake_build(claude, agent, model, sid=None, new_session_id=None, limits=None, mcp=None, memory=None):
+        def fake_build(claude, agent, model, sid=None, new_session_id=None, limits=None, mcp=None, memory=None,
+                       guard=None):
             self.calls.append({"resume": sid, "limits": limits})
             self.memories.append(memory)
             return ["claude", "--model", model]
@@ -101,6 +102,47 @@ class DispatcherTest(unittest.TestCase):
         with mock.patch.dict(dispatcher_mod.memory.os.environ, {"CLAUDE_CONFIG_DIR": "cfg"}),                 mock.patch.object(dispatcher_mod, "WORKSPACE", Path("/srv/Pr4M")):
             self.dispatch(make_issue(), [result("needs_input")])
         self.assertEqual(self.memories[0], Path("cfg") / "projects" / "-srv-Pr4M" / "memory")
+
+    def runtime_dispatch(self, after_entries, outcome="done"):
+        """A run from a runtime copy whose `git status` reads after_entries once the run ends."""
+        check = dispatcher_mod.runtime_check
+        before = check.Snapshot("a" * 40, "", frozenset())
+        after = check.Snapshot("a" * 40, "", frozenset(after_entries))
+        snapshots = iter([before, after])
+        log_file = Path(tempfile.mkdtemp()) / "run.json"
+        log_file.write_text("{}", encoding="utf-8")
+
+        def fake_run(cmd, env, agent, number, prompt, cwd=None):
+            self.calls[-1]["prompt"] = prompt
+            return result(outcome), log_file
+
+        def fake_build(*args, **kwargs):
+            self.calls.append(kwargs)
+            return ["claude", "--model", args[2]]
+
+        tracker = StubTracker(make_issue())
+        with mock.patch.object(dispatcher_mod, "_runtime_copy", lambda: Path("rt")), \
+                mock.patch.object(check, "snapshot", lambda copy: next(snapshots)), \
+                mock.patch.object(check, "report", lambda copy, b, found: "the diff\n"), \
+                mock.patch.object(check, "restore", mock.Mock(return_value=[])) as restore, \
+                mock.patch.object(dispatcher_mod.runner, "run", fake_run), \
+                mock.patch.object(dispatcher_mod.runner, "build_command", fake_build):
+            outcome = dispatcher_mod.Dispatcher(make_agent(), tracker, "claude").handle(42)
+        return outcome, tracker, restore, log_file.read_text(encoding="utf-8")
+
+    def test_run_that_changed_the_runtime_copy_is_restored_and_blocked(self):
+        outcome, tracker, restore, log_text = self.runtime_dispatch({(" M", "ai/lib/tests.py")})
+        self.assertEqual(outcome, "blocked")
+        self.assertEqual(tracker.comments, ["Agent Odysseus: changed the tooling in place"])
+        self.assertEqual(tracker.handoffs[0][0], make_agent().statuses["blocked"])
+        self.assertTrue(restore.called)
+        self.assertIn("the diff", log_text)
+        self.assertEqual(self.calls[0]["guard"], Path("rt"))     # the hook guards the same copy
+
+    def test_run_that_left_the_runtime_copy_alone_ends_as_reported(self):
+        outcome, tracker, restore, _ = self.runtime_dispatch(set(), outcome="needs_input")
+        self.assertEqual(outcome, "needs_input")
+        self.assertFalse(restore.called)
 
     def test_run_leases_a_slot_for_its_environment_and_releases_it(self):
         outcome, _ = self.dispatch(make_issue(), [result("needs_input")], max_parallel=2, test_slots=2)

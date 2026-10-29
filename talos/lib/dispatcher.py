@@ -6,12 +6,12 @@ import threading
 import uuid
 from datetime import datetime
 
-from . import bot_review, memory, policy, pool, runner, sessions, workspaces
+from . import bot_review, memory, policy, pool, runner, runtime_check, sessions, workspaces
 from .dependency_gate import DependencyGate
 from .registry import Action
 from .usage_pause import UsagePause
 from . import runs as run_log
-from .config import STATE_DIR, WORKSPACE, TalosError, log
+from .config import DEV_TOOLS, STATE_DIR, WORKSPACE, TalosError, log
 
 
 def _now():
@@ -25,6 +25,11 @@ def _iso(moment):
 def lease_file(agent_name):
     """Where an agent's leases in flight are written, for `talos status`."""
     return STATE_DIR / agent_name / "leases.json"
+
+
+def _runtime_copy():
+    """The runtime copy Talos runs from (`p4m runtime`), or None when it runs from a checkout (P4M_RUNTIME=off)."""
+    return DEV_TOOLS if DEV_TOOLS.name == workspaces.RUNTIME_NAME else None
 
 
 SLOT_REPO = "gaia"      # the only repo whose test suites run in a slot
@@ -270,10 +275,12 @@ class Dispatcher:
             return self._iteration_limit(number, done_runs)
         live_id = session_id or str(uuid.uuid4())
         limits = policy.run_limits(self.agent, model)
+        guard = self.runner.runtime_guard(_runtime_copy())   # the copy the hook and the post-run check guard
         cmd = runner.build_command(self.runner.claude_bin(self.claude), self.agent, model, session_id,
                                    new_session_id=None if session_id else live_id, limits=limits,
                                    mcp=self.runner.mcp_config(self.mcp),
-                                   memory=self.runner.memory_dir(memory.folder(WORKSPACE)))
+                                   memory=self.runner.memory_dir(memory.folder(WORKSPACE)),
+                                   guard=guard)
         mode = why or (f"resume {session_id[:8]}" if session_id else "new session")
         if not session_id:
             mode += f", session {live_id[:8]}"
@@ -292,6 +299,7 @@ class Dispatcher:
             sessions.update(self.agent.name, number, running=True, runs=done_runs + 1, last_model=model,
                             live_session_id=live_id, started_at=_iso(started))
             self._mark_picked_up(issue)
+            runtime_before = self._runtime_snapshot(number, guard)
             try:
                 env = {**self.tracker.child_env(), **self.agent.env}
                 if lease.slot:
@@ -318,6 +326,11 @@ class Dispatcher:
         cost_text = f"${cost:.2f}" if cost is not None else "cost unknown"
         log(f"#{number} {outcome}: {summary} ({cost_text}, {stats['turns']} turns, "
             f"peak context {stats['peak_context_tokens'] // 1000}K, log {log_name})", self.agent.name)
+        changed, diff_log = self._runtime_changes(number, guard, runtime_before, log_path)
+        if changed:
+            if outcome == policy.LIMITED:
+                self._pause_for_limit(number, reset_at)   # the usage limit still holds for the other issues
+            return self._runtime_changed(number, changed, diff_log.name)
 
         if outcome == policy.LIMITED:
             sessions.update(self.agent.name, number, runs=done_runs)   # a limited run is not an iteration
@@ -365,6 +378,47 @@ class Dispatcher:
                 body += f"<pre>{html.escape(comment)}</pre>"
             self._hand_off(number, "failed", f"{self.agent.display_name}: run failed", body, escaped=True)
         return outcome
+
+    # -- the runtime copy (runtime_check.py) -----------------------------------------------------
+
+    def _runtime_snapshot(self, number, guard):
+        """The guarded runtime copy's state before a run, or None when there is none or it can't be read."""
+        if not guard:
+            return None
+        try:
+            return runtime_check.snapshot(guard)
+        except runtime_check.RuntimeCheckError as e:
+            log(f"#{number} runtime copy not checked: {e}", self.agent.name)
+            return None
+
+    def _runtime_changes(self, number, guard, before, log_path):
+        """(what the run changed in the runtime copy, the log the diff went to); ([], None) for nothing."""
+        if before is None:
+            return [], None
+        log_path = log_path or runner.new_log(self.agent.name, number)
+        try:
+            found, left = runtime_check.after_run(guard, before, log_path)
+        except runtime_check.RuntimeCheckError as e:
+            log(f"#{number} runtime copy not checked or restored after the run: {e}", self.agent.name)
+            return [], None
+        if found:
+            log(f"#{number} changed the runtime copy ({'; '.join(found)}); "
+                + (f"not fully restored: {'; '.join(left)}" if left else "restored"), self.agent.name)
+        return found, log_path
+
+    def _runtime_changed(self, number, found, log_name):
+        """The run changed the tooling it ran on: whatever it reported, the issue goes to a person as blocked."""
+        bot_review.drop(self.agent.name, number)
+        items = "".join(f"<li><code>{html.escape(line)}</code></li>" for line in found)
+        self._hand_off(number, "blocked", f"{self.agent.display_name}: changed the tooling in place",
+                       f"<p>The run changed the runtime copy of dev-tools (<code>{workspaces.RUNTIME_NAME}</code>), "
+                       f"the tooling Talos and its agents run on:</p><ul>{items}</ul>"
+                       f"<p>Talos restored the copy and saved the diff in "
+                       f"<code>dev-tools/talos/state/logs/{html.escape(log_name)}</code>. Tooling must not be edited "
+                       f"or have branches checked out in place: it only changes through <code>p4m runtime "
+                       f"update</code>, and a fault in dev-tools becomes a dev-tools issue. Runs in parallel share "
+                       f"the copy, so check the diff belongs to this issue.</p>", escaped=True)
+        return "blocked"
 
     def _await_bot_review(self, issue, repo, pr):
         """The PR is open with the hand-off deferred: the watcher polls CodeRabbit for it from here, without holding
