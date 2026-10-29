@@ -4,11 +4,12 @@ import json
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from lib import context, review, ship, testmap, tests  # noqa: E402
+from lib import context, review, ship, testmap, tests, workflow  # noqa: E402
 from lib.common import AiError  # noqa: E402
 
 MODULES = {
@@ -185,6 +186,46 @@ class ShipTest(unittest.TestCase):
         self.assertEqual(ship.issue_ref("dev-tools", 7), "adt-7")
         self.assertEqual(ship.issue_ref("hermes", 7), "ah-7")
         self.assertEqual(ship.issue_ref("ares", 7), "aa-7")
+
+
+class DeferredHandoffTest(unittest.TestCase):
+    URL = "https://github.com/projects4me/dev-tools/pull/9"
+
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        for target in (workflow, ):
+            p = mock.patch.object(target, "STATE_DIR", Path(self.dir.name))
+            p.start()
+            self.addCleanup(p.stop)
+        self.calls = []
+        for name, val in (("tracker_call", lambda m, **a: self.calls.append((m, a))),
+                          ("config", lambda: {"reviewer": "Rev"}), ("log_elapsed", lambda *a, **k: None)):
+            p = mock.patch.object(workflow, name, val)
+            p.start()
+            self.addCleanup(p.stop)
+
+    def methods(self):
+        return [(m, a.get("status")) for m, a in self.calls]
+
+    def test_defer_posts_notes_but_keeps_the_issue_with_the_agent(self):
+        workflow.pr_hand_off(5, self.URL, "abc", "def", defer="dev-tools")
+        self.assertEqual(self.methods(), [("add_comment", None)])
+        self.assertEqual(workflow.load_pending_handoff(5),
+                         {"repo": "dev-tools", "pr": self.URL, "issue": 5})
+
+    def test_plain_hand_off_sets_in_review_and_leaves_no_record(self):
+        workflow.pr_hand_off(5, self.URL, "abc", "def")
+        self.assertEqual(self.methods(), [("add_comment", None), ("update_issue", "in_review")])
+        self.assertEqual(self.calls[1][1]["assignee"], "Rev")
+        self.assertIsNone(workflow.load_pending_handoff(5))
+
+    def test_handoff_command_finishes_and_clears_the_record(self):
+        workflow.pr_hand_off(5, self.URL, "abc", "def", defer="dev-tools")
+        self.calls.clear()
+        workflow.cmd_handoff(mock.Mock(issue=5))
+        self.assertEqual(self.methods(), [("update_issue", "in_review")])
+        self.assertIsNone(workflow.load_pending_handoff(5))
 
 
 if __name__ == "__main__":

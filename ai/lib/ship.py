@@ -184,6 +184,7 @@ def cmd_ship(args):
     notes += cost_note(issue) + (f"<p>{html.escape(warning)}</p>" if warning else "")
     workflow.pr_hand_off(issue, progress["pr"], git(repo, "rev-parse", "--short", "HEAD"),
                          git(repo, "rev-parse", "--short", f"origin/{base_branch(repo)}"),
-                         spec.get("timeNote") or f"commit and PR ({spec['title']})", notes_html=notes)
+                         spec.get("timeNote") or f"commit and PR ({spec['title']})", notes_html=notes,
+                         defer=repo if args.defer_handoff else None)
     _progress_file(repo, issue).unlink(missing_ok=True)
     return 0

@@ -3,13 +3,14 @@
 Each command is a fixed sequence of steps that used to be separate tool calls.
 """
 
+import json
 import subprocess
 from datetime import datetime
 from pathlib import Path
 
 import sys
 
-from .common import (AiError, PROJECT_FOR_REPO, REPOS, base_branch, config, git, git_dir, issue_repo,
+from .common import (AiError, PROJECT_FOR_REPO, REPOS, STATE_DIR, base_branch, config, git, git_dir, issue_repo,
                      devstack_locked, load_timers, now, ody, repo_dir, run_workspace, save_timers, say, start_timer,
                      strip_html, succeeds, timers_locked, tracker_call)
 
@@ -185,7 +186,9 @@ def cmd_pr(args):
     pr_hand_off(issue, url, commit, base, args.time_note, args.no_time)
 
 
-def pr_hand_off(issue, url, commit, base, time_note=None, no_time=False, notes_html=""):
+def pr_hand_off(issue, url, commit, base, time_note=None, no_time=False, notes_html="", defer=None):
+    """Post the PR notes and log time, then hand the issue to the reviewer; with defer (the repo name), leave it
+    in progress with the agent and record the pending hand-off for `ai handoff`."""
     reviewer = config().get("reviewer")
     if not reviewer:                     # checked first, so nothing is posted twice on a retry
         raise AiError("no reviewer configured: run `dev-tools/installer/p4m configure` (sets ai/config.local.json)")
@@ -196,16 +199,45 @@ def pr_hand_off(issue, url, commit, base, time_note=None, no_time=False, notes_h
         f"(commit {commit}, based on {base}).</p>{notes_html}"))
     if not no_time:
         log_elapsed(issue, time_note or f"commit and PR {repo_name}#{number}")
+    if defer:
+        save_pending_handoff(issue, defer, url)
+        say(f"issue #{issue}: comment added, hand-off deferred (still in_progress); finish with `ai handoff {issue}`")
+        return
+    finish_hand_off(issue)
+
+
+def _pending_file(issue):
+    return STATE_DIR / f"handoff-{issue}.json"
+
+
+def save_pending_handoff(issue, repo, url):
+    STATE_DIR.mkdir(exist_ok=True)
+    _pending_file(issue).write_text(json.dumps({"repo": repo, "pr": url, "issue": issue}, indent=2), encoding="utf-8")
+
+
+def load_pending_handoff(issue):
+    p = _pending_file(issue)
+    return json.loads(p.read_text(encoding="utf-8")) if p.exists() else None
+
+
+def finish_hand_off(issue):
+    """Set in_review, assign the reviewer and clear any pending record."""
+    reviewer = config().get("reviewer")
+    if not reviewer:
+        raise AiError("no reviewer configured: run `dev-tools/installer/p4m configure` (sets ai/config.local.json)")
     tracker_call("update_issue", issue_number=issue, status="in_review", assignee=reviewer)
-    say(f"issue #{issue}: comment added, in_review, assigned to {reviewer}")
+    _pending_file(issue).unlink(missing_ok=True)
+    say(f"issue #{issue}: in_review, assigned to {reviewer}")
 
 
 def cmd_handoff(args):
-    """Tracker hand-off for a PR that already exists (e.g. opened by hand)."""
-    repo = args.repo
-    commit = git(repo, "rev-parse", "--short", "HEAD")
-    base = git(repo, "rev-parse", "--short", f"origin/{base_branch(repo)}")
-    pr_hand_off(args.issue, args.url, commit, base, args.time_note, args.no_time)
+    """Finish a deferred hand-off (`ai ship --defer-handoff`): in_review, assigned to the reviewer."""
+    pending = load_pending_handoff(args.issue)
+    if pending:
+        say(f"finishing the deferred hand-off of {pending['pr']}")
+    else:
+        say(f"no pending hand-off recorded for #{args.issue}; handing off anyway")
+    finish_hand_off(args.issue)
 
 
 # --- tracker views --------------------------------------------------------------------------
