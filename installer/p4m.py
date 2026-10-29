@@ -1143,9 +1143,24 @@ def cmd_doctor(args) -> int:
 # Stack commands
 # --------------------------------------------------------------------------- #
 
+def migrate_refusal(env=None) -> str | None:
+    """Why pr4m must not be migrated here, or None. A Talos run (P4M_WORKSPACE set) never migrates it: the migrate
+    drops the columns the run's checkout doesn't know, undoing another branch's schema in the engineer's dev
+    database. Its tests get the checkout's schema from the slot templates instead."""
+    workspace = (os.environ if env is None else env).get("P4M_WORKSPACE")
+    if not workspace:
+        return None
+    return (f"refusing to migrate pr4m inside a run workspace ({workspace}): agent runs never migrate the shared "
+            "dev database. Test slots migrate a scratch copy with the checkout's code: `p4m test api --slot K "
+            "--prepare` (or `ai test gaia`)")
+
+
 def migrate() -> None:
     """Migrate pr4m with this workspace's gaia metadata. A shared gaia-dev that mounts another checkout would
     drop the columns its older metadata doesn't know, so then a throwaway container is used instead."""
+    refusal = migrate_refusal()
+    if refusal:
+        raise P4MError(refusal)
     src = ROOT / "gaia"
     info(f"Running gaia migrations (pr4m) from {src}")
     if not is_running("gaia-dev"):
@@ -1154,16 +1169,19 @@ def migrate() -> None:
     run(["docker", "exec", "-w", "/var/www/html", container, "php", "cli.php", "migration", "migrate"])
 
 
-def prepare_test_db(src: Path | None = None, db: str = "pr4m_test", fixtures_out: Path | None = None) -> None:
-    """Seed `db` (default pr4m_test) with the api-tester fixtures of `src` (default: the workspace's gaia).
-    The harness writes the fixtures into `src`, or to `fixtures_out`."""
+def prepare_test_db(src: Path | None = None, db: str = "pr4m_test", fixtures_out: Path | None = None,
+                    source_db: str | None = None) -> None:
+    """Seed `db` (default pr4m_test) with the api-tester fixtures of `src` (default: the workspace's gaia), its
+    schema taken from `source_db` (default: the harness's, pr4m). The harness writes the fixtures into `src`, or to
+    `fixtures_out`."""
     src = src or ROOT / "gaia"
     info(f"Preparing {db} (api-tester fixtures from {src})")
     if not is_running(PG_CONTAINER):
         raise P4MError("postgres is not running - `p4m up postgres` first")
     fix_eol_in(src, src.name)
     script = testslots.SEED_SCRIPT
-    env = {"TEST_DB": db, **({"FIXTURES_OUT": Path(fixtures_out).resolve().as_posix()} if fixtures_out else {})}
+    env = {"TEST_DB": db, **({"FIXTURES_OUT": Path(fixtures_out).resolve().as_posix()} if fixtures_out else {}),
+           **({"SOURCE_DB": source_db} if source_db else {})}
     rc = run_bash([script], cwd=src, env=env).returncode
     if rc != 0:
         raise P4MError(f"command failed ({rc}): {find_bash()} {script}")
@@ -1487,7 +1505,18 @@ def test_slots() -> testslots.Slots:
     except testslots.SlotError as e:
         raise P4MError(str(e))
     return testslots.Slots(testslots.PsqlGateway(PG_CONTAINER, PG_USER), STATE_DIR / "test" / "slots", count,
-                           seed=lambda src, db, fixtures: prepare_test_db(src, db, fixtures), keep=keep)
+                           seed=lambda src, db, fixtures, source: prepare_test_db(src, db, fixtures, source),
+                           migrate=migrate_scratch, keep=keep)
+
+
+def migrate_scratch(src: Path, db: str, slot: int | None = None) -> None:
+    """Migrate database `db` (a template's scratch copy of pr4m) with checkout `src`'s code, in its test container
+    (slot `slot`'s, whose lock the caller holds), never in gaia-dev."""
+    box = _gaia_test_box(src, slot)
+    _sync_gaia(box)                    # the checkout's metadata, not what the container held before
+    info(f"migrating {db} with {src}'s metadata in {box.name}")
+    run(["docker", "exec", "-w", "/var/www/html", "-e", f"DB_NAME={db}", "-e", "XDEBUG_MODE=off",
+         box.name, "php", "cli.php", "migration", "migrate"])
 
 
 def _slot_arg(args) -> int | None:

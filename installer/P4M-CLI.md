@@ -78,7 +78,7 @@ Firefox uses its own certificate store: set `security.enterprise_roots.enabled =
 | `p4m build [svc…]` | Rebuild images (`--pull` for newer bases, `--deps` to reinstall node_modules) |
 | `p4m hosts` | Add/refresh the `*.P4M_DOMAIN` block in the hosts file (`--show` to print it) |
 | `p4m trust` | Trust the local CA in Windows (or macOS) |
-| `p4m db migrate` | `php cli.php migration migrate` for the workspace gaia (in gaia-dev if it mounts this checkout, else a throwaway container) |
+| `p4m db migrate` | `php cli.php migration migrate` for the workspace gaia (in gaia-dev if it mounts this checkout, else a throwaway container); refused in a Talos run workspace (`P4M_WORKSPACE` set) |
 | `p4m db prepare-test` | Create + seed `pr4m_test` for the api-tester |
 | `p4m db psql [db]` / `dump [db] -o f.sql` | psql shell / dump |
 | `p4m db reset [--with-test]` | Wipe the DB volume, re-import the dump, migrate |
@@ -96,8 +96,13 @@ started from the same image, env, network and mounts with the source pointed her
 Gaia suites share the pr4m_test database, so without `--slot` they run one at a time (a lock serialises them).
 **Test slots** let several run at once: slot K (1..`TEST_SLOTS`) owns database `pr4m_test_K` and container
 `p4m-test-gaia-slotK`, and has its own lock. The slot databases are cloned (`CREATE DATABASE … TEMPLATE`, seconds)
-from a template the api-tester harness seeds once per key: pr4m's schema (a migration) and the checkout's seeds
-(`db/seeds`, the harness script). Each key has its own template, `pr4m_test_tpl_<key>`, so a branch and its baseline
+from a template the api-tester harness seeds once per key: the checkout's model metadata (`app/metadata`) and seeds
+(`db/seeds`, the harness script). The schema is the checkout's, not pr4m's: a build dumps pr4m into a scratch
+database `pr4m_src_<key>`, migrates it with the checkout's code in the slot's container, seeds the template from it
+(`SOURCE_DB`) and drops it, so branches that add different models test in parallel and pr4m is never migrated.
+The key tracks only metadata and seeds: after a change to the migration code itself, rebuild with
+`p4m test slots setup <K> --force`.
+Each key has its own template, `pr4m_test_tpl_<key>`, so a branch and its baseline
 with different seeds each reuse theirs; at most `TEST_TEMPLATES` are kept and building one more drops the least
 recently used. A slot takes its lock, then the templates' lock. A slot serves any checkout: one synced into a slot
 that last held another is copied in from scratch. `ai test gaia --slot K` runs the gaia suites in slot K.
@@ -166,7 +171,7 @@ the page works through the proxy.
 | `FILE_WATCH_POLLING` | auto | Polling watchers for ember/nodemon/uvicorn (needed on Windows bind mounts) |
 | `DEFAULT_SERVICES` | all | What `p4m up` starts with no args (`all` or `core`) |
 | `TEST_SLOTS` | 2 | Number of Gaia test slots (`p4m test slots`, `--slot K`), 1–16 |
-| `TEST_TEMPLATES` | 3 | Slot templates (one per migrations + seeds) to keep, 1–16; the least recently used is dropped |
+| `TEST_TEMPLATES` | 3 | Slot templates (one per metadata + seeds) to keep, 1–16; the least recently used is dropped |
 
 ## Troubleshooting
 
