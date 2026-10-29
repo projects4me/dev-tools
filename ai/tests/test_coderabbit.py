@@ -61,6 +61,47 @@ class RabbitStateTest(unittest.TestCase):
         self.assertEqual(classify({"state": "failure", "description": "boom"})["state"], "absent")
 
 
+def run(status, conclusion=None, slug="coderabbitai", started="2026-10-29T10:00:00Z"):
+    return {"name": "CodeRabbit", "app": {"slug": slug}, "status": status, "conclusion": conclusion,
+            "started_at": started}
+
+
+class CheckRunTest(unittest.TestCase):
+    def review(self, runs, statuses=()):
+        return coderabbit.review_status(list(runs), list(statuses))
+
+    def test_in_progress_and_queued_are_pending(self):
+        for st in ("queued", "in_progress"):
+            self.assertEqual(classify(self.review([run(st)]))["state"], "pending")
+
+    def test_completed_with_findings(self):
+        status = self.review([run("completed", "success")])
+        self.assertEqual(classify(status, review=[thread(1)])["state"], "findings")
+
+    def test_completed_clean(self):
+        status = self.review([run("completed", "success")])
+        self.assertEqual(classify(status, [WALKTHROUGH])["state"], "clean")
+
+    def test_failure_is_absent_with_conclusion(self):
+        r = classify(self.review([run("completed", "failure")]))
+        self.assertEqual(r["state"], "absent")
+        self.assertIn("failure", r["detail"])
+
+    def test_other_apps_check_runs_are_ignored(self):
+        self.assertIsNone(self.review([run("completed", "success", slug="github-actions")]))
+
+    def test_newest_check_run_wins(self):
+        runs = [run("completed", "success", started="2026-10-29T09:00:00Z"), run("in_progress")]
+        self.assertEqual(self.review(runs)["state"], "pending")
+
+    def test_check_run_beats_legacy_status(self):
+        self.assertEqual(self.review([run("in_progress")], [OK])["state"], "pending")
+
+    def test_legacy_status_without_check_run(self):
+        self.assertEqual(self.review([], [{"state": "pending", "context": "Other"}, OK]), OK)
+        self.assertEqual(classify(self.review([], [OK]), [WALKTHROUGH])["state"], "clean")
+
+
 class EnabledReposTest(unittest.TestCase):
     def cfg(self, repos):
         return mock.patch.object(coderabbit, "config", return_value={"codeRabbitRepos": repos, "agentLogin": "a"})

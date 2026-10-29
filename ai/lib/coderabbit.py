@@ -7,7 +7,8 @@ import time
 from .common import REPOS, AiError, config, ody, say
 from .review import _api, _is_bot, open_threads, resolved_threads
 
-STATUS_CONTEXT = "CodeRabbit"
+STATUS_CONTEXT = "CodeRabbit"   # the legacy commit status
+CHECK_APP = "coderabbitai"      # the app slug of the check run that replaced it
 PAUSED = re.compile(r"auto(?:matic)? reviews? (?:are |is )?paused|reviews? paused|rate limit", re.I)
 EXIT_CODES = {"clean": 0, "findings": 1, "pending": 2, "paused": 3, "absent": 4}
 POLL_SECONDS = 30
@@ -31,8 +32,23 @@ def head_sha(repo, pr):
     return ody(repo, "gh", "api", f"repos/{REPOS[repo]}/pulls/{pr}", "--jq", ".head.sha").strip()
 
 
+def review_status(check_runs, statuses):
+    """CodeRabbit's report on the head SHA as one `{"state": pending|success|failure, "description"}` (or None).
+    The check run from the coderabbitai app wins; the legacy commit status is the fallback."""
+    runs = [r for r in check_runs if ((r.get("app") or {}).get("slug")) == CHECK_APP]
+    if runs:
+        run = max(runs, key=lambda r: r.get("started_at") or "")
+        if run.get("status") != "completed":
+            return {"state": "pending", "description": f"check run {run.get('status')}"}
+        conclusion = run.get("conclusion") or "unknown"
+        if conclusion == "success":
+            return {"state": "success", "description": "check run completed"}
+        return {"state": "failure", "description": f"check run {conclusion}"}
+    return next((s for s in statuses if s["context"] == STATUS_CONTEXT), None)   # newest first
+
+
 def classify(status, issue_comments, review_comments, resolved, agent, waited_out=False):
-    """The state for one snapshot. `status` is the newest CodeRabbit commit status on the head SHA (or None);
+    """The state for one snapshot. `status` is `review_status()` for the head SHA (or None);
     `waited_out` means we polled until the timeout, so no status at all means CodeRabbit never ran."""
     state = (status or {}).get("state")
     if state != "success":
@@ -40,7 +56,7 @@ def classify(status, issue_comments, review_comments, resolved, agent, waited_ou
         if any(PAUSED.search(b) for b in bot_notes) and state != "pending":
             return {"state": "paused"}
         if state in ("failure", "error"):
-            return {"state": "absent", "detail": f"status {state}: {status.get('description', '')}"}
+            return {"state": "absent", "detail": f"{status.get('description', state)}"}
         if status is None and waited_out:
             return {"state": "absent"}
         return {"state": "pending"}
@@ -52,8 +68,10 @@ def classify(status, issue_comments, review_comments, resolved, agent, waited_ou
 
 def snapshot(repo, pr, sha, agent, waited_out=False):
     full = REPOS[repo]
-    statuses = _api(repo, f"repos/{full}/commits/{sha}/statuses")
-    status = next((s for s in statuses if s["context"] == STATUS_CONTEXT), None)   # newest first
+    payload = _api(repo, f"repos/{full}/commits/{sha}/check-runs")
+    check_runs = payload.get("check_runs", []) if isinstance(payload, dict) else []
+    statuses = [] if any(((r.get("app") or {}).get("slug")) == CHECK_APP for r in check_runs)         else _api(repo, f"repos/{full}/commits/{sha}/statuses")
+    status = review_status(check_runs, statuses)
     issue_comments = _api(repo, f"repos/{full}/issues/{pr}/comments")
     review_comments = _api(repo, f"repos/{full}/pulls/{pr}/comments")
     resolved = resolved_threads(repo, pr) if status and status["state"] == "success" else set()
