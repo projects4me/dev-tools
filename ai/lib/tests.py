@@ -35,6 +35,7 @@ class SuiteResult:
     rc: int = 0
     failed_count: int = None     # failures the runner itself reported, when it reports a count
     ran: int = None              # tests executed, when known
+    skipped: bool = False        # not run on purpose (e.g. a folder this checkout doesn't have): neither pass nor fail
 
 
 def _run_logged(name, cmd, cwd=WORKSPACE):
@@ -127,6 +128,8 @@ def _int(m):
 
 def phpunit(folder, src, slot=None):
     name = folder.split("/")[-1]
+    if not (Path(src) / folder).is_dir():
+        return SuiteResult(f"phpunit-{name}", f"{folder}: not in this checkout, skipped", skipped=True)
     code, out, log = _run_logged(f"gaia-phpunit-{name}{_tag(src, slot)}",
                                  _p4m("test", "phpunit", folder, "--src", str(src), *_slot_args(slot)))
     summary = next((l.strip() for l in reversed(out.splitlines())
@@ -271,6 +274,8 @@ def known_failures(repo, suite):
 def judge(r, known):
     """(ok, unexpected failures). Known-by-name is necessary but not sufficient: the exit code must be
     explained by the failures the runner reported, and a run must have executed something."""
+    if r.skipped:
+        return True, []
     unexpected = [f for f in r.failures if f not in known]
     if r.summary.startswith("no summary") or unexpected:
         return False, unexpected
