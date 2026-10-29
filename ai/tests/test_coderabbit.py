@@ -2,11 +2,13 @@
 
 import sys
 import unittest
+from unittest import mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from lib import coderabbit  # noqa: E402
+from lib.common import AiError  # noqa: E402
 
 BOT = {"login": "coderabbitai[bot]", "type": "Bot"}
 AGENT = {"login": "agent-odysseus", "type": "User"}
@@ -57,6 +59,26 @@ class RabbitStateTest(unittest.TestCase):
     def test_absent_only_after_waiting(self):
         self.assertEqual(classify(None, waited_out=True)["state"], "absent")
         self.assertEqual(classify({"state": "failure", "description": "boom"})["state"], "absent")
+
+
+class EnabledReposTest(unittest.TestCase):
+    def cfg(self, repos):
+        return mock.patch.object(coderabbit, "config", return_value={"codeRabbitRepos": repos, "agentLogin": "a"})
+
+    def test_enabled_only_for_listed_repos(self):
+        with self.cfg(["gaia", "hermes"]):
+            self.assertTrue(coderabbit.enabled("gaia"))
+            self.assertFalse(coderabbit.enabled("ares"))
+
+    def test_unknown_name_is_an_error(self):
+        with self.cfg(["gaia", "nope"]), self.assertRaises(AiError):
+            coderabbit.enabled("gaia")
+
+    def test_rabbit_on_a_disabled_repo_is_absent_without_api_calls(self):
+        args = mock.Mock(repo="ares", pr=1, json=True, wait=True, timeout=20)
+        with self.cfg(["gaia"]), mock.patch.object(coderabbit, "head_sha") as head:
+            self.assertEqual(coderabbit.cmd_rabbit(args), coderabbit.EXIT_CODES["absent"])
+            head.assert_not_called()
 
 
 if __name__ == "__main__":
