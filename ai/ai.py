@@ -100,6 +100,9 @@ def build_parser():
     sp.add_argument("file", help="ship.json")
     sp.add_argument("--dry-run", action="store_true", help="print the commit, PR and notes; change nothing")
     sp.add_argument("--no-tests", metavar="REASON", help="ship without a recorded test run (docs-only changes)")
+    sp.add_argument("--defer-handoff", action="store_true",
+                    help="open the PR and post the notes but keep the issue in_progress with the agent "
+                         "(CodeRabbit round pending); finish later with `ai handoff <issue>`")
 
     sp = add("commit", workflow.cmd_commit,
              "check branch/base, stage exactly FILES, commit as Agent Odysseus (+co-author), push to odysseus")
@@ -120,12 +123,9 @@ def build_parser():
     sp.add_argument("--time-note", help="what the final time entry covers (default: commit and PR)")
     sp.add_argument("--no-time", action="store_true")
 
-    sp = add("handoff", workflow.cmd_handoff, "tracker hand-off for an existing PR URL (comment, time, in_review)")
-    sp.add_argument("repo", choices=repos)
+    sp = add("handoff", workflow.cmd_handoff,
+             "finish a deferred hand-off (ai ship --defer-handoff): set in_review, assign the reviewer")
     sp.add_argument("issue", type=int)
-    sp.add_argument("url")
-    sp.add_argument("--time-note")
-    sp.add_argument("--no-time", action="store_true")
 
     sp = add("review", review.cmd_review, "list PR reviews and inline comments (marks what's already answered)")
     sp.add_argument("repo", choices=repos)
