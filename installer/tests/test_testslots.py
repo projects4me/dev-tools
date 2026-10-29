@@ -13,26 +13,32 @@ import testslots  # noqa: E402
 
 
 class FakePostgres:
-    """Records psql statements and keeps a set of databases."""
+    """Records psql statements and the dump/restore commands, and keeps a set of databases."""
 
-    def __init__(self, dbs=(), schema="s1"):
+    def __init__(self, dbs=()):
         self.dbs = set(dbs)
-        self.schema = schema
         self.statements = []
+        self.commands = []          # docker exec commands other than psql -c: pg_dump, psql -f, rm
+        self.fail = None            # a program whose next run fails
 
     def __call__(self, cmd):
-        db, sql = cmd[cmd.index("-d") + 1], cmd[-1]
+        program = cmd[3]
+        if "-Atc" not in cmd:
+            self.commands.append(cmd[3:])
+            if program == self.fail:
+                return subprocess.CompletedProcess(cmd, 1, "", f"{program}: broken")
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+        sql = cmd[-1]
         self.statements.append(sql)
         out = ""
         if sql.startswith("SELECT 1 FROM pg_database"):
             out = "1" if sql.split("'")[1] in self.dbs else ""
-        elif sql == testslots.SCHEMA_SQL:
-            out = self.schema
         elif sql.startswith("DROP DATABASE"):
             self.dbs.discard(sql.split('"')[1])
         elif sql.startswith("CREATE DATABASE"):
-            name, template = sql.split('"')[1], sql.split('"')[3]
-            if template not in self.dbs:
+            name = sql.split('"')[1]
+            if " TEMPLATE " in sql and sql.split('"')[3] not in self.dbs:
+                template = sql.split('"')[3]
                 return subprocess.CompletedProcess(cmd, 1, "", f'template database "{template}" does not exist')
             self.dbs.add(name)
         return subprocess.CompletedProcess(cmd, 0, out, "")
@@ -83,13 +89,25 @@ class TemplateKeyTest(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def test_key_changes_with_seeds_and_schema_but_not_line_endings(self):
-        key = testslots.template_key(self.src, "s1")
-        self.assertNotEqual(key, testslots.template_key(self.src, "s2"))
+    def test_key_changes_with_seeds_but_not_line_endings(self):
+        key = testslots.template_key(self.src)
         (self.src / "db" / "seeds" / "a.sql").write_bytes(b"insert 1;\r\n")
-        self.assertEqual(key, testslots.template_key(self.src, "s1"))
+        self.assertEqual(key, testslots.template_key(self.src))
         (self.src / "db" / "seeds" / "b.sql").write_bytes(b"insert 2;\n")
-        self.assertNotEqual(key, testslots.template_key(self.src, "s1"))
+        self.assertNotEqual(key, testslots.template_key(self.src))
+
+    def test_key_follows_the_checkouts_model_metadata(self):
+        key = testslots.template_key(self.src)
+        model = self.src / "app" / "metadata" / "model" / "Skill.php"
+        model.parent.mkdir(parents=True)
+        model.write_bytes(b"<?php return ['tableName' => 'skills'];\n")
+        added = testslots.template_key(self.src)
+        self.assertNotEqual(key, added)                 # a branch that adds a model gets its own template
+        model.write_bytes(b"<?php return ['tableName' => 'skills'];\r\n")
+        self.assertEqual(added, testslots.template_key(self.src))
+        model.write_bytes(b"<?php return ['tableName' => 'skills', 'x' => 1];\n")
+        self.assertNotEqual(added, testslots.template_key(self.src))
+        self.assertEqual(testslots.metadata_files(self.src), ["app/metadata/model/Skill.php"])
 
 
 def make_checkout(path, seed):
@@ -105,15 +123,23 @@ class SlotsTest(unittest.TestCase):
         self.src = make_checkout(self.root / "gaia", "insert;")
         self.fake = FakePostgres(dbs={"pr4m"})
         self.seeded = []
+        self.migrated = []
+        self.sources = []
         self.locks = []
         self.slots = testslots.Slots(testslots.PsqlGateway("pg", "u", self.fake), self.root / "state", 2,
-                                     self._seed, keep=2)
+                                     self._seed, self._migrate, keep=2)
 
     def tearDown(self):
         self.tmp.cleanup()
 
-    def _seed(self, src, db, fixtures_out):
+    def _migrate(self, src, db, slot):
+        self.assertIn(db, self.fake.dbs)                # the scratch copy exists when it is migrated
+        self.migrated.append((src, db, slot))
+
+    def _seed(self, src, db, fixtures_out, source_db):
+        self.assertIn(source_db, self.fake.dbs)
         self.seeded.append((src, db))
+        self.sources.append(source_db)
         self.fake.dbs.add(db)
         Path(fixtures_out).write_text('{"seeded": "%s"}' % db, encoding="utf-8")
 
@@ -136,9 +162,11 @@ class SlotsTest(unittest.TestCase):
         self.assertFalse(self.slots.build_template(self.src))
         self.assertEqual(len(self.seeded), 1)
 
-    def test_a_migration_or_a_seed_change_needs_a_new_template(self):
+    def test_a_metadata_or_a_seed_change_needs_a_new_template(self):
         self.slots.build_template(self.src)
-        self.fake.schema = "s2"                     # `p4m db migrate` changed pr4m
+        model = self.src / "app" / "metadata" / "model" / "Useridentity.php"
+        model.parent.mkdir(parents=True)
+        model.write_text("<?php return [];", encoding="utf-8")      # the branch added a model
         self.assertFalse(self.slots.template_current(self.src)[0])
         self.assertTrue(self.slots.build_template(self.src))
         (self.src / "db" / "seeds" / "a.sql").write_text("insert 2;", encoding="utf-8")
@@ -146,10 +174,46 @@ class SlotsTest(unittest.TestCase):
         self.assertTrue(self.slots.build_template(self.src))
         self.assertEqual(len({db for _, db in self.seeded}), 3)
 
+    def test_template_is_seeded_from_a_migrated_scratch_copy_of_pr4m(self):
+        self.slots.build_template(self.src, slot=2)
+        key = self.slots.wanted_key(self.src)
+        scratch = testslots.scratch_db(key)
+        self.assertEqual(scratch, f"pr4m_src_{key}")
+        self.assertIn(f'CREATE DATABASE "{scratch}" OWNER "u"', self.fake.statements)
+        dump = f"/tmp/{scratch}.sql"
+        self.assertEqual(self.fake.commands, [
+            ["pg_dump", "-U", "u", "-d", "pr4m", "--no-owner", "--no-privileges", "-f", dump],
+            ["psql", "-U", "u", "-d", scratch, "-q", "-v", "ON_ERROR_STOP=1", "-f", dump],
+            ["rm", "-f", dump]])
+        self.assertEqual(self.migrated, [(self.src, scratch, 2)])   # in the slot's container
+        self.assertEqual(self.sources, [scratch])                   # the harness's SOURCE_DB
+        self.assertNotIn(scratch, self.fake.dbs)                    # dropped afterwards
+        self.assertIn("pr4m", self.fake.dbs)
+        touched = [s for s in self.fake.statements if '"pr4m"' in s]
+        self.assertEqual(touched, [])                               # pr4m is only read by pg_dump
+
+    def test_scratch_copy_is_dropped_when_the_migrate_fails(self):
+        def broken(src, db, slot):
+            raise RuntimeError("migration failed")
+        self.slots.migrate = broken
+        with self.assertRaises(RuntimeError):
+            self.slots.build_template(self.src)
+        self.assertEqual(self.fake.dbs, {"pr4m"})
+        self.assertEqual(self.seeded, [])
+        self.assertFalse(self.slots.template_current(self.src)[0])
+
+    def test_failed_dump_stops_the_build_and_removes_the_dump(self):
+        self.fake.fail = "psql"
+        with self.assertRaisesRegex(testslots.SlotError, "psql pr4m into pr4m_src_"):
+            self.slots.build_template(self.src)
+        self.assertEqual(self.fake.commands[-1][:2], ["rm", "-f"])
+        self.assertEqual((self.migrated, self.seeded), ([], []))
+        self.assertEqual(self.fake.dbs, {"pr4m"})
+
     def test_failed_build_does_not_look_current(self):
         self.slots.build_template(self.src)
 
-        def broken(src, db, fixtures_out):
+        def broken(src, db, fixtures_out, source_db):
             raise testslots.SlotError("seed failed")
         self.slots.seed = broken
         with self.assertRaises(testslots.SlotError):
@@ -157,7 +221,7 @@ class SlotsTest(unittest.TestCase):
         self.assertFalse(self.slots.template_current(self.src)[0])
 
     def test_failed_build_drops_its_half_built_template(self):
-        def half(src, db, fixtures_out):
+        def half(src, db, fixtures_out, source_db):
             self.fake.dbs.add(db)
             Path(fixtures_out).write_text("{}", encoding="utf-8")
             raise testslots.SlotError("seed failed")
@@ -195,6 +259,23 @@ class SlotsTest(unittest.TestCase):
         self.slots.fixtures_file(key).write_bytes(b"{\r\n}\r\n")      # as the harness writes it on Windows
         self.slots.write_fixtures(self.src, key)
         self.assertEqual((self.src / testslots.FIXTURES).read_bytes(), b"{\n}\n")
+
+    def test_two_branches_that_add_different_models_each_get_their_schema(self):
+        a = make_checkout(self.root / "a", "insert;")
+        b = make_checkout(self.root / "b", "insert;")
+        for src, model in ((a, "Useridentity"), (b, "Skill")):
+            (src / "app" / "metadata" / "model").mkdir(parents=True)
+            (src / "app" / "metadata" / "model" / f"{model}.php").write_text("<?php return [];", encoding="utf-8")
+        self.slots.prepare(1, a, self._lock)
+        self.slots.prepare(2, b, self._lock)
+        self.assertNotEqual(self._template(a), self._template(b))
+        self.assertEqual([(src, slot) for src, _, slot in self.migrated], [(a, 1), (b, 2)])
+        self.assertEqual({db for _, db, _ in self.migrated},
+                         {testslots.scratch_db(self.slots.wanted_key(a)), testslots.scratch_db(self.slots.wanted_key(b))})
+        self.assertIn(f'CREATE DATABASE "pr4m_test_1" TEMPLATE "{self._template(a)}" OWNER "u"', self.fake.statements)
+        self.assertIn(f'CREATE DATABASE "pr4m_test_2" TEMPLATE "{self._template(b)}" OWNER "u"', self.fake.statements)
+        self.assertEqual(self.fake.dbs - {"pr4m"},
+                         {self._template(a), self._template(b), "pr4m_test_1", "pr4m_test_2"})
 
     def test_branch_and_baseline_each_keep_their_template(self):
         baseline = make_checkout(self.root / "baseline", "insert other;")

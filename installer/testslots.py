@@ -5,8 +5,11 @@ database, pr4m_test_<k>, and its own Gaia test container (testenv.GaiaTestContai
 is not seeded on its own: it is cloned with `CREATE DATABASE ... TEMPLATE` from a template, which the gaia harness
 migrates and seeds once. Resetting a slot is a drop and a clone (seconds, no re-seeding).
 
-A template is built for a key: the schema of pr4m (`p4m db migrate`) and the checkout's seed sources (the harness
-script and db/seeds). Each key has its own template, pr4m_test_tpl_<key>, so a branch and its baseline (another
+A template is built for a key: the checkout's model metadata (app/metadata, what its migrations create) and seed
+sources (the harness script and db/seeds). The schema comes from the checkout, never from pr4m's live one: pr4m (the
+engineer's dev database) is copied into a scratch database, pr4m_src_<key>, which the checkout's code migrates in its
+test container; the harness then builds the template from that copy (SOURCE_DB) and the copy is dropped. So two
+branches that add different models each test their own schema, and nothing migrates pr4m. Each key has its own template, pr4m_test_tpl_<key>, so a branch and its baseline (another
 checkout, maybe other seeds) each clone their own instead of rebuilding one in turn. At most `keep` templates are
 kept (TEST_TEMPLATES); building one more drops the least recently used. The harness also writes the api-tester
 fixtures; each template's copy is kept here and written into the checkout a slot is prepared for, as an unslotted
@@ -35,11 +38,10 @@ DEFAULT_TEMPLATES = 3
 MAX_TEMPLATES = 16
 SEED_SCRIPT = "tools/api-tester/harness/prepare-test-db.sh"
 SEED_DIRS = ("db/seeds",)
+METADATA_DIRS = ("app/metadata",)
 FIXTURES = "tools/api-tester/fixtures/default.json"
-# Columns, types and defaults of pr4m's tables: changes whenever a migration does.
-SCHEMA_SQL = ("SELECT md5(coalesce(string_agg(table_name || '.' || column_name || ':' || data_type || ':' "
-              "|| coalesce(column_default, ''), ',' ORDER BY table_name, column_name), '')) "
-              "FROM information_schema.columns WHERE table_schema = 'public'")
+SOURCE_DB = "pr4m"
+SCRATCH_PREFIX = "pr4m_src"
 
 
 class SlotError(Exception):
@@ -86,21 +88,35 @@ def template_db(key):
     return f"{TEMPLATE_PREFIX}_{key}"
 
 
-def seed_files(src):
-    """The checkout's files a template is seeded from (relative paths, sorted)."""
-    src = Path(src)
-    files = [SEED_SCRIPT] if (src / SEED_SCRIPT).is_file() else []
-    for d in SEED_DIRS:
+def scratch_db(key):
+    """The scratch copy of pr4m that template `key`'s schema is migrated in."""
+    return f"{SCRATCH_PREFIX}_{key}"
+
+
+def _files_in(src, dirs):
+    files = []
+    for d in dirs:
         if (src / d).is_dir():
             files += sorted(p.relative_to(src).as_posix() for p in (src / d).rglob("*") if p.is_file())
     return files
 
 
-def template_key(src, schema):
-    """What a template depends on: pr4m's schema fingerprint and the checkout's seed sources (line endings
-    normalised, so a CRLF checkout of the same files gives the same key)."""
-    h = hashlib.sha256(f"schema:{schema}\n".encode("utf-8"))
-    for rel in seed_files(src):
+def seed_files(src):
+    """The checkout's files a template is seeded from (relative paths, sorted)."""
+    src = Path(src)
+    return ([SEED_SCRIPT] if (src / SEED_SCRIPT).is_file() else []) + _files_in(src, SEED_DIRS)
+
+
+def metadata_files(src):
+    """The checkout's model metadata, which its migrations build the schema from (relative paths, sorted)."""
+    return _files_in(Path(src), METADATA_DIRS)
+
+
+def template_key(src):
+    """What a template depends on: the checkout's model metadata and seed sources (line endings normalised, so a
+    CRLF checkout of the same files gives the same key)."""
+    h = hashlib.sha256()
+    for rel in metadata_files(src) + seed_files(src):
         h.update(f"file:{rel}\n".encode("utf-8"))
         h.update((Path(src) / rel).read_bytes().replace(b"\r\n", b"\n"))
     return h.hexdigest()[:16]
@@ -129,8 +145,21 @@ class PsqlGateway:
     def exists(self, db):
         return self.sql(f"SELECT 1 FROM pg_database WHERE datname = '{_ident(db)}'") == "1"
 
-    def schema_fingerprint(self, db):
-        return self.sql(SCHEMA_SQL, db)
+    def copy(self, source, target):
+        """`target` as a dump of `source` (CREATE DATABASE ... TEMPLATE needs `source` idle; pr4m never is)."""
+        dump = f"/tmp/{_ident(target)}.sql"
+        self.drop(target)
+        self.sql(f'CREATE DATABASE "{_ident(target)}" OWNER "{_ident(self.user)}"')
+        try:
+            for step in (["pg_dump", "-U", self.user, "-d", _ident(source), "--no-owner", "--no-privileges",
+                          "-f", dump],
+                         ["psql", "-U", self.user, "-d", _ident(target), "-q", "-v", "ON_ERROR_STOP=1", "-f", dump]):
+                r = self.runner(["docker", "exec", self.container, *step])
+                if r.returncode != 0:
+                    raise SlotError(f"{step[0]} {source} into {target} failed: "
+                                    f"{(r.stderr or r.stdout or '').strip()[-400:]}")
+        finally:
+            self.runner(["docker", "exec", self.container, "rm", "-f", dump])
 
     def drop(self, db):
         """Drop `db`, ending its sessions (a slot's Gaia container keeps connections open)."""
@@ -155,14 +184,16 @@ def _ident(name):
 
 
 class Slots:
-    """The templates and the slot databases. `pg` is a PsqlGateway, `seed(src, db, fixtures_out)` runs the gaia
-    harness and `keep` is how many templates to keep."""
+    """The templates and the slot databases. `pg` is a PsqlGateway, `migrate(src, db, slot)` migrates database `db`
+    with checkout `src`'s code (in slot `slot`'s container if given), `seed(src, db, fixtures_out, source_db)` runs
+    the gaia harness, and `keep` is how many templates to keep."""
 
-    def __init__(self, pg, state_dir, count, seed, source_db="pr4m", keep=DEFAULT_TEMPLATES):
+    def __init__(self, pg, state_dir, count, seed, migrate, source_db=SOURCE_DB, keep=DEFAULT_TEMPLATES):
         self.pg = pg
         self.state_dir = Path(state_dir)
         self.count = count
         self.seed = seed
+        self.migrate = migrate
         self.source_db = source_db
         self.keep = keep
 
@@ -195,19 +226,21 @@ class Slots:
         self._save(state)
 
     def wanted_key(self, src):
-        return template_key(src, self.pg.schema_fingerprint(self.source_db))
+        return template_key(src)
 
     def template_current(self, src, key=None):
-        """(current, reason): whether there is a template for `src`'s seeds and pr4m's schema."""
+        """(current, reason): whether there is a template for `src`'s metadata and seeds."""
         key = key or self.wanted_key(src)
         entry = self.templates().get(key)
         if not entry or not self.pg.exists(template_db(key)) or not self.fixtures_file(key).exists():
-            return False, f"no template for key {key} (pr4m's schema or the seeds differ from the kept ones)"
+            return False, f"no template for key {key} (the checkout's metadata or seeds differ from the kept ones)"
         return True, f"{template_db(key)}, built {entry.get('built')} from {entry.get('src')}"
 
-    def build_template(self, src, force=False, key=None):
-        """Build `src`'s template unless it is current, then drop the least recently used ones beyond `keep`.
-        Returns True if it was built. Run it under the templates' lock."""
+    def build_template(self, src, force=False, key=None, slot=None):
+        """Build `src`'s template unless it is current, then drop the least recently used ones beyond `keep`: pr4m
+        copied into a scratch database, migrated with `src`'s code (in slot `slot`'s container if given), the
+        template seeded from that copy, the copy dropped. Returns True if it was built. Run it under the templates'
+        lock (and the slot's, with `slot`)."""
         key = key or self.wanted_key(src)
         if not force and self.template_current(src, key)[0]:
             return False
@@ -217,13 +250,18 @@ class Slots:
         db = template_db(key)
         self.pg.drop(db)
         self.pg.drop(LEGACY_TEMPLATE_DB)
+        scratch = scratch_db(key)
         try:
-            self.seed(Path(src), db, self.fixtures_file(key))
+            self.pg.copy(self.source_db, scratch)
+            self.migrate(Path(src), scratch, slot)
+            self.seed(Path(src), db, self.fixtures_file(key), scratch)
             self.pg.seal(db)
         except BaseException:
             self.pg.drop(db)                            # not in the registry, so evict would never drop it
             self.fixtures_file(key).unlink(missing_ok=True)
             raise
+        finally:
+            self.pg.drop(scratch)
         state = self.templates()
         state[key] = {"src": str(src), "built": time.strftime("%Y-%m-%d %H:%M:%S")}
         self._save(state)
@@ -264,7 +302,7 @@ class Slots:
 
     def prepare(self, slot, src, lock, sync=None, build=True, force=False, on_build=None):
         """Slot `slot` ready for checkout `src`. Under the slot's lock, then the templates' lock: `src`'s template
-        built if missing (with `build`; rebuilt with `force`), the slot cloned from it and its fixtures written into
+        built if missing (its schema migrated in the slot's container; with `build`; rebuilt with `force`), the slot cloned from it and its fixtures written into
         `src`. Then, still under the slot's lock, `sync()` (copying the checkout into the slot's container).
         `lock(name)` returns the context manager for lock file `name`; `on_build(db, reason)` is told before a
         build. Returns (template database, whether it was built)."""
@@ -277,7 +315,7 @@ class Slots:
                 if not current and (build or force):
                     if on_build:
                         on_build(template_db(key), why)
-                    built = self.build_template(src, force=True, key=key)
+                    built = self.build_template(src, force=True, key=key, slot=slot)
                 self.reset(slot, key)
                 self.write_fixtures(src, key)   # under the lock: a build may be rewriting this key's fixtures
             if sync:

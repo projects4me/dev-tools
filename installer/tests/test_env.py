@@ -1,14 +1,35 @@
 """p4m.env: the per-machine settings file. Run: python -m unittest discover -s tests"""
 
 import base64
+import os
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import p4m  # noqa: E402
+
+
+class MigrateRefusalTest(unittest.TestCase):
+    """A Talos run (P4M_WORKSPACE set) never migrates pr4m, the engineer's dev database."""
+
+    def test_refused_in_a_run_workspace(self):
+        why = p4m.migrate_refusal({"P4M_WORKSPACE": "/ws/.runs/issue-42"})
+        self.assertIn("refusing to migrate pr4m", why)
+        self.assertIn("/ws/.runs/issue-42", why)
+        self.assertIsNone(p4m.migrate_refusal({}))
+        self.assertIsNone(p4m.migrate_refusal({"P4M_WORKSPACE": ""}))
+
+    def test_migrate_stops_before_touching_docker(self):
+        with mock.patch.dict(os.environ, {"P4M_WORKSPACE": "/ws/.runs/issue-42"}), \
+                mock.patch.object(p4m, "run") as run, mock.patch.object(p4m, "compose") as compose:
+            with self.assertRaises(p4m.P4MError):
+                p4m.migrate()
+        run.assert_not_called()
+        compose.assert_not_called()
 
 
 class SettingsKeyTest(unittest.TestCase):
