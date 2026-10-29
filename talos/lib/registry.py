@@ -66,6 +66,10 @@ class Agent:
     denied_tools: list = field(default_factory=list)  # `--disallowedTools`
     limits_by_model: dict = field(default_factory=dict)  # model -> {"maxTurns", "maxBudgetUsd"} for that model's runs
     ship_prompt: str = ""               # fresh session that ships after a ready_to_ship outcome ("" = not offered)
+    bot_round_prompt: str = ""          # run that answers CodeRabbit's findings ("" = hand off without bot rounds)
+    bot_review_rounds: int = 3          # bot rounds per issue before it is handed off with open bot threads
+    bot_review_wait_minutes: float = 20     # per round: how long a pending CodeRabbit review is waited for
+    bot_review_poll_seconds: int = 60   # how often waiting issues are checked with `ai rabbit`
     env: dict = field(default_factory=dict)          # extra environment for the Claude process
     max_parallel: int = 1               # worker threads: issues run at once (1 = one at a time)
     max_parallel_by_repo: dict = field(default_factory=dict)   # repo -> runs at once
@@ -162,6 +166,10 @@ def load_agent(folder):
         denied_tools=list(raw.get("deniedTools", [])),
         limits_by_model=dict(raw.get("limitsByModel", {})),
         ship_prompt=raw.get("shipPrompt", ""),
+        bot_round_prompt=raw.get("botRoundPrompt", ""),
+        bot_review_rounds=max(0, int(raw.get("botReviewRounds", 3))),
+        bot_review_wait_minutes=float(raw.get("botReviewWaitMinutes", 20)),
+        bot_review_poll_seconds=max(5, int(raw.get("botReviewPollSeconds", 60))),
         env={str(k): str(v) for k, v in raw.get("env", {}).items()},
         max_parallel=max(1, int(raw.get("maxParallel", 1))),
         max_parallel_by_repo={str(k): int(v) for k, v in raw.get("maxParallelByRepo", {}).items()},

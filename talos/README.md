@@ -196,6 +196,7 @@ uid:gid with the `bind` home, so the memory files it writes are the engineer's.
    |---|---|
    | `done` | checks the issue is no longer assigned to the agent (the skills hand it to the reviewer); if it still is, hands it off as failed |
    | `ready_to_ship` | starts a **fresh ship session** (same model, counts as an iteration) with `shipPrompt` and the agent's `handoff` note, so `/ship-issue` doesn't re-read the implementing session's context on every call; that session ends with one of the other outcomes. Without a `shipPrompt`, or from the ship session itself, it counts as failed |
+   | `awaiting_bot_review` | the PR is open with the hand-off deferred (`ai ship --defer-handoff`), PR number in `pr`: the issue waits for CodeRabbit (see below) without holding a run slot. Without a `pr` it counts as failed |
    | `needs_input` | posts the agent's question, status `feedback`, assigns `handoffTo` |
    | `blocked` | posts the blocker, status `pending`, assigns `handoffTo` |
    | `escalate` | comments why, then resumes the same session on `model.escalate` (once); the issue stays on that model |
@@ -203,6 +204,26 @@ uid:gid with the `bind` home, so the memory files it writes are the engineer's.
 
    You answer by commenting and assigning the issue back; the status picks the action (`feedback` and
    `pending` resume the session, `in_review` runs `/address-review`).
+
+**CodeRabbit loop.** Your reviewer receives the issue only after CodeRabbit is done with the PR. The ship session
+ships with `ai ship --defer-handoff` and ends with `awaiting_bot_review`; the issue stays `in_progress` and
+assigned to the agent, and nothing about the loop is posted to the tracker (only `state/talos.log`):
+
+```
+PR pushed -> wait for the CodeRabbit status on the head SHA (ai rabbit, every botReviewPollSeconds)
+  clean                                   -> ai handoff (in_review, assigned to the reviewer)
+  findings                                -> bot round (botRoundPrompt) -> push -> awaiting_bot_review -> wait again
+  paused / absent / timeout / round cap   -> ai handoff
+```
+
+- A bot round is a queued run that resumes the session while its cache is warm, like other actions, and counts
+  toward `maxIterations`. It answers only CodeRabbit's open threads and doesn't touch the tracker.
+- At `botReviewRounds` (default 3) the issue is handed off with the bot threads still open on the PR; still
+  `pending` after `botReviewWaitMinutes` (default 20, per round) it is handed off too.
+- The wait is kept in `state/talos.db` (`bot_reviews`), so a restart picks it up; a round that was queued but
+  not started waits again, a round cut off mid-run is handed back as interrupted.
+- If someone reassigns the issue or changes its status while it waits, the wait is dropped (an issue handed back
+  in another status is worked as usual).
 
 **Missed events.** Hermes keeps no history, so on every (re)connect Talos lists the issues assigned to each
 agent and queues them. Since there's no event saying who assigned them, a reconciled issue only runs if the
@@ -232,6 +253,10 @@ their events), and an env file with its `GAIA_*` credentials.
 | `maxTurns` | turns per run (`claude --max-turns`); when reached, the issue goes back as `needs_input` with the session kept, so assigning it back resumes it (0 = no limit; Odysseus: 80) |
 | `limitsByModel` | model → `{maxTurns, maxBudgetUsd}` for runs on that model, in place of `maxTurns`; `maxBudgetUsd` is `claude --max-budget-usd` and, when reached, hands the issue back like the turn cap (Odysseus: sonnet 80 turns; opus 150 turns and $15 per run) |
 | `shipPrompt` | prompt of the fresh ship session after `ready_to_ship`; placeholders as for `actions` plus `{handoff}` (empty = the outcome is not offered) |
+| `botRoundPrompt` | prompt of a CodeRabbit bot round; placeholders as for `actions` plus `{pr}`, `{round}`, `{rounds}` (empty = no bot rounds: findings hand off straight away) |
+| `botReviewRounds` | bot rounds per issue before it is handed off with open bot threads (default 3; 0 = none) |
+| `botReviewWaitMinutes` | how long a still-pending CodeRabbit review is waited for, per round (default 20) |
+| `botReviewPollSeconds` | how often waiting issues are checked with `ai rabbit` (default 60) |
 | `builtinTools`, `deniedTools` | `claude --tools` (only these built-in tools are loaded, which keeps the fixed context small) and `--disallowedTools` |
 | `env` | extra environment for the Claude process (not `GAIA_*`: the credentials come from `gaiaEnv`). Odysseus sets `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1`: subagents and commands run in the foreground, so no turns go to waiting and no late task notification arrives after the outcome |
 | `resumeMaxIdleMinutes` | resume a session only if its last run ended this recently (0 = always; default 55) |
@@ -322,6 +347,8 @@ Readable by other tools while Talos runs (WAL mode), e.g. a future Projects4Me U
   transcript (main session; subagents are in the cost but not the token counts).
 - `ideas`: one row per ideas agent and idea: session to resume and its cumulative cost, the note for the next turn,
   the last engineer message a turn has taken in, `last_ended_at`.
+- `bot_reviews`: one row per issue in the CodeRabbit loop: repo, PR, the issue's status when the wait began,
+  phase (`waiting` or `round`), bot rounds run, and the deadline of the current wait.
 
 The pre-SQLite `state/sessions.json` is imported when `talos run`/`dispatch` starts, then renamed
 `sessions.json.imported`. `state/talos.log` and the raw JSON per run in `state/logs/` stay as they were.
@@ -335,6 +362,7 @@ The pre-SQLite `state/sessions.json` is imported when `talos run`/`dispatch` sta
 | `lib/hermes.py` + `listener/listen.js` | Hermes connection: Node Socket.IO client, supervised and restarted with a fresh token |
 | `lib/policy.py` | pure decisions: which events count, whether to run, prompt filling, outcome parsing |
 | `lib/dispatcher.py` | per-agent queue; runs a job and applies the outcome to the tracker |
+| `lib/bot_review.py` | the CodeRabbit loop: waits kept in `bot_reviews`, the watcher that polls `ai rabbit` and runs `ai handoff` |
 | `lib/runner.py` | builds and runs the `claude -p` command, keeps its output; the `Runner` interface and `LocalRunner` |
 | `lib/container.py` + `container/` | `ContainerRunner`: the run in a container (`docker run` with the credentials by name); the image and its entrypoint |
 | `lib/workspaces.py` | per-issue workspaces: `.runs/issue-N` with the repo's worktree and the tooling linked in |

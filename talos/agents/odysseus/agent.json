@@ -60,7 +60,11 @@
       "maxBudgetUsd": 15
     }
   },
-  "shipPrompt": "Ship Projects4Me issue #{issue} ({project}, repo {repo}). A previous session implemented it on branch claude-issue-{issue} and left this handoff note:\n\n{handoff}\n\nRestart the timer with dev-tools/ai/ai timer {issue}, check the branch (in {repo}: git status, git diff --stat origin/dev...claude-issue-{issue}), then run /ship-issue {issue}. Read only the files the suite or the design review points at.",
+  "shipPrompt": "Ship Projects4Me issue #{issue} ({project}, repo {repo}). A previous session implemented it on branch claude-issue-{issue} and left this handoff note:\n\n{handoff}\n\nRestart the timer with dev-tools/ai/ai timer {issue}, check the branch (in {repo}: git status, git diff --stat origin/dev...claude-issue-{issue}), then run /ship-issue {issue}, shipping with `dev-tools/ai/ai ship {repo} {issue} ship.json --defer-handoff` so the issue stays in_progress with you while CodeRabbit reviews the PR. Don't wait for CodeRabbit or run `ai handoff` yourself: end with outcome awaiting_bot_review and the PR number in `pr`, and Talos hands the issue to {reviewer} once CodeRabbit is settled. Read only the files the suite or the design review points at.",
+  "botRoundPrompt": "CodeRabbit left open review threads on PR #{pr} of Projects4Me issue #{issue} ({project}, repo {repo}); this is bot round {round} of at most {rounds}. Restart the timer with dev-tools/ai/ai timer {issue}, make sure branch claude-issue-{issue} is checked out in {repo} (dev-tools/ai/ai start {repo} {issue} if not), then run /address-review {repo} {pr} {issue} as a bot round: work only CodeRabbit's open threads (dev-tools/ai/ai rabbit {repo} {pr} --json lists their comment ids), fix each one or decline it with evidence in the reply, re-test with dev-tools/ai/ai test {repo} --changed, push the follow-up and log your time with dev-tools/ai/ai time {issue}. Don't hand the issue off, change its status or assignee, or comment on the tracker: {reviewer} gets it once CodeRabbit is settled. End with outcome awaiting_bot_review and pr {pr}.",
+  "botReviewRounds": 3,
+  "botReviewWaitMinutes": 20,
+  "botReviewPollSeconds": 60,
   "builtinTools": "Bash,Read,Edit,Write,Grep,Glob,Agent,Skill,ToolSearch",
   "env": {
     "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "1"

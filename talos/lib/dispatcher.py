@@ -6,8 +6,9 @@ import threading
 import uuid
 from datetime import datetime
 
-from . import memory, policy, pool, runner, sessions, workspaces
+from . import bot_review, memory, policy, pool, runner, sessions, workspaces
 from .dependency_gate import DependencyGate
+from .registry import Action
 from .usage_pause import UsagePause
 from . import runs as run_log
 from .config import STATE_DIR, WORKSPACE, TalosError, log
@@ -53,6 +54,7 @@ class Dispatcher:
         self._pause = UsagePause()  # no dispatching while a Claude usage limit holds
         self._deps = DependencyGate(agent.dependency_done_statuses)   # issues waiting on "Depends on" issues
         self._releases = queue.Queue()      # changed issue numbers (None = unknown) for the release worker
+        self.bot_review = bot_review.Watcher(agent, self.user_id, tracker, self.submit)    # the CodeRabbit loop
 
     # -- queueing ----------------------------------------------------------------------------
 
@@ -132,13 +134,16 @@ class Dispatcher:
         return pool.order_key(bool(action and action.resume), issue.get("priority"))
 
     def stop(self):
-        """Release workers waiting out a usage-limit pause."""
+        """Release workers waiting out a usage-limit pause, and stop polling CodeRabbit."""
         self._pause.stop()
+        self.bot_review.stop()
 
     def start(self):
         for n in range(self.agent.max_parallel):
             threading.Thread(target=self._loop, name=f"worker-{self.agent.name}-{n + 1}", daemon=True).start()
         threading.Thread(target=self._release_loop, name=f"release-{self.agent.name}", daemon=True).start()
+        if not self.dry_run:
+            self.bot_review.start()
 
     def _loop(self):
         while True:
@@ -162,6 +167,13 @@ class Dispatcher:
 
     def handle(self, number, reconcile=False):
         issue = self.tracker.issue(number)
+        review = bot_review.get(self.agent.name, number)
+        if review and not bot_review.still_waiting(review, issue, self.user_id):
+            bot_review.drop(self.agent.name, number)    # someone moved it while it waited: work it as usual
+            review = {}
+        elif review.get("phase") == bot_review.WAITING:
+            log(f"#{number} skipped: waiting for CodeRabbit on PR {review['pr']}", self.agent.name)
+            return None
         dependencies = issue.get("dependsOn") or []
         try:
             statuses = self.tracker.statuses_of(dependencies)
@@ -173,6 +185,8 @@ class Dispatcher:
             return "held"
         decision = policy.decide(issue, self.agent, self.user_id, require_allowed_modifier=reconcile,
                                  dependency_statuses=statuses, done_statuses=self._deps.done_statuses)
+        if review and (decision.waiting_on or not decision.run):
+            bot_review.drop(self.agent.name, number)    # held or not to be worked: out of the CodeRabbit loop
         if decision.waiting_on:
             return self._hold(number, decision, reconcile, dependencies)
         was_held = self._deps.clear(number)
@@ -180,23 +194,41 @@ class Dispatcher:
             log(f"#{number} skipped: {decision.reason}" + (" (left the held set)" if was_held else ""),
                 self.agent.name)
             return None
+        bot_round = review.get("phase") == bot_review.ROUND
+        if not bot_round:
+            return self._work(number, issue, decision, decision.action)
+        try:
+            return self._work(number, issue, decision, Action(self.agent.bot_round_prompt, resume=True), review)
+        except Exception:   # broke inside Talos: back to waiting (counted), so the watcher still ends the loop
+            bot_review.undo_round(self.agent.name, number, self.bot_review.deadline(), uncount=False)
+            raise
+
+    def _work(self, number, issue, decision, action, review=None):
+        """Prepare the workspace and run the action, or a bot round when `review` is the record it runs for."""
+        bot_round = bool(review)
         state = sessions.get(self.agent.name, number)
-        session_id, why = policy.resume_session(decision.action, state, _now(), self.agent.resume_max_idle_minutes)
+        session_id, why = policy.resume_session(action, state, _now(), self.agent.resume_max_idle_minutes)
         if session_id and not self.runner.resumable:
             session_id, why = None, "new session (the runner keeps no sessions)"
-        catch_up = decision.action.resume and bool(state.get("session_id")) and not session_id
+        catch_up = action.resume and bool(state.get("session_id")) and not session_id
         model = policy.choose_model(self.agent, issue, escalated=bool(state.get("escalated")))
-        prompt = policy.render_prompt(decision.action, issue, decision.repo, catch_up=catch_up,
-                                     reviewer=self.agent.reviewer_name)
+        if bot_round:
+            prompt = policy.render_bot_round_prompt(self.agent, issue, decision.repo, review["pr"], review["rounds"],
+                                                    catch_up=catch_up)
+        else:
+            prompt = policy.render_prompt(action, issue, decision.repo, catch_up=catch_up,
+                                         reviewer=self.agent.reviewer_name)
         folder = None
         if not self.dry_run:                  # the workspace first: the pack is built from it
             try:
                 folder = self.runner.prepare(number, decision.repo)
             except workspaces.BranchCheckedOut as e:
+                if bot_round:
+                    bot_review.drop(self.agent.name, number)    # handed to a person: out of the loop
                 return self._branch_checked_out(number, e, decision.repo)
             except workspaces.WorkspaceError as e:     # the run itself reports it as a failed run
                 log(f"#{number} workspace not ready before the run: {e}", self.agent.name)
-        if decision.repo == "gaia" and not session_id:        # a resumed session already has the pack
+        if decision.repo == "gaia" and not session_id and not bot_round:     # a resumed session already has it
             prompt = policy.with_pack(prompt, runner.gaia_pack(number, folder))
         return self._run(issue, prompt, model, session_id, why=why, repo=decision.repo)
 
@@ -314,6 +346,13 @@ class Dispatcher:
             outcome = "failed"
             summary = f"reported ready_to_ship where it can't be used: {summary}"
 
+        if outcome == policy.AWAITING_BOT_REVIEW:
+            pr = policy.read_pr(result)
+            if pr and repo:
+                return self._await_bot_review(issue, repo, pr)
+            outcome, summary = "failed", f"reported awaiting_bot_review without a PR number: {summary}"
+        bot_review.drop(self.agent.name, number)       # any other end takes the issue out of the CodeRabbit loop
+
         if outcome == "done":
             self._check_handed_back(number, log_name)
         elif outcome in ("needs_input", "blocked"):
@@ -326,6 +365,16 @@ class Dispatcher:
                 body += f"<pre>{html.escape(comment)}</pre>"
             self._hand_off(number, "failed", f"{self.agent.display_name}: run failed", body, escaped=True)
         return outcome
+
+    def _await_bot_review(self, issue, repo, pr):
+        """The PR is open with the hand-off deferred: the watcher polls CodeRabbit for it from here, without holding
+        a run slot. The issue stays with the agent and nothing is posted to the tracker."""
+        number = issue["number"]
+        bot_review.wait(self.agent.name, number, repo, pr, issue["status"], self.bot_review.deadline())
+        rounds = bot_review.get(self.agent.name, number).get("rounds") or 0
+        log(f"#{number} waiting for CodeRabbit on {repo} PR {pr} ({rounds}/{self.bot_review.cap} bot rounds run)",
+            self.agent.name)
+        return policy.AWAITING_BOT_REVIEW
 
     def _pause_for_limit(self, number, reset_at):
         """Stop dispatching until the limit resets (or an exponential backoff); comment once if it is long. Workers
@@ -362,6 +411,7 @@ class Dispatcher:
     def _iteration_limit(self, number, runs):
         """Out of iterations: a human has to look before the agent spends more runs on it."""
         log(f"#{number} iteration limit reached ({runs}/{self.agent.max_iterations})", self.agent.name)
+        bot_review.drop(self.agent.name, number)
         self._hand_off(number, "limit", f"{self.agent.display_name}: needs manual intervention",
                        f"<p>{self.agent.display_name} has had {runs} runs on this issue, the limit is "
                        f"{self.agent.max_iterations}. It needs a human look before more agent work. To give it "
@@ -407,9 +457,11 @@ class Dispatcher:
             sessions.update(self.agent.name, number, running=False, last_ended_at=_iso(_now()))
             run_log.close_unfinished(self.agent.name, number, _iso(_now()))
             log(f"#{number} was interrupted by a Talos restart", self.agent.name)
+            bot_review.drop(self.agent.name, number)
             self._hand_off(number, "failed", f"{self.agent.display_name}: run interrupted",
                            "<p>Talos stopped while this issue was being worked on. Check the branch, "
                            "then assign it back to resume.</p>", escaped=True)
+        self.bot_review.recover()           # issues waiting for CodeRabbit are polled again by the watcher
 
     def reconcile(self, project_ids):
         """Pick up issues assigned while the listener was down (Hermes keeps no history)."""

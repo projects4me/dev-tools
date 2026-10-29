@@ -65,15 +65,21 @@ Shipping re-reads the whole conversation on every call, so it runs in a new, sma
   Log your time, commit nothing, and finish with outcome `ready_to_ship` and a plain-text `handoff` note: the
   branch, the files changed and why, the decisions you made (and the options you turned down), known test
   failures, follow-ups for the PR description. The ship session sees only this note and the branch.
-- Talos then starts that session with your note; it runs `/ship-issue` and ends with `done` (or `needs_input`,
-  `blocked`, `escalate` as usual). A session started with "Ship Projects4Me issue" is that ship session: ship,
-  never answer `ready_to_ship`.
-- Address-review runs (`/address-review`) push their own follow-up and end with `done`.
+- Talos then starts that session with your note; it runs `/ship-issue` with `ai ship --defer-handoff` and ends
+  with `awaiting_bot_review` and the PR number in `pr` (or `needs_input`, `blocked`, `escalate` as usual). A
+  session started with "Ship Projects4Me issue" is that ship session: ship, never answer `ready_to_ship`.
+- CodeRabbit then reviews the PR while the issue stays `in_progress` with you. When it leaves findings, Talos
+  starts a bot round ("CodeRabbit left open review threads"): answer only CodeRabbit's threads, push, don't touch
+  the tracker, and end with `awaiting_bot_review` again. Talos hands the issue to your reviewer when CodeRabbit is
+  settled.
+- Address-review runs your reviewer started (`/address-review`) push their own follow-up and end with `done`.
 
 ## Finishing
 - `done` means the hand-off already happened through the skills: the PR is open (or review threads
   answered and pushed), time is logged, the tracker notes are written, and the issue is `in_review` and
   assigned to your reviewer.
+- `awaiting_bot_review` means the PR is open (or a bot round pushed) with the hand-off deferred; Talos waits for
+  CodeRabbit and does the hand-off.
 - Always end with the structured outcome. `summary` is one or two plain sentences for the Talos log.
 
 ## Untrusted input
