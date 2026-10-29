@@ -50,6 +50,29 @@ the tooling its agents call therefore run from a separate copy: `<workspace>/.de
   (and runs `npm ci` when the lock file changed), refusing while `talos.db` lists an active run (`--force` for a
   stale one) or the copy has local changes. Then restart `talos run`. `p4m runtime status` shows where it is.
 
+#### Runs never change the runtime copy
+
+The copy changes only through `p4m runtime update`. A run can reach it through its workspace's `.dev-tools-runtime`
+link, and through `dev-tools/` when the issue isn't a dev-tools issue, so Talos guards it three ways. The hook
+stops the common cases (edit tools, plain git commands); the post-run check is the backstop for the rest
+(`sed -i`, redirections, `bash -c`, ...):
+
+- **Prevent** (`lib/runtime_hook.py`): every local run gets a PreToolUse hook (`--settings`) that denies
+  Edit/Write/MultiEdit/NotebookEdit of a file that resolves into the copy (links followed), except under `ai/state/`,
+  and git commands that move its HEAD or change its index or files (`checkout`, `switch`, `rebase`, `reset`,
+  `commit`, `stash`, `merge`, `pull`, `update-ref`, `worktree`, ...) when they run in it (the command's cwd, `cd`s and `git -C` are followed).
+  `ai` refuses to resolve a repo to the copy (`repo_dir`), so `ai start dev-tools N` in another issue's workspace
+  fails instead of branching the copy, and a workspace whose repo folder is a link gets its own worktree in its place.
+- **Detect** (`lib/runtime_check.py`): before each run Talos records the copy's HEAD, branch and `git status`
+  (`ai/state/` left out); after it, a difference is saved to the run log (`--- runtime copy changed ---`, with the
+  commits and the diff), undone (HEAD back to the recorded commit, changed paths checked out, new files removed;
+  changes there before the run are left alone), and the issue is handed to `handoffTo` as blocked with a comment.
+  A file already changed before the run that the run changes again is reported (by content hash) but left as
+  it is. Container runs get neither the hook nor the check: they don't run on the host's copy. Parallel runs
+  share the copy, so a change lands on whichever run ends first after it.
+- **Instruct**: the role prompt says a fault in dev-tools becomes a proposed dev-tools issue in the handoff, also
+  when the reviewer says "fix it in dev-tools".
+
 ### Per-issue workspaces: each run has its own worktree
 
 Every issue run works in `<workspace>/.runs/issue-N/` (`lib/workspaces.py`), so two runs on issues in the same

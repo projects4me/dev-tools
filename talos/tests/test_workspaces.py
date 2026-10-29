@@ -132,6 +132,17 @@ class WorkspacesTest(unittest.TestCase):
         self.assertEqual(git(folder / "dev-tools", "log", "-1", "--format=%s"), "first")
         self.assertTrue(workspaces.is_link(folder / ".dev-tools-runtime"))
 
+    def test_dev_tools_link_in_the_repos_place_is_replaced_by_the_worktree(self):
+        # the runtime copy is a worktree too, so through a dev-tools/ link its .git made the workspace look ready
+        (self.tools / ".git").write_text("gitdir: elsewhere\n", encoding="utf-8")
+        folder = workspaces.path(self.root, 3)
+        folder.mkdir(parents=True)
+        workspaces.link(self.tools, folder / "dev-tools")
+        self.ensure(3, "dev-tools")
+        self.assertFalse(workspaces.is_link(folder / "dev-tools"))
+        self.assertEqual(git(folder / "dev-tools", "branch", "--show-current"), "claude-issue-3")
+        self.assertEqual(sorted(p.name for p in self.tools.iterdir()), [".git", "ai"])   # the copy is untouched
+
     def test_remove_refuses_uncommitted_work_unless_forced_and_keeps_link_targets(self):
         folder = self.ensure(1)
         (folder / "gaia" / "README.md").write_text("unsaved", encoding="utf-8")

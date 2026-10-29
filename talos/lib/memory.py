@@ -13,7 +13,6 @@ change a file that changed since the session read it, so a run that loses a race
 line again; the remaining risk (two runs writing one new memory file in the same moment) is accepted.
 """
 
-import json
 import os
 import re
 from pathlib import Path
@@ -36,5 +35,5 @@ def folder(root):
 
 
 def settings(memory_dir):
-    """The `claude --settings` JSON that points a run at memory_dir."""
-    return json.dumps({"autoMemoryDirectory": str(memory_dir)}, separators=(",", ":"))
+    """The `claude --settings` part that points a run at memory_dir."""
+    return {"autoMemoryDirectory": str(memory_dir)}

@@ -15,6 +15,7 @@ import sys
 from pathlib import Path
 
 RUNS_DIR = ".runs"
+# the same name as ai/lib/common.py RUNTIME_NAME
 RUNTIME_NAME = ".dev-tools-runtime"     # where the `ai` wrapper looks for the tooling (installer/runtime.py)
 NO_WORKTREE = ("pr4m",)                  # the workspace root repo is worked in place, never as a worktree
 REPO_PATH = {}                           # repo name -> folder in the workspace, when they differ
@@ -114,6 +115,10 @@ def ensure(root, tools, issue, repo):
     if not ignore.exists():              # keep the runs out of the workspace repo's `git status`
         ignore.write_text("*\n", encoding="utf-8")
     name = REPO_PATH.get(repo, repo)
+    if is_link(folder / name):
+        # A link in the repo's place (a dev-tools/ link to the runtime copy, made when the issue was in another
+        # repo) has the copy's .git behind it, so the run would work in the copy instead of its own worktree.
+        unlink(folder / name)
     if not (folder / name / ".git").exists():
         _add_worktree(root / name, folder / name, issue, base_branch(repo))
     # The `ai` wrapper hands over to <its folder>/../../.dev-tools-runtime when that exists, so this link sends

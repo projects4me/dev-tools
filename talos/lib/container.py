@@ -96,6 +96,10 @@ class ContainerRunner(runner.Runner):
         a Docker host that doesn't have this machine's folders, so those runs keep Claude's own (empty) memory."""
         return MEMORY if host_memory and self.mounted_memory() else None
 
+    def runtime_guard(self, host_runtime):
+        """The container has its own tooling, not the host's runtime copy, and the hook's paths are the host's."""
+        return None
+
     def mounted_memory(self):
         """The host folder mounted at MEMORY, or None when this home mounts none."""
         return memory.folder(WORKSPACE) if self.home == "bind" else None

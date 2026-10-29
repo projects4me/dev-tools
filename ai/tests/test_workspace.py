@@ -44,6 +44,25 @@ class RepoDirTest(unittest.TestCase):
             self.assertEqual(common.repo_dir("pr4m"), common.WORKSPACE.resolve())
             self.assertEqual(common.LOCAL_DIR, common.WORKSPACE / "dev-tools")
 
+    def test_a_repo_resolving_to_the_runtime_copy_is_refused(self):
+        # dev-tools/ in another issue's workspace links to the runtime copy: `ai start dev-tools N` must not branch it
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, {"P4M_WORKSPACE": tmp}):
+            runtime, link = Path(tmp) / common.RUNTIME_NAME, Path(tmp) / "dev-tools"
+            runtime.mkdir()
+            if os.name == "nt":
+                import _winapi
+                _winapi.CreateJunction(str(runtime), str(link))
+            else:
+                os.symlink(runtime, link, target_is_directory=True)
+            try:
+                with self.assertRaisesRegex(common.AiError, "runtime copy"):
+                    common.repo_dir("dev-tools")
+            finally:
+                if os.name == "nt":
+                    os.rmdir(link)       # removes the junction, not its target
+                else:
+                    os.unlink(link)
+
 
 class StartInRunWorkspaceTest(unittest.TestCase):
     """gaia's main checkout sits on dev; the run's worktree must branch from origin/dev without checking out dev."""

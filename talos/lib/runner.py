@@ -14,12 +14,13 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from . import workspaces
+from . import runtime_hook, workspaces
 from .memory import settings as memory_settings
 from .config import CONTAINER_DIR, DEV_TOOLS, LOG_DIR, OUTCOME_SCHEMA, WORKSPACE, now_stamp
 
 
-def build_command(claude, agent, model, session_id=None, new_session_id=None, limits=None, mcp=None, memory=None):
+def build_command(claude, agent, model, session_id=None, new_session_id=None, limits=None, mcp=None, memory=None,
+                  guard=None):
     """The `claude -p` argv. Kept separate so it can be checked without running anything.
 
     The prompt is not part of it: a Windows command line holds ~32k characters and a review-round prompt can be
@@ -29,6 +30,7 @@ def build_command(claude, agent, model, session_id=None, new_session_id=None, li
     `limits` is the run's (max turns, max budget USD) from policy.run_limits; None = the agent's maxTurns only.
     `mcp` is the agent's MCP config file (mcp.mcp_config); None = whatever the engineer registered.
     `memory` is the auto-memory folder the run shares with the workspace (memory.py); None = Claude's default.
+    `guard` is the runtime copy the run must not change (runtime_hook.py); None = no hook.
     """
     max_turns, max_budget = limits or (agent.max_turns, 0)
     with open(OUTCOME_SCHEMA, encoding="utf-8") as f:
@@ -52,8 +54,9 @@ def build_command(claude, agent, model, session_id=None, new_session_id=None, li
         cmd += ["--disallowedTools", *agent.denied_tools]
     if mcp:
         cmd += ["--strict-mcp-config", "--mcp-config", str(mcp)]
-    if memory:
-        cmd += ["--settings", memory_settings(memory)]
+    settings = {**(memory_settings(memory) if memory else {}), **(runtime_hook.settings(guard) if guard else {})}
+    if settings:
+        cmd += ["--settings", json.dumps(settings, separators=(",", ":"))]
     if session_id:
         cmd += ["--resume", session_id]
     elif new_session_id:
@@ -178,6 +181,10 @@ class Runner:
     def memory_dir(self, host_memory):
         """The auto-memory folder to name in the argv (the workspace's, see memory.py), or None for Claude's own."""
         return host_memory
+
+    def runtime_guard(self, host_runtime):
+        """The runtime copy to guard with the PreToolUse hook (runtime_hook.py), or None when the run can't reach it."""
+        return host_runtime
 
     def prepare(self, issue, repo):
         """Set up what the run works in before it starts; returns the issue's workspace folder, or None when the
