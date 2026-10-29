@@ -1040,6 +1040,15 @@ def cmd_install(args) -> None:
               "and add yourself to the docker group.")
 
 
+def coderabbit_repos() -> list[str]:
+    """The repos where Talos waits for CodeRabbit before handing off (`codeRabbitRepos` in ai/config.json)."""
+    cfg = TOOLS_DIR / "ai" / "config.json"
+    try:
+        return list(json.loads(cfg.read_text(encoding="utf-8")).get("codeRabbitRepos", []))
+    except (OSError, ValueError):
+        return []
+
+
 def cmd_doctor(args) -> int:
     problems = 0
     info("Tools")
@@ -1067,6 +1076,9 @@ def cmd_doctor(args) -> int:
             find_bash(); ok("Git Bash found (used for DB test harness)")
         except P4MError as e:
             warn(str(e))
+
+    info("CodeRabbit loop")
+    ok("enabled for: " + (", ".join(coderabbit_repos()) or "no repo") + " (codeRabbitRepos in ai/config.json)")
 
     info("Docker")
     if docker_running():

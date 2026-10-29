@@ -66,7 +66,8 @@ Shipping re-reads the whole conversation on every call, so it runs in a new, sma
   branch, the files changed and why, the decisions you made (and the options you turned down), known test
   failures, follow-ups for the PR description. The ship session sees only this note and the branch.
 - Talos then starts that session with your note; it runs `/ship-issue` with `ai ship --defer-handoff` and ends
-  with `awaiting_bot_review` and the PR number in `pr` (or `needs_input`, `blocked`, `escalate` as usual). A
+  with `awaiting_bot_review` and the PR number in `pr`, unless `ai ship` reports "CodeRabbit not enabled" (the
+  repo has no CodeRabbit loop: it already handed off, so end with `done`) (or `needs_input`, `blocked`, `escalate` as usual). A
   session started with "Ship Projects4Me issue" is that ship session: ship, never answer `ready_to_ship`.
 - CodeRabbit then reviews the PR while the issue stays `in_progress` with you. When it leaves findings, Talos
   starts a bot round ("CodeRabbit left open review threads"): answer only CodeRabbit's threads, push, don't touch

@@ -4,13 +4,27 @@ import json
 import re
 import time
 
-from .common import REPOS, config, ody, say
+from .common import REPOS, AiError, config, ody, say
 from .review import _api, _is_bot, open_threads, resolved_threads
 
 STATUS_CONTEXT = "CodeRabbit"
 PAUSED = re.compile(r"auto(?:matic)? reviews? (?:are |is )?paused|reviews? paused|rate limit", re.I)
 EXIT_CODES = {"clean": 0, "findings": 1, "pending": 2, "paused": 3, "absent": 4}
 POLL_SECONDS = 30
+
+
+def enabled_repos():
+    """The repos with the CodeRabbit loop (`codeRabbitRepos` in config.json); an unknown name is an error."""
+    names = config().get("codeRabbitRepos", [])
+    unknown = [n for n in names if n not in REPOS]
+    if unknown:
+        raise AiError(f"codeRabbitRepos names unknown repos: {', '.join(unknown)} (known: {', '.join(REPOS)})")
+    return list(names)
+
+
+def enabled(repo):
+    """Does CodeRabbit review this repo's PRs? GitHub can't tell us, so the repos are listed in config.json."""
+    return repo in enabled_repos()
 
 
 def head_sha(repo, pr):
@@ -48,6 +62,10 @@ def snapshot(repo, pr, sha, agent, waited_out=False):
 
 def cmd_rabbit(args):
     """Print (and exit with) clean / findings / pending / paused / absent for the PR's head commit."""
+    if not enabled(args.repo):
+        result = {"state": "absent", "detail": f"CodeRabbit not enabled for {args.repo}"}
+        say(json.dumps(result) if args.json else f"absent - {result['detail']}")
+        return EXIT_CODES["absent"]
     agent = config()["agentLogin"]
     sha = head_sha(args.repo, args.pr)
     deadline = time.monotonic() + args.timeout * 60
