@@ -67,6 +67,22 @@ def resolved_threads(repo, pr):
     return {n["comments"]["nodes"][0]["databaseId"] for n in nodes if n["isResolved"] and n["comments"]["nodes"]}
 
 
+def open_threads(comments, resolved, agent):
+    """Top-level review comments still open: not resolved, and not answered by the agent unless someone
+    followed up after it. Returns (open threads, follow-ups by thread id, answered thread ids)."""
+    answered = {c["in_reply_to_id"] for c in comments if c["user"]["login"] == agent and c.get("in_reply_to_id")}
+    followups = {}
+    for c in comments:
+        if c.get("in_reply_to_id") and c["user"]["login"] != agent:
+            followups.setdefault(c["in_reply_to_id"], []).append(c)
+    threads = [c for c in comments if not c.get("in_reply_to_id") and c["user"]["login"] != agent]
+    return [c for c in threads if is_open(c, resolved, answered, followups)], followups, answered
+
+
+def is_open(c, resolved, answered, followups):
+    return c["id"] not in resolved and (c["id"] not in answered or bool(followups.get(c["id"])))
+
+
 def _show(c, raw):
     return c["body"].strip() if raw or not _is_bot(c["user"]) else fold(c["body"])
 
@@ -91,23 +107,18 @@ def cmd_review(args):
         body = _show({"body": r.get("body") or "", "user": r["user"]}, args.raw)
         say(f"REVIEW {r['state']} by {r['user']['login']} at {r['submitted_at']}" + (f": {body}" if body else ""))
 
-    answered = {c["in_reply_to_id"] for c in comments if c["user"]["login"] == agent and c.get("in_reply_to_id")}
-    threads = [c for c in comments if not c.get("in_reply_to_id") and c["user"]["login"] != agent]
-    replies_by_thread = {}
-    for c in comments:
-        if c.get("in_reply_to_id") and c["user"]["login"] != agent:
-            replies_by_thread.setdefault(c["in_reply_to_id"], []).append(c)
-
     resolved = resolved_threads(repo, pr)
+    _, replies_by_thread, answered = open_threads(comments, resolved, agent)
+    threads = [c for c in comments if not c.get("in_reply_to_id") and c["user"]["login"] != agent]
     shown = 0
     for c in threads:
         followups = replies_by_thread.get(c["id"], [])
-        is_open = c["id"] not in resolved and (c["id"] not in answered or followups)
-        if args.open and not is_open:
+        opened = is_open(c, resolved, answered, replies_by_thread)
+        if args.open and not opened:
             continue
         shown += 1
         line = c.get("line") or c.get("original_line")
-        mark = "OPEN" if is_open else "resolved" if c["id"] in resolved else "answered"
+        mark = "OPEN" if opened else "resolved" if c["id"] in resolved else "answered"
         say(f"\n[{mark}] id={c['id']} {c['path']}:{line} ({c['user']['login']}, {c['created_at'][:16]})")
         say(f"  {_show(c, args.raw)}")
         for f in followups:
