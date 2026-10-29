@@ -61,6 +61,17 @@ CREATE TABLE IF NOT EXISTS ideas (
     last_ended_at       TEXT,
     PRIMARY KEY (agent, idea)
 );
+CREATE TABLE IF NOT EXISTS bot_reviews (
+    agent               TEXT    NOT NULL,
+    issue               INTEGER NOT NULL,
+    repo                TEXT    NOT NULL,
+    pr                  INTEGER NOT NULL,
+    status              TEXT,               -- the issue's status when the wait began; a change drops the wait
+    phase               TEXT    NOT NULL,   -- waiting (polling ai rabbit) or round (a bot-round run is queued)
+    rounds              INTEGER DEFAULT 0,  -- bot rounds run so far (capped by botReviewRounds)
+    deadline            TEXT,               -- when a still-pending CodeRabbit review is given up on
+    PRIMARY KEY (agent, issue)
+);
 CREATE INDEX IF NOT EXISTS runs_by_issue ON runs (agent, issue);
 CREATE INDEX IF NOT EXISTS runs_by_start ON runs (started_at);
 """

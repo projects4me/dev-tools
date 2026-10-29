@@ -10,7 +10,8 @@ from .dependency_gate import DONE_STATUSES, unmet_dependencies
 ASSIGNEE_EVENT = "issue.assignee.changed"
 STATUS_EVENT = "issue.status.changed"
 LIMITED = "limited"      # read_outcome's outcome for a Claude usage or rate-limit stop; never a Claude-reported one
-OUTCOMES = ("done", "ready_to_ship", "needs_input", "blocked", "escalate")
+AWAITING_BOT_REVIEW = "awaiting_bot_review"   # PR open, hand-off deferred until CodeRabbit settles (bot_review.py)
+OUTCOMES = ("done", "ready_to_ship", AWAITING_BOT_REVIEW, "needs_input", "blocked", "escalate")
 
 
 class RunLimits(NamedTuple):
@@ -150,6 +151,24 @@ def render_ship_prompt(agent, issue, repo, handoff):
     return agent.ship_prompt.format(issue=issue["number"], repo=repo, project=issue["project"],
                                     reviewer=agent.reviewer_name,
                                     handoff=handoff.strip() or "(no handoff note was written)")
+
+
+def render_bot_round_prompt(agent, issue, repo, pr, round_number, catch_up=False):
+    """A bot round's prompt: the agent's botRoundPrompt for one CodeRabbit round on the PR."""
+    values = dict(issue=issue["number"], repo=repo, project=issue["project"], pr=pr, round=round_number,
+                  rounds=agent.bot_review_rounds, reviewer=agent.reviewer_name)
+    prompt = agent.bot_round_prompt.format(**values)
+    return prompt + CATCH_UP.format(**values) if catch_up else prompt
+
+
+def read_pr(result):
+    """The PR number an awaiting_bot_review outcome names, or None."""
+    out = result.get("structured_output") if isinstance(result, dict) else None
+    try:
+        pr = int(str((out or {}).get("pr") or "").strip().lstrip("#"))
+    except ValueError:
+        return None
+    return pr if pr > 0 else None
 
 
 def read_outcome(result, now=None):
