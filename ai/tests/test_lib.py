@@ -76,6 +76,23 @@ class GaiaMappingTest(unittest.TestCase):
         self.assertEqual(tests.PHPUNIT_FOLDERS,
                          ("tests/libraries/security", "tests/libraries/utils", "tests/services", "tests/tools"))
 
+    def test_phpunit_skips_a_folder_the_checkout_lacks(self):
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(tests, "_run_logged") as run:
+            r = tests.phpunit("tests/services", d)
+            run.assert_not_called()
+            self.assertTrue(r.skipped)
+            self.assertIn("not in this checkout, skipped", r.summary)
+            self.assertTrue(tests.judge(r, set())[0])
+
+    def test_phpunit_runs_a_folder_the_checkout_has(self):
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(
+                tests, "_run_logged", return_value=(0, "OK (3 tests, 5 assertions)", Path(d))) as run:
+            (Path(d) / "tests" / "services").mkdir(parents=True)
+            r = tests.phpunit("tests/services", d)
+            run.assert_called_once()
+            self.assertFalse(r.skipped)
+            self.assertEqual(r.ran, 3)
+
     def test_services_and_tasks_are_covered_by_phpunit_not_the_api_filter(self):
         flt, terms, unmapped = testmap.gaia_api_filter(".", "origin/dev", [
             "core/services/NotificationRelatedEntityResolver.php", "core/tasks/Backfill.php"])
@@ -320,7 +337,7 @@ class RunWorkspaceSrcTest(unittest.TestCase):
         from unittest import mock
         with tempfile.TemporaryDirectory() as d:
             ws = Path(d).resolve()
-            (ws / "gaia").mkdir()
+            (ws / "gaia" / "tests" / "unit").mkdir(parents=True)
             seen = {}
 
             def record(args, repo, src, targets, full):

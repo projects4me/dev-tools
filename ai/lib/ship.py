@@ -27,7 +27,7 @@ import html
 import json
 from pathlib import Path
 
-from . import cost, gaiapack, results, workflow
+from . import coderabbit, cost, gaiapack, results, workflow
 from .common import (AiError, PROJECT_FOR_REPO, REPOS, STATE_DIR, base_branch, config, git, ody, say)
 
 SHORTCODE = {"A Gaia": "agaia", "A Prometheus": "aprom", "A Hermes": "ah", "A Ares": "aa", "A Dev Tool": "adt"}
@@ -181,10 +181,14 @@ def cmd_ship(args):
     if not progress.get("pr"):
         progress["pr"] = existing_pr(repo, issue) or workflow.open_pr(repo, issue, spec["title"], body)
         save_progress(repo, issue, progress)
+    defer = args.defer_handoff and coderabbit.enabled(repo)
+    if args.defer_handoff and not defer:
+        say(f"CodeRabbit not enabled for {repo}: handing off now (in_review), nothing to wait for; "
+            f"finish as done, not awaiting_bot_review")
     notes += cost_note(issue) + (f"<p>{html.escape(warning)}</p>" if warning else "")
     workflow.pr_hand_off(issue, progress["pr"], git(repo, "rev-parse", "--short", "HEAD"),
                          git(repo, "rev-parse", "--short", f"origin/{base_branch(repo)}"),
                          spec.get("timeNote") or f"commit and PR ({spec['title']})", notes_html=notes,
-                         defer=repo if args.defer_handoff else None)
+                         defer=repo if defer else None)
     _progress_file(repo, issue).unlink(missing_ok=True)
     return 0

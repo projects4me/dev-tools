@@ -239,6 +239,9 @@ PR pushed -> wait for the CodeRabbit check run on the head SHA (the `CodeRabbit`
   paused / absent / timeout / round cap   -> ai handoff
 ```
 
+- Only the repos in `codeRabbitRepos` (`ai/config.json`; default gaia, prometheus, hermes) have the loop. In any
+  other repo `ai ship --defer-handoff` hands off at once (in_review, reviewer) and the run ends `done`; `ai rabbit`
+  reports `absent` without waiting, so a waiting record left for such a repo is handed off on its first check.
 - A bot round is a queued run that resumes the session while its cache is warm, like other actions, and counts
   toward `maxIterations`. It answers only CodeRabbit's open threads and doesn't touch the tracker.
 - At `botReviewRounds` (default 3) the issue is handed off with the bot threads still open on the PR; still

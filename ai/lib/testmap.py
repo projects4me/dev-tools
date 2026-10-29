@@ -136,7 +136,8 @@ def gaia_api_filter(checkout, base_ref, changed):
         elif f.startswith(("tests/", "core/services/", "core/tasks/", "tools/api-tester/src/", "tools/gaia-dev/",
                            "docs/")) or f.endswith(".md"):
             continue                       # phpunit runs in full (tests/tools covers gaia-dev and the generated docs,
-                                           # tests/services covers core/services and core/tasks)
+                                           # tests/services, once it exists in the checkout, covers core/services
+                                           # and core/tasks; `ai test` skips a phpunit folder the checkout lacks)
         else:
             unmapped.append(f)
     return ("|".join(sorted(terms)) if terms else None), sorted(terms), unmapped
