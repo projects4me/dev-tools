@@ -233,7 +233,7 @@ ships with `ai ship --defer-handoff` and ends with `awaiting_bot_review`; the is
 assigned to the agent, and nothing about the loop is posted to the tracker (only `state/talos.log`):
 
 ```
-PR pushed -> wait for the CodeRabbit status on the head SHA (ai rabbit, every botReviewPollSeconds)
+PR pushed -> wait for the CodeRabbit check run on the head SHA (the `CodeRabbit` check of the `coderabbitai` app, or the legacy commit status; ai rabbit, every botReviewPollSeconds)
   clean                                   -> ai handoff (in_review, assigned to the reviewer)
   findings                                -> bot round (botRoundPrompt) -> push -> awaiting_bot_review -> wait again
   paused / absent / timeout / round cap   -> ai handoff
