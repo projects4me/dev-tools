@@ -29,6 +29,7 @@ the `dev-tools/gaia-mcp` client (same credentials and code as the `gaia` MCP ser
 | `pr <repo> <issue> --title … --body-file …` | PR as Agent Odysseus (+footer), comment the link on the issue, log time, `in_review`, assign the reviewer |
 | `handoff <repo> <issue> <pr-url>` | the tracker half of `pr` for a PR opened another way |
 | `review <repo> <pr> [--open] [--raw]` | reviews + inline threads, marks answered / resolved (GitHub's thread state); bot boilerplate folded to one line each, findings kept in full (`--raw` shows everything) |
+| `rabbit <repo> <pr> [--json] [--wait [--timeout MIN]]` | CodeRabbit's state for the PR's head commit, read from GitHub: `clean`, `findings` (open bot threads, with comment ids; same open rule as `review --open`), `pending`, `paused` (auto review paused / rate-limited) or `absent` (no status within the timeout). Exit code 0/1/2/3/4; `--wait` polls every 30 s until not pending |
 | `reply <repo> <pr> replies.json` | replies to many threads in one call (`{"<comment id>": "<reply>"}`) |
 | `pr-body <repo> <pr> <file.md>` | replace a PR description |
 | `api-cases client\|acl <cases.json>` | append api-tester cases in the catalog's own style (no re-serialising), duplicate-id check |
