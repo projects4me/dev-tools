@@ -98,6 +98,15 @@ class WorkspacesTest(unittest.TestCase):
         self.assertEqual(caught.exception.folder, (self.root / "gaia").resolve())
         self.assertIn("claude-issue-1", str(caught.exception))
 
+    def test_branch_holder_is_another_folder_only(self):
+        self.assertIsNone(workspaces.branch_holder(self.root, "gaia", 1))       # no such branch
+        git(self.root / "gaia", "checkout", "-q", "-b", "claude-issue-1")
+        self.assertEqual(workspaces.branch_holder(self.root, "gaia", 1), (self.root / "gaia").resolve())
+        git(self.root / "gaia", "checkout", "-q", "dev")
+        self.ensure(1)                       # its own workspace holds it: free for the issue's runs
+        self.assertIsNone(workspaces.branch_holder(self.root, "gaia", 1))
+        self.assertIsNone(workspaces.branch_holder(self.root, "nope", 1))     # repo not checked out here
+
     def test_reused_branch_logs_whether_it_is_behind_and_is_not_rebased(self):
         import contextlib
         import io
