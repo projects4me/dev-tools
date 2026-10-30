@@ -6,7 +6,8 @@ Backed by the `issues` table in state/talos.db; values use its column names.
 from . import db
 
 COLUMNS = ("session_id", "session_cost_usd", "running", "runs", "escalated", "last_model",
-           "live_session_id", "started_at", "last_ended_at")
+           "live_session_id", "started_at", "last_ended_at", "handoff_reason", "handoff_detail", "handoff_at",
+           "auto_retries")
 
 
 def get(agent, issue):

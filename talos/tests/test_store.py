@@ -37,6 +37,42 @@ class SessionsTest(TempDb):
         self.assertEqual((state["runs"], state["last_model"], state["running"]), (1, "sonnet", 1))
         self.assertEqual(sessions.interrupted("odysseus"), [7])
 
+    def test_handoff_fields_round_trip(self):
+        sessions.update("odysseus", 7, handoff_reason="turn_budget", handoff_detail='{"a": 1}',
+                        handoff_at="2026-10-31T01:00:00+00:00", auto_retries=2)
+        state = sessions.get("odysseus", 7)
+        self.assertEqual((state["handoff_reason"], state["handoff_detail"], state["auto_retries"]),
+                         ("turn_budget", '{"a": 1}', 2))
+
+    def test_migration_adds_columns_to_an_old_schema_and_runs_twice(self):
+        import sqlite3
+        path = self.tmp / "old.db"
+        old = sqlite3.connect(path)
+        old.execute("CREATE TABLE issues (agent TEXT NOT NULL, issue INTEGER NOT NULL, runs INTEGER DEFAULT 0, "
+                    "PRIMARY KEY (agent, issue))")
+        old.execute("INSERT INTO issues (agent, issue, runs) VALUES ('odysseus', 1, 3)")
+        old.commit()
+        old.close()
+        for _ in range(2):
+            db._initialized.discard(str(path))
+            conn = db.connect(path)
+            cols = {r["name"] for r in conn.execute("PRAGMA table_info(issues)")}
+            row = conn.execute("SELECT runs, auto_retries FROM issues").fetchone()
+            conn.close()
+            self.assertLessEqual({"handoff_reason", "handoff_detail", "handoff_at", "auto_retries"}, cols)
+            self.assertEqual((row["runs"], row["auto_retries"]), (3, 0))
+
+    def test_reset_clears_runs_and_auto_retries(self):
+        import argparse
+        import talos
+        sessions.update("odysseus", 7, runs=4, auto_retries=2)
+        agent = mock.Mock(max_iterations=10)
+        agent.name = "odysseus"
+        with mock.patch.object(talos, "load_agents", lambda name: [agent]):
+            talos.cmd_reset(argparse.Namespace(agent="odysseus", issue=7, model=False))
+        state = sessions.get("odysseus", 7)
+        self.assertEqual((state["runs"], state["auto_retries"]), (0, 0))
+
     def test_unknown_field_rejected(self):
         with self.assertRaises(ValueError):
             sessions.update("odysseus", 7, sessionId="x")

@@ -1,6 +1,7 @@
 """One agent's work queue: re-read the issue, run Claude, apply the outcome to the tracker."""
 
 import html
+import json
 import queue
 import threading
 import uuid
@@ -223,7 +224,7 @@ class Dispatcher:
         else:
             prompt = policy.render_prompt(action, issue, decision.repo, catch_up=catch_up,
                                          reviewer=self.agent.reviewer_name)
-        folder = None
+        folder = workspace_error = None
         if not self.dry_run:                  # the workspace first: the pack is built from it
             try:
                 folder = self.runner.prepare(number, decision.repo)
@@ -233,9 +234,11 @@ class Dispatcher:
                 return self._branch_checked_out(number, e, decision.repo)
             except workspaces.WorkspaceError as e:     # the run itself reports it as a failed run
                 log(f"#{number} workspace not ready before the run: {e}", self.agent.name)
+                workspace_error = str(e)
         if decision.repo == "gaia" and not session_id and not bot_round:     # a resumed session already has it
             prompt = policy.with_pack(prompt, runner.gaia_pack(number, folder))
-        return self._run(issue, prompt, model, session_id, why=why, repo=decision.repo)
+        return self._run(issue, prompt, model, session_id, why=why, repo=decision.repo,
+                         workspace_error=workspace_error)
 
     def _branch_checked_out(self, number, error, repo):
         """The issue's branch is checked out in another folder, so no worktree can be made. A person has to free it;
@@ -247,7 +250,8 @@ class Dispatcher:
                        f"out in <code>{folder}</code>, and git allows a branch in one folder only.</p>"
                        f"<p>To free it, commit or stash what is there and switch that folder to another branch "
                        f"(<code>git -C {folder} switch {html.escape(workspaces.base_branch(repo))}</code>), then assign the issue back. "
-                       f"This did not count as an iteration.</p>", escaped=True)
+                       f"This did not count as an iteration.</p>", escaped=True, reason="branch_checked_out",
+                       detail={"branch": error.branch, "folder": str(error.folder), "repo": repo})
         return "needs_input"
 
     def _hold(self, number, decision, reconcile, dependencies):
@@ -266,7 +270,8 @@ class Dispatcher:
                 log(f"#{number} waiting comment failed: {e}", self.agent.name)
         return "held"
 
-    def _run(self, issue, prompt, model, session_id, escalated=False, why=None, repo=None, shipping=False):
+    def _run(self, issue, prompt, model, session_id, escalated=False, why=None, repo=None, shipping=False,
+             workspace_error=None):
         number = issue["number"]
         state = sessions.get(self.agent.name, number)
         done_runs = state.get("runs") or 0
@@ -317,7 +322,9 @@ class Dispatcher:
         stats = runner.usage_since(runner.transcript(new_session), started)
         sessions.update(self.agent.name, number, running=False, last_ended_at=_iso(ended),
                         session_id=new_session, session_cost_usd=reported)
-        outcome, summary, comment, handoff, reset_at = policy.read_outcome(result, ended)
+        outcome, summary, comment, handoff, reset_at, reason = policy.read_outcome(result, ended)
+        if workspace_error and reason == "run_error":      # the run failed because no workspace was ready
+            reason = "talos_error"
         if outcome != policy.LIMITED:
             self._pause.succeeded()
         log_name = log_path.name if log_path else "none"
@@ -370,13 +377,15 @@ class Dispatcher:
             self._check_handed_back(number, log_name)
         elif outcome in ("needs_input", "blocked"):
             title = "needs your input" if outcome == "needs_input" else "is blocked"
-            self._hand_off(number, outcome, f"{self.agent.display_name} {title}", comment or summary)
+            self._hand_off(number, outcome, f"{self.agent.display_name} {title}", comment or summary,
+                           reason=reason or ("agent_needs_input" if outcome == "needs_input" else "agent_blocked"))
         else:  # failed
             body = (f"<p>{html.escape(summary)}</p>"
                     f"<p>Talos log: <code>dev-tools/talos/state/logs/{html.escape(log_name)}</code></p>")
             if comment:
                 body += f"<pre>{html.escape(comment)}</pre>"
-            self._hand_off(number, "failed", f"{self.agent.display_name}: run failed", body, escaped=True)
+            self._hand_off(number, "failed", f"{self.agent.display_name}: run failed", body, escaped=True,
+                           reason=reason or "run_error")
         return outcome
 
     # -- the runtime copy (runtime_check.py) -----------------------------------------------------
@@ -471,7 +480,7 @@ class Dispatcher:
                        f"{self.agent.max_iterations}. It needs a human look before more agent work. To give it "
                        f"another {self.agent.max_iterations}, run <code>dev-tools/talos/talos reset "
                        f"{html.escape(self.agent.name)} {number}</code> and assign the issue back.</p>",
-                       escaped=True)
+                       escaped=True, reason="iteration_limit")
         return "limit"
 
     # -- tracker side effects ------------------------------------------------------------------
@@ -480,12 +489,15 @@ class Dispatcher:
         self.tracker.comment(number, title, body if escaped or body.lstrip().startswith("<")
                              else f"<p>{html.escape(body)}</p>")
 
-    def _hand_off(self, number, outcome, title, body, escaped=False):
+    def _hand_off(self, number, outcome, title, body, escaped=False, reason=None, detail=None):
+        """Comment, set the status and assignee, and store the reason code (and its detail) of the handback."""
         status = self.agent.statuses[outcome]
         if self.dry_run:
             log(f"#{number} dry run, would hand off: status '{status}', assign {self.agent.handoff_to}",
                 self.agent.name)
             return
+        sessions.update(self.agent.name, number, handoff_reason=reason, handoff_at=_iso(_now()),
+                        handoff_detail=json.dumps(detail) if detail else None)
         try:
             self._comment(number, title, body, escaped)
             self.tracker.hand_off(number, status, self.agent.handoff_to)
@@ -500,7 +512,8 @@ class Dispatcher:
             self._hand_off(number, "failed", f"{self.agent.display_name}: finished but did not hand back",
                            f"<p>The run reported done but left the issue assigned to the agent "
                            f"(status '{html.escape(str(issue['status']))}'). Please check it. "
-                           f"Talos log: <code>{html.escape(log_name)}</code></p>", escaped=True)
+                           f"Talos log: <code>{html.escape(log_name)}</code></p>", escaped=True,
+                           reason="not_handed_back")
 
     # -- startup -------------------------------------------------------------------------------
 
@@ -514,7 +527,7 @@ class Dispatcher:
             bot_review.drop(self.agent.name, number)
             self._hand_off(number, "failed", f"{self.agent.display_name}: run interrupted",
                            "<p>Talos stopped while this issue was being worked on. Check the branch, "
-                           "then assign it back to resume.</p>", escaped=True)
+                           "then assign it back to resume.</p>", escaped=True, reason="interrupted")
         self.bot_review.recover()           # issues waiting for CodeRabbit are polled again by the watcher
 
     def reconcile(self, project_ids):

@@ -101,12 +101,12 @@ class ReadOutcomeTest(unittest.TestCase):
     def test_structured_outcome(self):
         r = {"subtype": "success", "session_id": "s",
              "structured_output": {"outcome": "needs_input", "summary": "q", "comment": "<p>?</p>"}}
-        self.assertEqual(policy.read_outcome(r), ("needs_input", "q", "<p>?</p>", "", None))
+        self.assertEqual(policy.read_outcome(r), ("needs_input", "q", "<p>?</p>", "", None, None))
 
     def test_ready_to_ship_carries_the_handoff_note(self):
         r = {"subtype": "success", "structured_output": {"outcome": "ready_to_ship", "summary": "s",
                                                          "handoff": "branch claude-issue-42"}}
-        self.assertEqual(policy.read_outcome(r), ("ready_to_ship", "s", "", "branch claude-issue-42", None))
+        self.assertEqual(policy.read_outcome(r), ("ready_to_ship", "s", "", "branch claude-issue-42", None, None))
 
     def test_error_result_is_failure(self):
         self.assertEqual(policy.read_outcome({"is_error": True, "subtype": "error_during_execution"})[0], "failed")
@@ -120,6 +120,16 @@ class ReadOutcomeTest(unittest.TestCase):
 
     def test_no_result_is_failure(self):
         self.assertEqual(policy.read_outcome(None)[0], "failed")
+
+    def test_reason_codes(self):
+        codes = lambda r: policy.read_outcome(r)[5]
+        self.assertEqual(codes({"is_error": True, "subtype": "error_max_turns"}), "turn_budget")
+        self.assertEqual(codes({"is_error": True, "subtype": "error_max_budget_usd"}), "cost_budget")
+        self.assertEqual(codes({"is_error": True, "subtype": "talos error", "result": "x"}), "talos_error")
+        self.assertEqual(codes({"is_error": True, "subtype": "error_during_execution"}), "run_error")
+        self.assertEqual(codes({"subtype": "success", "result": "hi"}), "run_error")
+        self.assertEqual(codes(None), "run_error")
+        self.assertIsNone(codes({"subtype": "success", "structured_output": {"outcome": "blocked"}}))
 
     def test_turn_budget_hands_back_for_input(self):
         outcome, summary, comment, *_ = policy.read_outcome(

@@ -25,6 +25,10 @@ CREATE TABLE IF NOT EXISTS issues (
     live_session_id     TEXT,               -- session of the run in flight
     started_at          TEXT,               -- start of the latest run
     last_ended_at       TEXT,               -- end of the latest run (decides warm vs cold resume)
+    handoff_reason      TEXT,               -- reason code of the latest handback (see dispatcher._hand_off)
+    handoff_detail      TEXT,               -- JSON with the code's details, when it has any
+    handoff_at          TEXT,
+    auto_retries        INTEGER DEFAULT 0,  -- automatic restarts after mechanical stops (cleared by `talos reset`)
     PRIMARY KEY (agent, issue)
 );
 CREATE TABLE IF NOT EXISTS runs (
@@ -76,8 +80,24 @@ CREATE INDEX IF NOT EXISTS runs_by_issue ON runs (agent, issue);
 CREATE INDEX IF NOT EXISTS runs_by_start ON runs (started_at);
 """
 
+# Columns added after the first release: (table, column, definition), added when an older database lacks them.
+MIGRATIONS = (
+    ("issues", "handoff_reason", "TEXT"),
+    ("issues", "handoff_detail", "TEXT"),
+    ("issues", "handoff_at", "TEXT"),
+    ("issues", "auto_retries", "INTEGER DEFAULT 0"),
+)
+
 _init_lock = threading.Lock()
 _initialized = set()
+
+
+def migrate(conn):
+    """Add the columns an older database lacks; safe to run any number of times."""
+    for table, column, definition in MIGRATIONS:
+        if column not in {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+    conn.commit()
 
 
 def connect(path=None):
@@ -90,6 +110,7 @@ def connect(path=None):
         if str(path) not in _initialized:
             conn.execute("PRAGMA journal_mode=WAL")
             conn.executescript(SCHEMA)
+            migrate(conn)
             _initialized.add(str(path))
     return conn
 
