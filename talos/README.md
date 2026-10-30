@@ -234,7 +234,8 @@ assigned to the agent, and nothing about the loop is posted to the tracker (only
 
 ```
 PR pushed -> wait for the CodeRabbit check run on the head SHA (the `CodeRabbit` check of the `coderabbitai` app, or the legacy commit status; ai rabbit, every botReviewPollSeconds)
-  clean                                   -> ai handoff (in_review, assigned to the reviewer)
+  clean                                   -> ai handoff (in_review, assigned to the reviewer; to Agent Agamemnon
+                                             in its autoMergeMilestones, which merges it, see Orchestrator agents)
   findings                                -> bot round (botRoundPrompt) -> push -> awaiting_bot_review -> wait again
   paused / absent / timeout / round cap   -> ai handoff
 ```
@@ -388,6 +389,19 @@ and is `enabled: false` until the engineer turns it on.
   stops still restarted automatically don't count; a run that ships or opens the PR ends the streak) it pauses
   itself. `talos pause|resume agamemnon` (resume also clears the streak); `talos status` shows its state and last
   sweep; `talos run --dry-run` only logs what it would do.
+- **Automatic merges** (an experiment, only for `autoMergeMilestones`, e.g. `["aga-v1"]`, exact names in any case):
+  when the worker's CodeRabbit loop finds a PR `clean`, it hands the issue (in_review) to Agamemnon instead of the
+  reviewer, unless Agamemnon is paused. Every other CodeRabbit result still goes to the reviewer. On each sweep,
+  before feeding new work, Agamemnon finds the issue's open PR (`claude-issue-N`) and runs `ai mergecheck`:
+  - `ok`: `ai merge` approves and merges it as `agent-agamemnon`, pinned to the commit the gate read; the issue is
+    set `done` (which frees the issues that depend on it) and a comment names the merge commit.
+  - `pending` (CI or CodeRabbit still running): waits, up to `autoMergeWaitMinutes` (60).
+  - `fail`, still pending after the wait, no open PR, or `maxAutoMergesPerDay` (5) already merged today: in_review,
+    assigned to the reviewer, with a comment giving the reason.
+  - a PR already merged (an earlier pass merged it but setting the issue done failed): the issue is set `done`.
+  While Agamemnon is paused, issues already handed to it go to the reviewer instead of waiting. Merging lives in
+  `lib/orchestrator/merging.py` (`MergeSweeper`), separate from feeding the worker. Each attempt is kept in
+  talos.db (`auto_merges`); `talos status` lists today's automatic merges.
 - **GitHub identity**: Agamemnon approves and merges as `agent-agamemnon`, through `dev-tools/agamemnon/agamemnon gh …`
   with the token in `agamemnon/agamemnon.env` (see `agamemnon/README.md`). `talos check --agent agamemnon` shows the
   login and fails when the token can't write to one of the worker's repos.
@@ -407,6 +421,8 @@ Readable by other tools while Talos runs (WAL mode), e.g. a future Projects4Me U
   the last engineer message a turn has taken in, `last_ended_at`.
 - `orchestrators` / `orchestrated`: per orchestrator, paused or not (and why), its failure streak and last sweep;
   the issues it assigned, to whom and when.
+- `auto_merges`: one row per automatic merge attempt: issue, repo, PR, when it was first seen, and how it ended
+  (merged with its merge commit, or handed back with the reason).
 - `bot_reviews`: one row per issue in the CodeRabbit loop: repo, PR, the issue's status when the wait began,
   phase (`waiting` or `round`), bot rounds run, and the deadline of the current wait.
 

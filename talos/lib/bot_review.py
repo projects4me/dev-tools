@@ -6,15 +6,13 @@ Watcher polls `ai rabbit` for it in the background. Nothing about the loop is po
 """
 
 import json
-import subprocess
-import sys
 import threading
 from datetime import datetime, timedelta
 
 from . import db
-from .config import DEV_TOOLS, WORKSPACE, TalosError, log
+from .ai_cli import run_ai
+from .config import TalosError, log
 
-AI = DEV_TOOLS / "ai" / "ai.py"
 WAITING = "waiting"     # polling `ai rabbit` for the PR's head commit
 ROUND = "round"         # a bot-round run is queued or running
 
@@ -101,18 +99,9 @@ def next_step(state, rounds_done, cap, timed_out):
 
 # -- the ai commands ------------------------------------------------------------------------------
 
-def _ai(env, *args, timeout=300):
-    try:
-        return subprocess.run([sys.executable, str(AI), *args], cwd=WORKSPACE, env=env, capture_output=True,
-                              text=True, encoding="utf-8", errors="replace", stdin=subprocess.DEVNULL,
-                              timeout=timeout)
-    except (OSError, subprocess.TimeoutExpired) as e:
-        raise TalosError(f"ai {args[0]} failed: {e}")
-
-
 def ai_rabbit(env, repo, pr):
     """CodeRabbit's state for the PR head (one snapshot, no --wait): clean/findings/pending/paused/absent."""
-    r = _ai(env, "rabbit", repo, str(pr), "--json")
+    r = run_ai(env, "rabbit", repo, str(pr), "--json")
     lines = (r.stdout or "").strip().splitlines()
     try:
         state = json.loads(lines[-1])["state"]
@@ -121,9 +110,9 @@ def ai_rabbit(env, repo, pr):
     return state
 
 
-def ai_handoff(env, issue):
-    """`ai handoff <issue>`: in_review, assigned to the reviewer, pending record cleared."""
-    r = _ai(env, "handoff", str(issue))
+def ai_handoff(env, issue, to=None):
+    """`ai handoff <issue>`: in_review, assigned to the reviewer (or `to`, a Gaia user id), pending record cleared."""
+    r = run_ai(env, "handoff", str(issue), *(["--to", str(to)] if to else []))
     if r.returncode != 0:
         raise TalosError(f"ai handoff {issue}: exit {r.returncode}: {(r.stderr or r.stdout or '')[-500:]}")
 
@@ -133,13 +122,16 @@ def ai_handoff(env, issue):
 class Watcher:
     """Polls the agent's waiting issues: hands off, queues a bot round, or keeps waiting."""
 
-    def __init__(self, agent, user_id, tracker, submit, rabbit=None, handoff=None, now=_now):
+    def __init__(self, agent, user_id, tracker, submit, rabbit=None, handoff=None, now=_now, route=None):
         self.agent = agent
         self.user_id = user_id
         self.tracker = tracker
         self.submit = submit            # submit(number, source) -> False when it is already queued
         self.rabbit = rabbit or (lambda repo, pr: ai_rabbit(tracker.child_env(), repo, pr))
-        self.handoff = handoff or (lambda issue: ai_handoff(tracker.child_env(), issue))
+        self.handoff = handoff or (lambda issue, to=None: ai_handoff(tracker.child_env(), issue, to))
+        # route(issue) -> (Gaia user id, name) to hand a CodeRabbit-clean issue to instead of the reviewer, or None
+        # (an orchestrator that merges clean PRs itself, see lib/orchestrator)
+        self.route = route or (lambda issue: None)
         self.now = now
         self._stop = threading.Event()
 
@@ -200,8 +192,12 @@ class Watcher:
                 undo_round(name, number, datetime.fromisoformat(record["deadline"]))
             return step
         why = ("round cap reached" if state == "findings" else "timed out" if state == "pending" else state)
-        self.handoff(number)
+        target = self.route(issue) if state == "clean" else None
+        if target:
+            self.handoff(number, to=target[0])
+        else:
+            self.handoff(number)
         drop(name, number)
-        log(f"#{number} CodeRabbit {why} on PR {record['pr']} after {record['rounds']} round(s): handed to the "
-            f"reviewer", name)
+        log(f"#{number} CodeRabbit {why} on PR {record['pr']} after {record['rounds']} round(s): handed to "
+            f"{target[1] + ' to merge' if target else 'the reviewer'}", name)
         return step

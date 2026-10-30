@@ -44,6 +44,7 @@ def cmd_run(args):
         log(f"gc failed: {e}")
     log(f"starting with {len(agents)} agent(s): {', '.join(a.name for a in agents)}; claude {claude}")
     dispatchers, orchestrators = [], []
+    merge_routes = orchestrator_setup.merge_routes(agents)     # worker -> its orchestrator's automatic merges
     for agent in agents:
         if agent.kind == "ideas":
             if args.dry_run:
@@ -63,7 +64,8 @@ def cmd_run(args):
         tracker = Tracker(agent)
         dispatcher = Dispatcher(agent, tracker, claude, dry_run=args.dry_run,
                                 mcp=mcp_config(STATE_DIR / agent.name / "mcp.json"),
-                                collector=lambda issue: gc_workspaces(only=issue))
+                                collector=lambda issue: gc_workspaces(only=issue),
+                                merge_route=merge_routes.get(agent.name))
         dispatcher.recover_interrupted()
         dispatcher.start()
         dispatchers.append(dispatcher)
@@ -145,6 +147,9 @@ def cmd_status(args):
                  if st.get("paused") else "active")
         print(f"ORCHESTRATOR  {name}  {state}  fail streak {st.get('fail_streak') or 0}"
               f"  last sweep {st.get('last_sweep_at') or '-'}: {st.get('last_sweep') or '-'}")
+        for m in orchestrator_state.merges_on(name, datetime.now().astimezone().strftime("%Y-%m-%d")):
+            print(f"  merged today  #{m['issue']}  {m['repo']}#{m['pr']}  as {(m.get('merge_sha') or '')[:7]}"
+                  f"  at {(m.get('ended_at') or '')[11:16]}")
     others = sorted((k, v) for k, v in entries.items() if not v.get("running"))
     if others:
         print("\nIssues worked before:")

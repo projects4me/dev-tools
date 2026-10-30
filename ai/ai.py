@@ -127,6 +127,8 @@ def build_parser():
     sp = add("handoff", workflow.cmd_handoff,
              "finish a deferred hand-off (ai ship --defer-handoff): set in_review, assign the reviewer")
     sp.add_argument("issue", type=int)
+    sp.add_argument("--to", help="assign this Projects4Me user (id or email) instead of the reviewer, e.g. Agent "
+                                 "Agamemnon to merge a CodeRabbit-clean PR")
 
     sp = add("review", review.cmd_review, "list PR reviews and inline comments (marks what's already answered)")
     sp.add_argument("repo", choices=repos)

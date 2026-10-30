@@ -220,9 +220,9 @@ def load_pending_handoff(issue):
     return json.loads(p.read_text(encoding="utf-8")) if p.exists() else None
 
 
-def finish_hand_off(issue):
-    """Set in_review, assign the reviewer and clear any pending record."""
-    reviewer = config().get("reviewer")
+def finish_hand_off(issue, assignee=None):
+    """Set in_review, assign the reviewer (or `assignee`) and clear any pending record."""
+    reviewer = assignee or config().get("reviewer")
     if not reviewer:
         raise AiError("no reviewer configured: run `dev-tools/installer/p4m configure` (sets ai/config.local.json)")
     tracker_call("update_issue", issue_number=issue, status="in_review", assignee=reviewer)
@@ -231,13 +231,13 @@ def finish_hand_off(issue):
 
 
 def cmd_handoff(args):
-    """Finish a deferred hand-off (`ai ship --defer-handoff`): in_review, assigned to the reviewer."""
+    """Finish a deferred hand-off (`ai ship --defer-handoff`): in_review, assigned to the reviewer (or --to)."""
     pending = load_pending_handoff(args.issue)
     if pending:
         say(f"finishing the deferred hand-off of {pending['pr']}")
     else:
         say(f"no pending hand-off recorded for #{args.issue}; handing off anyway")
-    finish_hand_off(args.issue)
+    finish_hand_off(args.issue, getattr(args, "to", None))
 
 
 # --- tracker views --------------------------------------------------------------------------

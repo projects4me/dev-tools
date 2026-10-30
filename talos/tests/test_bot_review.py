@@ -10,7 +10,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from lib import bot_review, db, dispatcher as dispatcher_mod, policy  # noqa: E402
+from lib import ai_cli, bot_review, db, dispatcher as dispatcher_mod, policy  # noqa: E402
 from test_dispatcher import StubTracker, result  # noqa: E402
 from test_policy import AGENT_ID, make_agent, make_issue  # noqa: E402
 from lib.registry import Action  # noqa: E402
@@ -119,6 +119,25 @@ class BotReviewTest(unittest.TestCase):
         self.assertEqual(self.handoffs, [42])
         self.assertEqual(bot_review.get("odysseus", 42), {})
         self.assertEqual(self.tracker.comments, [])     # nothing about the loop on the tracker
+
+    def test_clean_goes_to_the_merging_orchestrator_when_routed(self):
+        d = self.dispatcher(Rabbit("clean"))
+        sent = []
+        d.bot_review.handoff = lambda number, to=None: sent.append((number, to))
+        d.bot_review.route = lambda issue: ("60", "Agent Agamemnon")
+        self.ship(d)
+        self.assertEqual(d.bot_review.check_one(bot_review.get("odysseus", 42)), bot_review.HAND_OFF)
+        self.assertEqual(sent, [(42, "60")])
+        self.assertEqual(bot_review.get("odysseus", 42), {})
+
+    def test_only_clean_is_routed_to_the_orchestrator(self):
+        d = self.dispatcher(Rabbit("findings"), bot_review_rounds=0)   # cap reached at once: findings stay open
+        sent = []
+        d.bot_review.handoff = lambda number, to=None: sent.append((number, to))
+        d.bot_review.route = lambda issue: ("60", "Agent Agamemnon")
+        self.ship(d)
+        d.bot_review.check()
+        self.assertEqual(sent, [(42, None)])        # to the reviewer
 
     def test_pending_keeps_waiting_without_a_run(self):
         d = self.dispatcher(Rabbit("pending"))
@@ -318,13 +337,13 @@ class NextStepTest(unittest.TestCase):
 class AiRabbitTest(unittest.TestCase):
     def test_reads_the_state_from_the_json_line(self):
         done = mock.Mock(returncode=1, stdout='{"state": "findings", "open": 2, "sha": "abc"}\n', stderr="")
-        with mock.patch.object(bot_review.subprocess, "run", return_value=done) as run:
+        with mock.patch.object(ai_cli.subprocess, "run", return_value=done) as run:
             self.assertEqual(bot_review.ai_rabbit({}, "gaia", 77), "findings")
-        self.assertEqual(run.call_args[0][0][1:], [str(bot_review.AI), "rabbit", "gaia", "77", "--json"])
+        self.assertEqual(run.call_args[0][0][1:], [str(ai_cli.AI), "rabbit", "gaia", "77", "--json"])
 
     def test_no_json_is_an_error(self):
         done = mock.Mock(returncode=1, stdout="", stderr="gh: not found")
-        with mock.patch.object(bot_review.subprocess, "run", return_value=done):
+        with mock.patch.object(ai_cli.subprocess, "run", return_value=done):
             with self.assertRaises(bot_review.TalosError):
                 bot_review.ai_rabbit({}, "gaia", 77)
 

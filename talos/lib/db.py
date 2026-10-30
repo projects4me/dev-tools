@@ -94,6 +94,19 @@ CREATE TABLE IF NOT EXISTS orchestrated (
     assignments         INTEGER DEFAULT 0,
     PRIMARY KEY (agent, issue)
 );
+CREATE TABLE IF NOT EXISTS auto_merges (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    agent               TEXT    NOT NULL,       -- the orchestrator that merges
+    issue               INTEGER NOT NULL,
+    repo                TEXT,
+    pr                  INTEGER,
+    first_seen_at       TEXT,                   -- when it was first found waiting to be merged
+    ended_at            TEXT,                   -- NULL while it waits (gate pending)
+    outcome             TEXT,                   -- merged, or handed_back
+    merge_sha           TEXT,
+    detail              TEXT                    -- why it was handed back
+);
+CREATE INDEX IF NOT EXISTS auto_merges_by_issue ON auto_merges (agent, issue);
 CREATE INDEX IF NOT EXISTS runs_by_issue ON runs (agent, issue);
 CREATE INDEX IF NOT EXISTS runs_by_start ON runs (started_at);
 """
