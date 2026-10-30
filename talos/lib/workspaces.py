@@ -153,6 +153,18 @@ def _add_worktree(main, dest, issue, base):
         _git(main, "worktree", "add", "-b", branch, str(dest), f"origin/{base}")
 
 
+def branch_holder(root, repo, issue):
+    """The folder outside the issue's own workspace where claude-issue-N of the repo is checked out, or None. Reads
+    git's worktree list only (nothing is pruned or changed); a listed folder that no longer exists holds nothing."""
+    main = Path(root) / repo
+    if not (main / ".git").exists():
+        return None
+    held = _checked_out_in(main, branch_name(issue))
+    if held is None or held == (path(root, issue) / repo).resolve() or not held.exists():
+        return None
+    return held
+
+
 def _checked_out_in(main, branch):
     """The folder where the branch is checked out (the main checkout or a worktree), or None."""
     folder = None

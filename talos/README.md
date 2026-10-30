@@ -360,6 +360,35 @@ Prometheus ─▶ Gaia ─publish─▶ Hermes ─idea.message.created───�
 Config: `hermesUrl` (as for issue agents); on the sim, `sim.url` and `sim.secretFile` (or `sim.secret` in
 config.local.json); `kbMaxAgeMinutes`; `browserBin` and `prometheusUrl` for screens (empty: found automatically).
 
+## Orchestrator agents (Agent Agamemnon)
+
+An orchestrator (`"kind": "orchestrator"`) feeds an issues agent instead of running Claude: Agent Agamemnon assigns
+Agent Odysseus its next ready issues and restarts the ones Talos handed back for a purely mechanical reason, the two
+jobs the reviewer otherwise does by hand. It is deterministic (lib/orchestrator/policy.py), uses its own Gaia user
+(`agent.agamemnon@projects4.me`, credentials in `dev-tools/gaia-mcp/agamemnon.env`, no git or GitHub identity),
+and is `enabled: false` until the engineer turns it on.
+
+- **Scope**: only milestones whose name starts with `milestonePrefix` (`aga-`, any case, e.g. `aga-v1`) in the
+  worker's projects. Odysseus must list Agamemnon's Gaia user id in `acceptAssignmentsFrom` (its
+  agent.local.json); `talos run` warns when it doesn't.
+- **Triggers**: Hermes `issue.status.changed` and `issue.assignee.changed` (debounced `debounceSeconds`, so a
+  burst gives one sweep), every (re)connect, and every `sweepMinutes` (5).
+- **Sweep** (lib/orchestrator/worker.py): free slots = `maxInFlight` (0 = the worker's `maxParallel`) minus the
+  issues assigned to the worker across its projects. Restarts first, then new issues, each ranked by priority,
+  milestone name and issue number.
+  - *Restart*: assigned to an owner (`owners`, empty = the worker's `handoffTo`), status feedback or pending, the
+    worker was its last modifier (the reviewer hasn't touched it since the handback), its `handoff_reason` is in
+    `autoRetryReasons` and `auto_retries` is below `maxAutoRetries` (2). For `branch_checked_out` it waits until
+    `workspaces.branch_holder()` finds the branch checked out in no other folder; that checkout is never touched.
+  - *New*: status new, unassigned or assigned to an owner, not an epic, every "Depends on" issue done.
+  - *Assign*: re-read and re-check the issue, set only the assignee (the status stays, so the worker's own action
+    for new, feedback or pending runs), comment why (a restart says which one, and that there is nothing new from
+    the reviewer), and count the restart in `auto_retries` (`talos reset` clears it).
+- **Safety**: after `failStreakLimit` (3) consecutive failed or blocked handbacks of issues it fed (questions and
+  stops still restarted automatically don't count; a run that ships or opens the PR ends the streak) it pauses
+  itself. `talos pause|resume agamemnon` (resume also clears the streak); `talos status` shows its state and last
+  sweep; `talos run --dry-run` only logs what it would do.
+
 ## State: `state/talos.db` (SQLite)
 
 Readable by other tools while Talos runs (WAL mode), e.g. a future Projects4Me UI panel.
@@ -373,6 +402,8 @@ Readable by other tools while Talos runs (WAL mode), e.g. a future Projects4Me U
   transcript (main session; subagents are in the cost but not the token counts).
 - `ideas`: one row per ideas agent and idea: session to resume and its cumulative cost, the note for the next turn,
   the last engineer message a turn has taken in, `last_ended_at`.
+- `orchestrators` / `orchestrated`: per orchestrator, paused or not (and why), its failure streak and last sweep;
+  the issues it assigned, to whom and when.
 - `bot_reviews`: one row per issue in the CodeRabbit loop: repo, PR, the issue's status when the wait began,
   phase (`waiting` or `round`), bot rounds run, and the deadline of the current wait.
 
@@ -399,6 +430,7 @@ The pre-SQLite `state/sessions.json` is imported when `talos run`/`dispatch` sta
 | `lib/sessions.py` | issue state (`issues` table): session, run count, escalation, in-flight flag |
 | `lib/runs.py` | run records (`runs` table) and the per-run cost calculation |
 | `lib/simbus.py` | sim Hermes connection (SSE): the event source for ideas agents until Hermes carries idea events |
+| `lib/orchestrator/` | orchestrator agents: `policy` (pure: candidates, ranking, slots, the breaker), `worker` (the `Orchestrator`: triggers, sweep, assigning), `state` (its rows in talos.db), `setup` (wires one orchestrator: worker, Gaia user, Hermes listener) |
 | `lib/ideas/` | ideas agents: `setup` (wiring), `policy` (events, what waits), `worker` (queue, stop, reconcile), `conversation` (a turn), `approval` (plan → issues), `stream` (streamed run, command), `client` (Gaia idea resources) and `sim_client` (the sim's), `progress` (live progress on the sim), `plan`, `screens` (blocks) + `render` (= `styles` + `page` + `browser`) + `screen_kit/` (UI screens → PNG), `sanitize`, `steps`, `kb`, `state` |
 
 ## Parallel runs

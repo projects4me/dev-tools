@@ -69,15 +69,35 @@ class Tracker:
 
     # -- issues ----------------------------------------------------------------------------
 
+    ISSUE_RELS = "issuestatus,issuetype,issuemilestone,project"
+
     def issue(self, number):
         """The fields Talos decides on, read fresh from Gaia (events are only hints)."""
-        i = self._call(self.gaia.issue_by_number, number,
-                       rels="issuestatus,issuemilestone,project")
+        return self._fields(self._call(self.gaia.issue_by_number, number, rels=self.ISSUE_RELS))
+
+    def issues_in(self, project, milestone_prefix):
+        """The project's issues in milestones whose name starts with milestone_prefix (any case), as issue() reads
+        them."""
+        p, _ = self._call(self.gaia.project_options, project)
+        prefix = milestone_prefix.lower()
+        found = []
+        for m in p.get("milestones") or []:
+            if not str(m.get("name") or "").lower().startswith(prefix):
+                continue
+            rows = self._call(self.gaia.find, "issue",
+                              f"((Issue.projectId : {p['id']}) AND (Issue.milestoneId : {m['id']}))",
+                              rels=self.ISSUE_RELS, limit=-1)
+            found.extend(self._fields(r) for r in rows if r.get("issueNumber"))
+        return found
+
+    @staticmethod
+    def _fields(i):
         return {
             "number": int(i.get("issueNumber")),
             "id": i.get("id"),
             "status": (i.get("issuestatus") or {}).get("name") or i.get("status"),
             "assignee": str(i.get("assignee") or ""),
+            "type": (i.get("issuetype") or {}).get("name") or i.get("type"),
             "modifiedUser": str(i.get("modifiedUser") or ""),
             "priority": str(i.get("priority") or "").lower(),
             "project": (i.get("project") or {}).get("name"),
@@ -108,6 +128,10 @@ class Tracker:
 
     def set_status(self, number, status):
         return self._call(self.tools.update_issue, {"issue_number": number, "status": status})
+
+    def assign(self, number, assignee):
+        """Set only the assignee; the status stays, so the new assignee's own action for it runs."""
+        return self._call(self.tools.update_issue, {"issue_number": number, "assignee": assignee})
 
     def hand_off(self, number, status, assignee):
         return self._call(self.tools.update_issue,

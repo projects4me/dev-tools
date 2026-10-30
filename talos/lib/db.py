@@ -76,6 +76,24 @@ CREATE TABLE IF NOT EXISTS bot_reviews (
     deadline            TEXT,               -- when a still-pending CodeRabbit review is given up on
     PRIMARY KEY (agent, issue)
 );
+CREATE TABLE IF NOT EXISTS orchestrators (
+    agent               TEXT    PRIMARY KEY,    -- an orchestrator agent (kind orchestrator)
+    paused              INTEGER DEFAULT 0,      -- `talos pause`, or the circuit breaker
+    pause_reason        TEXT,
+    paused_at           TEXT,
+    fail_streak         INTEGER DEFAULT 0,      -- consecutive failed or blocked handbacks of the issues it fed
+    seen_upto           TEXT,                   -- handbacks and run ends up to here are counted in fail_streak
+    last_sweep_at       TEXT,
+    last_sweep          TEXT                    -- what the latest sweep did
+);
+CREATE TABLE IF NOT EXISTS orchestrated (
+    agent               TEXT    NOT NULL,       -- the orchestrator
+    issue               INTEGER NOT NULL,
+    worker              TEXT    NOT NULL,       -- the agent it was assigned to
+    assigned_at         TEXT,                   -- the latest assignment
+    assignments         INTEGER DEFAULT 0,
+    PRIMARY KEY (agent, issue)
+);
 CREATE INDEX IF NOT EXISTS runs_by_issue ON runs (agent, issue);
 CREATE INDEX IF NOT EXISTS runs_by_start ON runs (started_at);
 """

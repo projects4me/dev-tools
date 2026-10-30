@@ -1,0 +1,23 @@
+{
+  "name": "agamemnon",
+  "displayName": "Agent Agamemnon",
+  "role": "orchestration",
+  "kind": "orchestrator",
+  "enabled": false,
+  "gaiaEnv": "gaia-mcp/agamemnon.env",
+  "worker": "odysseus",
+  "milestonePrefix": "aga-",
+  "owners": [],
+  "maxInFlight": 0,
+  "sweepMinutes": 5,
+  "debounceSeconds": 5,
+  "autoRetryReasons": [
+    "turn_budget",
+    "cost_budget",
+    "interrupted",
+    "branch_checked_out",
+    "talos_error"
+  ],
+  "maxAutoRetries": 2,
+  "failStreakLimit": 3
+}

@@ -34,6 +34,23 @@ class Action:
     resume: bool = False
 
 
+AUTO_RETRY_REASONS = ("turn_budget", "cost_budget", "interrupted", "branch_checked_out", "talos_error")
+
+
+@dataclass
+class Orchestration:
+    """What an orchestrator agent (kind orchestrator) feeds its worker agent; no Claude runs of its own."""
+    worker: str                         # the issues agent it feeds (e.g. "odysseus")
+    milestone_prefix: str = "aga-"      # only milestones whose name starts with this (any case)
+    owners: list = field(default_factory=list)   # Gaia user ids whose issues it may assign (empty = worker's handoffTo)
+    max_in_flight: int = 0              # issues assigned to the worker at once (0 = the worker's maxParallel)
+    sweep_minutes: float = 5            # periodic sweep, besides the event-driven ones
+    debounce_seconds: float = 5         # wait after a Hermes event before sweeping, so a burst gives one sweep
+    auto_retry_reasons: tuple = AUTO_RETRY_REASONS   # handback reason codes that are restarted automatically
+    max_auto_retries: int = 2           # automatic restarts per issue (cleared by `talos reset`)
+    fail_streak_limit: int = 3          # consecutive failed or blocked handbacks before it pauses itself
+
+
 @dataclass
 class Agent:
     name: str
@@ -60,7 +77,8 @@ class Agent:
     dependency_done_statuses: tuple = ("done", "closed")   # statuses a "Depends on" issue must be in (any case)
     max_turns: int = 0                  # turns per run before Claude stops and the issue goes back (0 = no limit)
     limit_comment_hours: float = 1.0    # comment on the issue when a Claude usage-limit pause lasts longer than this
-    kind: str = "issues"                # "issues": works assigned issues; "ideas": brainstorms ideas (Gaia, or the sim)
+    kind: str = "issues"                # "issues": works assigned issues; "ideas": brainstorms ideas (Gaia, or the sim);
+                                        # "orchestrator": assigns issues to another agent (no Claude runs)
     events: list = field(default_factory=list)       # event names to subscribe to (kind ideas)
     builtin_tools: str = ""             # `claude --tools`: the built-in tools loaded at all (empty = all)
     denied_tools: list = field(default_factory=list)  # `--disallowedTools`
@@ -77,6 +95,7 @@ class Agent:
     test_slots: int = 0                 # test slots to lease per run (0 = max_parallel; at most TEST_SLOTS in p4m.env)
     runner: dict = field(default_factory=dict)       # where runs execute: {} / {"type": "local"} or a container (container.py)
     extra: dict = field(default_factory=dict)
+    orchestration: Orchestration = None     # kind orchestrator only
 
     def action_for(self, status):
         return self.actions.get(status)
@@ -86,7 +105,8 @@ class Agent:
 
 
 REQUIRED = ("name", "gaiaEnv", "projects", "acceptAssignmentsFrom", "handoffTo", "actions", "model", "rolePrompt")
-KINDS = ("issues", "ideas")
+REQUIRED_ORCHESTRATOR = ("name", "gaiaEnv", "worker")
+KINDS = ("issues", "ideas", "orchestrator")
 RUNNERS = ("local", "container")
 
 
@@ -100,6 +120,8 @@ def load_agent(folder):
     if local.exists():
         with open(local, encoding="utf-8") as f:
             raw.update(json.load(f))
+    if raw.get("kind") == "orchestrator":
+        return _load_orchestrator(path, raw)
     missing = [k for k in REQUIRED if k not in raw]
     if missing:
         raise TalosError(f"{path}: missing {', '.join(missing)}")
@@ -178,6 +200,54 @@ def load_agent(folder):
         runner=dict(runner),
         extra={k: raw[k] for k in ("knowledgeMap", "ideaSource") if k in raw},
     )
+
+
+def _load_orchestrator(path, raw):
+    """An orchestrator: a Gaia identity and the worker it feeds; it has no actions, model or role prompt."""
+    missing = [k for k in REQUIRED_ORCHESTRATOR if k not in raw]
+    if missing:
+        raise TalosError(f"{path}: missing {', '.join(missing)}")
+    env_file = LOCAL_DIR / raw["gaiaEnv"]
+    if not env_file.exists():
+        raise TalosError(f"{path}: gaiaEnv {env_file} not found")
+    prefix = str(raw.get("milestonePrefix", "aga-")).strip()
+    if not prefix:
+        raise TalosError(f"{path}: milestonePrefix may not be empty (it limits the orchestrator to its milestones)")
+    reasons = raw.get("autoRetryReasons", list(AUTO_RETRY_REASONS))
+    if not isinstance(reasons, list) or not all(isinstance(r, str) and r for r in reasons):
+        raise TalosError(f"{path}: autoRetryReasons must be a list of reason codes")
+    numbers = {}
+    for key, default, least in (("maxInFlight", 0, 0), ("maxAutoRetries", 2, 0), ("failStreakLimit", 3, 1)):
+        try:
+            numbers[key] = int(raw.get(key, default))
+        except (TypeError, ValueError):
+            raise TalosError(f"{path}: {key} must be a whole number")
+        if numbers[key] < least:
+            raise TalosError(f"{path}: {key} must be at least {least}")
+    try:
+        sweep = float(raw.get("sweepMinutes", 5))
+        debounce = float(raw.get("debounceSeconds", 5))
+    except (TypeError, ValueError):
+        raise TalosError(f"{path}: sweepMinutes and debounceSeconds must be numbers")
+    if sweep <= 0 or debounce < 0:
+        raise TalosError(f"{path}: sweepMinutes must be above 0 and debounceSeconds not below 0")
+    orchestration = Orchestration(
+        worker=str(raw["worker"]),
+        milestone_prefix=prefix,
+        owners=[str(u) for u in raw.get("owners", [])],
+        max_in_flight=numbers["maxInFlight"],
+        sweep_minutes=sweep,
+        debounce_seconds=debounce,
+        auto_retry_reasons=tuple(reasons),
+        max_auto_retries=numbers["maxAutoRetries"],
+        fail_streak_limit=numbers["failStreakLimit"],
+    )
+    return Agent(
+        name=raw["name"], display_name=raw.get("displayName", raw["name"]), role=raw.get("role", ""),
+        gaia_env=str(env_file), projects={}, accept_from=[], handoff_to="", milestones=[], actions={},
+        statuses={}, model_default="", model_escalate="", model_by_complexity={}, permission_mode="",
+        allowed_tools=[], max_iterations=0, role_prompt="", enabled=raw.get("enabled", True),
+        kind="orchestrator", orchestration=orchestration)
 
 
 def load_agents(only=None):

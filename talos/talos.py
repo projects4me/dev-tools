@@ -11,12 +11,15 @@ import sys
 import threading
 import time
 import urllib.request
+from datetime import datetime
 
 from lib import container, db, policy, runner, sessions, workspace_gc, workspaces
 from lib import runs as run_log
 from lib.config import LISTENER, STATE_DIR, TALOS_DIR, WORKSPACE, TalosError, claude_bin, log, settings
 from lib.dispatcher import Dispatcher, lease_file
 from lib.ideas import setup as ideas_setup
+from lib.orchestrator import setup as orchestrator_setup
+from lib.orchestrator import state as orchestrator_state
 from lib.hermes import Listener
 from lib.mcp import mcp_config
 from lib.registry import load_agents
@@ -39,7 +42,7 @@ def cmd_run(args):
     except Exception as e:              # housekeeping never keeps Talos from starting
         log(f"gc failed: {e}")
     log(f"starting with {len(agents)} agent(s): {', '.join(a.name for a in agents)}; claude {claude}")
-    dispatchers = []
+    dispatchers, orchestrators = [], []
     for agent in agents:
         if agent.kind == "ideas":
             if args.dry_run:
@@ -47,6 +50,12 @@ def cmd_run(args):
                 continue
             try:
                 ideas_setup.start(agent, cfg, claude)
+            except Exception as e:      # one agent's setup never keeps the others from running
+                log(f"not started: {e}", agent.name)
+            continue
+        if agent.kind == "orchestrator":
+            try:
+                orchestrators.append(orchestrator_setup.start(agent, cfg, args.dry_run))
             except Exception as e:      # one agent's setup never keeps the others from running
                 log(f"not started: {e}", agent.name)
             continue
@@ -65,7 +74,33 @@ def cmd_run(args):
     except KeyboardInterrupt:
         for dispatcher in dispatchers:
             dispatcher.stop()
+        for orchestrator in orchestrators:
+            orchestrator.stop()
         log("stopped")
+    return 0
+
+
+def _orchestrator(name):
+    agent = load_agents(name)[0]
+    if agent.kind != "orchestrator":
+        raise TalosError(f"'{name}' is a {agent.kind} agent; only orchestrators can be paused")
+    return agent
+
+
+def cmd_pause(args):
+    """Stop an orchestrator from assigning issues (it keeps running; the running Talos sees it on its next sweep)."""
+    agent = _orchestrator(args.agent)
+    orchestrator_state.update(agent.name, paused=True, pause_reason="talos pause",
+                              paused_at=datetime.now().astimezone().isoformat(timespec="seconds"))
+    print(f"{agent.name}: paused")
+    return 0
+
+
+def cmd_resume(args):
+    """Let an orchestrator assign issues again; also clears its circuit breaker's failure streak."""
+    agent = _orchestrator(args.agent)
+    orchestrator_state.update(agent.name, paused=False, pause_reason=None, paused_at=None, fail_streak=0)
+    print(f"{agent.name}: resumed")
     return 0
 
 
@@ -73,6 +108,8 @@ def cmd_dispatch(args):
     """Work one issue now, the same way an assignment event would (no Hermes needed)."""
     cfg = settings()
     agent = load_agents(args.agent)[0]
+    if agent.kind != "issues":
+        raise TalosError(f"'{agent.name}' is a {agent.kind} agent; dispatch works issues agents only")
     db.import_legacy()
     tracker = Tracker(agent)
     dispatcher = Dispatcher(agent, tracker, claude_bin(cfg.get("claudeBin")), dry_run=args.dry_run,
@@ -102,6 +139,11 @@ def cmd_status(args):
         print(f"RUNNING  {agent} #{issue}  on {entry.get('last_model')}  iteration {entry.get('runs')}"
               f"  since {entry.get('started_at') or '?'}{where}")
         _print_live(runner.transcript(entry.get("live_session_id")) or runner.transcript_for_issue(issue), args.steps)
+    for name, st in orchestrator_state.all_states().items():
+        state = (f"PAUSED ({st.get('pause_reason') or '-'}, since {st.get('paused_at') or '?'})"
+                 if st.get("paused") else "active")
+        print(f"ORCHESTRATOR  {name}  {state}  fail streak {st.get('fail_streak') or 0}"
+              f"  last sweep {st.get('last_sweep_at') or '-'}: {st.get('last_sweep') or '-'}")
     others = sorted((k, v) for k, v in entries.items() if not v.get("running"))
     if others:
         print("\nIssues worked before:")
@@ -298,6 +340,14 @@ def build_parser():
     sp.add_argument("issue", type=int)
     sp.add_argument("--model", action="store_true", help="also drop a past escalation (back to complexity/default)")
     sp.set_defaults(func=cmd_reset)
+
+    sp = sub.add_parser("pause", help="stop an orchestrator (e.g. agamemnon) from assigning issues")
+    sp.add_argument("agent")
+    sp.set_defaults(func=cmd_pause)
+
+    sp = sub.add_parser("resume", help="let a paused orchestrator assign issues again (clears its breaker)")
+    sp.add_argument("agent")
+    sp.set_defaults(func=cmd_resume)
 
     sp = sub.add_parser("clean", help="remove a finished issue's workspace (.runs/issue-N); its branch stays")
     sp.add_argument("issue", type=int)
