@@ -338,6 +338,13 @@ class DependencyTest(unittest.TestCase):
                          [4159, 4160])
         self.assertEqual(parse_dependencies("a\ndepends on #12\nDepends on: #7"), [7, 12])
 
+    def test_parses_project_shortcode_references(self):
+        # Nestor's plan approval writes this form (ideas/approval.py)
+        self.assertEqual(parse_dependencies("<p>Scope</p><p><strong>Depends on:</strong> aprom-4160, adt-4061</p>"),
+                         [4061, 4160])
+        self.assertEqual(parse_dependencies("Depends on: AGAIA-12, #7 and aa-12"), [7, 12])
+        self.assertEqual(parse_dependencies("Depends on: aprom-4160\nSee adt-99 and #5 for background"), [4160])
+
     def test_none_or_missing_means_no_dependencies(self):
         self.assertEqual(parse_dependencies("Depends on: none\nComplexity: simple"), [])
         self.assertEqual(parse_dependencies("Related to #5"), [])

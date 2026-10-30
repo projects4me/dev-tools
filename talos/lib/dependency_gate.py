@@ -6,17 +6,19 @@ import threading
 DONE_STATUSES = ("done", "closed")   # a dependency in one of these is finished and merged (agent.json can override)
 
 DEPENDS_LINE = re.compile(r"Depends\s+on\s*:?\s*([^\n]*)", re.IGNORECASE)
+# "#4160", or a project shortcode reference such as "aprom-4160" (issue numbers are one sequence across projects)
+ISSUE_REF = re.compile(r"(?:#|\b[a-z]+-)(\d+)\b", re.IGNORECASE)
 
 
 def parse_dependencies(description):
     """Issue numbers named on "Depends on" lines of a description (HTML tolerated), sorted and unique.
 
-    "Depends on: #4160, #4161" gives [4160, 4161]; "Depends on: none" gives []."""
+    "Depends on: #4160, aprom-4161" gives [4160, 4161]; "Depends on: none" gives []."""
     text = re.sub(r"<br\s*/?>|</p>|</li>|</div>", "\n", description or "", flags=re.IGNORECASE)
     text = re.sub(r"<[^>]+>", " ", text)
     numbers = set()
     for line in DEPENDS_LINE.findall(text):
-        numbers.update(int(n) for n in re.findall(r"#(\d+)", line))
+        numbers.update(int(n) for n in ISSUE_REF.findall(line))
     return sorted(numbers)
 
 
