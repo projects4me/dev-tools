@@ -10,7 +10,8 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 from lib.common import AiError, REPOS  # noqa: E402
-from lib import apitester, coderabbit, context, cost, doctor, kb, rabbitdigest, review, ship, tests, workflow  # noqa: E402
+from lib import (apitester, coderabbit, context, cost, doctor, kb, mergegate, rabbitdigest, review, ship,  # noqa: E402
+                 tests, workflow)
 
 
 def build_parser():
@@ -140,6 +141,17 @@ def build_parser():
     sp.add_argument("--json", action="store_true")
     sp.add_argument("--wait", action="store_true", help="poll every 30 s until the state is not pending")
     sp.add_argument("--timeout", type=float, default=10, help="minutes to wait with --wait (default 10)")
+
+    sp = add("mergecheck", mergegate.cmd_mergecheck, "the merge gate for an agent PR's head commit: CodeRabbit clean, "
+             "CI green, tests recorded, mergeable, nothing from people, no do-not-merge (ok/fail/pending, exit 0/1/2)")
+    sp.add_argument("repo", choices=repos)
+    sp.add_argument("pr", type=int)
+    sp.add_argument("--json", action="store_true")
+
+    sp = add("merge", mergegate.cmd_merge, "run the merge gate, then approve and merge the PR as Agent Agamemnon")
+    sp.add_argument("repo", choices=repos)
+    sp.add_argument("pr", type=int)
+    sp.add_argument("--json", action="store_true")
 
     sp = add("rabbit-digest", rabbitdigest.cmd_digest, "(ai rabbit digest) CodeRabbit's findings across Agent Odysseus "
              "PRs, categorised, as a markdown report")
