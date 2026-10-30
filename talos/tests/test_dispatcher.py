@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from lib.config import TalosError  # noqa: E402
 from lib import db, dispatcher as dispatcher_mod, policy, runs as run_log, sessions  # noqa: E402
+from lib.registry import Action  # noqa: E402
 from test_policy import AGENT_ID, make_agent, make_issue  # noqa: E402
 
 
@@ -248,6 +249,19 @@ class DispatcherTest(unittest.TestCase):
                           **self.feedback_agent())
         self.assertIsNone(self.calls[0]["resume"])
         self.assertIn("not resumed", self.calls[0]["prompt"])
+
+    def test_an_orchestrators_action_runs_once_instead_of_the_status_action(self):
+        sessions.update("odysseus", 42, next_action="merge_conflict")
+        actions = {"new": Action("Work #{issue}"), "merge_conflict": Action("Resolve the conflict on #{issue}")}
+        self.dispatch(make_issue(status="new"), [result("needs_input")], actions=actions)
+        self.assertEqual(self.calls[0]["prompt"], "Resolve the conflict on #42")
+        self.assertEqual(sessions.get("odysseus", 42)["next_action"], "")     # used by this run only
+
+    def test_an_orchestrators_action_is_dropped_when_the_issue_is_not_run(self):
+        sessions.update("odysseus", 42, next_action="merge_conflict")
+        actions = {"new": Action("Work #{issue}"), "merge_conflict": Action("Resolve #{issue}")}
+        self.dispatch(make_issue(status="new", assignee="someone-else"), [], actions=actions)
+        self.assertEqual((self.calls, sessions.get("odysseus", 42)["next_action"]), ([], ""))
 
     def test_new_status_never_gets_catch_up_text(self):
         self.dispatch(make_issue(status="new"), [result("needs_input")])

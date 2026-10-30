@@ -27,11 +27,12 @@ class Orchestrator:
     """Feeds one worker agent (registry.Agent of kind issues) as one orchestrator agent (kind orchestrator)."""
 
     def __init__(self, agent, worker, tracker, worker_id, dry_run=False, branch_holder=_branch_holder, now=_now,
-                 worker_state=sessions.get, merges=None):
+                 worker_state=sessions.get, merges=None, keeper=None):
         self.agent, self.worker, self.tracker = agent, worker, tracker
         self.settings = agent.orchestration
         self.worker_id = str(worker_id)
         self.merges = merges            # merging.MergeSweeper, or None without automatic merges
+        self.keeper = keeper            # keeper.BranchKeeper: keeps agent PRs mergeable (None = off)
         self.owners = [str(o) for o in (self.settings.owners or [worker.handoff_to]) if o]
         self.max_in_flight = self.settings.max_in_flight or worker.max_parallel
         self.dry_run = dry_run
@@ -95,6 +96,8 @@ class Orchestrator:
             return f"{merged}paused by the circuit breaker", []
         if st.get("paused"):
             return f"{merged}paused ({st.get('pause_reason') or 'talos pause'})", []
+        kept = self.keeper.sweep() if self.keeper else ""
+        merged += f"branches: {kept}; " if kept else ""
         in_flight = self._in_flight()
         slots = policy.free_slots(self.max_in_flight, in_flight)
         if not slots:

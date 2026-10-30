@@ -117,6 +117,9 @@ MIGRATIONS = (
     ("issues", "handoff_detail", "TEXT"),
     ("issues", "handoff_at", "TEXT"),
     ("issues", "auto_retries", "INTEGER DEFAULT 0"),
+    ("issues", "next_action", "TEXT"),            # an action an orchestrator chose for the next run (merge_conflict)
+    ("issues", "conflict_attempts", "INTEGER DEFAULT 0"),   # merge-conflict resolutions handed to the agent
+    ("issues", "conflict_noted", "TEXT"),         # PR head the reviewer was told about once the attempts ran out
 )
 
 _init_lock = threading.Lock()

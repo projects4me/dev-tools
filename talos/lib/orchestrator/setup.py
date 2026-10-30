@@ -2,14 +2,15 @@
 
 import dataclasses
 
-from .. import policy
-from ..config import TalosError, log
+from .. import policy, workspaces
+from ..config import WORKSPACE, TalosError, log
 from ..hermes import Listener
 from ..registry import load_agents
 from ..tracker import Tracker
 from . import github
 from . import policy as orchestration
 from . import state as store
+from .keeper import BranchKeeper
 from .merge import Merger
 from .merging import MergeSweeper
 from .worker import Orchestrator
@@ -58,9 +59,12 @@ def start(agent, cfg, dry_run):
     if me not in worker.accept_from:
         log(f"warning: {worker.name} does not accept assignments from {agent.display_name} (Gaia user {me}); "
             f"add it to acceptAssignmentsFrom in its agent.local.json", agent.name)
-    merges = MergeSweeper(agent, worker, tracker, Merger(tracker.child_env, github.agamemnon_gh), me,
-                          [str(o) for o in (agent.orchestration.owners or [worker.handoff_to]) if o], dry_run=dry_run)
-    orchestrator = Orchestrator(agent, worker, tracker, worker_id, dry_run=dry_run, merges=merges)
+    owners = [str(o) for o in (agent.orchestration.owners or [worker.handoff_to]) if o]
+    merges = MergeSweeper(agent, worker, tracker, Merger(tracker.child_env, github.agamemnon_gh), me, owners,
+                          dry_run=dry_run)
+    keeper = BranchKeeper(agent, worker, tracker, github.agamemnon_gh, worker_id, me, owners,
+                          lambda repo, issue: workspaces.branch_holder(WORKSPACE, repo, issue), dry_run=dry_run)
+    orchestrator = Orchestrator(agent, worker, tracker, worker_id, dry_run=dry_run, merges=merges, keeper=keeper)
     orchestrator.start()
     Listener(agent, tracker, [policy.ASSIGNEE_EVENT, policy.STATUS_EVENT], orchestrator.on_event,
              orchestrator.on_ready, cfg["hermesUrl"], cfg.get("nodeBin", "node"),

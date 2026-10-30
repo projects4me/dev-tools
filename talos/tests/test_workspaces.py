@@ -76,6 +76,36 @@ class WorkspacesTest(unittest.TestCase):
         self.assertEqual(git(one / "gaia", "status", "--porcelain"), "M README.md")
         self.assertEqual(git(two / "gaia", "status", "--porcelain"), "?? new.txt")
 
+    def pushed_ahead_on_github(self, issue):
+        """The issue's branch pushed, then moved ahead on GitHub by someone else (Agamemnon's update-branch)."""
+        work = self.ensure(issue) / "gaia"
+        git(work, "push", "-q", "origin", f"claude-issue-{issue}")
+        other = Path(self.dir.name) / f"other-{issue}"
+        git(Path(self.dir.name), "clone", "-q", "-b", f"claude-issue-{issue}", str(Path(self.dir.name) / "gaia.git"),
+            str(other))
+        (other / "from-dev.txt").write_text("dev", encoding="utf-8")
+        git(other, "add", ".")
+        git(other, "commit", "-m", "merge dev")
+        git(other, "push", "-q", "origin", f"claude-issue-{issue}")
+        return work, git(other, "rev-parse", "HEAD")
+
+    def test_follows_github_when_the_branch_moved_ahead(self):
+        work, ahead = self.pushed_ahead_on_github(1)
+        self.ensure(1)
+        self.assertEqual(git(work, "rev-parse", "HEAD"), ahead)
+
+    def test_leaves_local_changes_and_commits_alone(self):
+        work, ahead = self.pushed_ahead_on_github(1)
+        (work / "README.md").write_text("edited", encoding="utf-8")
+        self.assertFalse(workspaces.follow_remote(work, 1))           # uncommitted changes
+        git(work, "commit", "-am", "local work")
+        self.assertFalse(workspaces.follow_remote(work, 1))           # a commit GitHub doesn't have
+        self.assertNotEqual(git(work, "rev-parse", "HEAD"), ahead)
+
+    def test_a_branch_never_pushed_is_left_alone(self):
+        work = self.ensure(1) / "gaia"
+        self.assertFalse(workspaces.follow_remote(work, 1))
+
     def test_workspace_is_sticky(self):
         folder = self.ensure(1)
         (folder / "gaia" / "README.md").write_text("work in progress", encoding="utf-8")

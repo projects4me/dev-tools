@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from lib import db, registry, sessions  # noqa: E402
 from lib.config import TalosError  # noqa: E402
 from lib.orchestrator import github, policy  # noqa: E402
+from lib.orchestrator.keeper import BranchKeeper  # noqa: E402
 from lib.orchestrator.merging import MergeSweeper  # noqa: E402
 from lib.orchestrator.setup import MergeRoute  # noqa: E402
 from lib.orchestrator import state as store  # noqa: E402
@@ -422,6 +423,117 @@ class AutoMergeTest(SweepTest):
         paused[0] = True
         self.assertIsNone(route(issue(1)))
         self.assertEqual(len(calls), 2)
+
+
+def gh_pr(number, issue_number, mergeable="MERGEABLE", merge_state="BLOCKED", head="h1"):
+    return {"number": number, "headRefName": f"claude-issue-{issue_number}", "headRefOid": head,
+            "mergeable": mergeable, "mergeStateStatus": merge_state}
+
+
+class FakeGh:
+    """`gh` as Agamemnon: lists the scripted open PRs and records the update-branch calls."""
+
+    def __init__(self, prs):
+        self.prs, self.updates = prs, []
+
+    def __call__(self, *args):
+        if args[:2] == ("pr", "list"):
+            return json.dumps(self.prs)
+        if args[:3] == ("api", "-X", "PUT"):
+            self.updates.append(args[3])
+            return "{}"
+        raise AssertionError(f"unexpected gh call {args}")
+
+
+class KeeperTest(SweepTest):
+    def setUp(self):
+        super().setUp()
+        log = mock.patch("lib.orchestrator.keeper.log")
+        log.start()
+        self.addCleanup(log.stop)
+
+    def keeper(self, tracker, gh, dry_run=False, max_conflict_attempts=1):
+        o = self.orchestrator(tracker, dry_run, max_conflict_attempts=max_conflict_attempts)
+        return BranchKeeper(o.agent, o.worker, tracker, gh, WORKER_ID, MERGER_ID, [OWNER],
+                            lambda repo, number: self.holder, now=lambda: self.clock[0], dry_run=dry_run)
+
+    def waiting(self, number=5, **fields):
+        return issue(number, **{"status": "in_review", "assignee": OWNER, **fields})
+
+    def test_policy(self):
+        self.assertEqual(policy.issue_of_branch("claude-issue-4214"), 4214)
+        self.assertIsNone(policy.issue_of_branch("feature/x"))
+        self.assertEqual(policy.mergeability(gh_pr(1, 5, "CONFLICTING", "DIRTY")), policy.CONFLICT)
+        self.assertEqual(policy.mergeability(gh_pr(1, 5, merge_state="BEHIND")), policy.BEHIND)
+        self.assertEqual(policy.mergeability(gh_pr(1, 5, "UNKNOWN", "UNKNOWN")), policy.UNKNOWN)
+        self.assertEqual(policy.mergeability(gh_pr(1, 5)), policy.UP_TO_DATE)
+        self.assertEqual(policy.conflict_step(0, 1, None, "h1"), policy.RESOLVE)
+        self.assertEqual(policy.conflict_step(1, 1, None, "h1"), policy.TELL)
+        self.assertEqual(policy.conflict_step(1, 1, "h1", "h1"), policy.NOTHING)
+        mergeable_only = {"state": "fail", "checks": [{"name": "mergeable", "state": "fail"},
+                                                      {"name": "ci", "state": "ok"}]}
+        self.assertTrue(policy.only_mergeability_fails(mergeable_only))
+        self.assertFalse(policy.only_mergeability_fails(
+            {"state": "fail", "checks": [{"name": "mergeable", "state": "fail"}, {"name": "ci", "state": "fail"}]}))
+
+    def test_a_branch_behind_its_base_is_updated_on_github(self):
+        gh = FakeGh([gh_pr(77, 5, merge_state="BEHIND", head="abc")])
+        self.keeper(FakeTracker([self.waiting()]), gh).sweep()
+        self.assertEqual(gh.updates, ["repos/Projects4Me/gaia/pulls/77/update-branch"])
+
+    def test_a_conflict_goes_to_the_worker_with_the_conflict_action(self):
+        tracker = FakeTracker([self.waiting()])
+        self.keeper(tracker, FakeGh([gh_pr(77, 5, "CONFLICTING", "DIRTY")])).sweep()
+        self.assertEqual(tracker.issues[5]["assignee"], WORKER_ID)
+        state = sessions.get("odysseus", 5)
+        self.assertEqual((state["next_action"], state["conflict_attempts"]), ("merge_conflict", 1))
+        self.assertIn("merge conflict", tracker.comments[-1][1])
+
+    def test_used_up_attempts_tell_the_owner_once_per_head(self):
+        sessions.update("odysseus", 5, conflict_attempts=1)
+        tracker = FakeTracker([self.waiting(assignee=MERGER_ID)])       # it was waiting to be merged automatically
+        keeper = self.keeper(tracker, FakeGh([gh_pr(77, 5, "CONFLICTING", "DIRTY", head="h1")]))
+        keeper.sweep()
+        keeper.sweep()
+        self.assertEqual(tracker.issues[5]["assignee"], OWNER)
+        self.assertEqual(len(tracker.comments), 1)
+        self.assertIn("needs a person", tracker.comments[0][1])
+
+    def test_a_failed_assignment_gives_the_attempt_back(self):
+        tracker = FakeTracker([self.waiting()])
+
+        def down(number, assignee):
+            raise TalosError("Gaia down")
+        tracker.assign = down
+        self.keeper(tracker, FakeGh([gh_pr(77, 5, "CONFLICTING", "DIRTY")])).sweep()
+        state = sessions.get("odysseus", 5)
+        self.assertEqual((state["next_action"], state["conflict_attempts"]), ("", 0))
+
+    def test_leaves_issues_the_worker_or_a_person_has(self):
+        prs = [gh_pr(77, 5, "CONFLICTING", "DIRTY"), gh_pr(78, 6, merge_state="BEHIND")]
+        running = FakeTracker([self.waiting(5, assignee=WORKER_ID, status="in_progress"), self.waiting(6)])
+        gh = FakeGh(prs)
+        self.holder = "D:/work/gaia"                     # claude-issue-6 checked out by hand
+        self.keeper(running, gh).sweep()
+        self.assertEqual((gh.updates, running.assigned), ([], []))
+
+    def test_dry_run_changes_nothing(self):
+        tracker = FakeTracker([self.waiting(5), self.waiting(6)])
+        gh = FakeGh([gh_pr(77, 5, "CONFLICTING", "DIRTY"), gh_pr(78, 6, merge_state="BEHIND")])
+        self.keeper(tracker, gh, dry_run=True).sweep()
+        self.assertEqual((gh.updates, tracker.assigned, tracker.comments), ([], [], []))
+        self.assertEqual(sessions.get("odysseus", 5), {})
+
+    def test_a_merge_waiting_on_mergeability_waits_for_the_keeper(self):
+        tracker = FakeTracker([issue(5, status="in_review", assignee=MERGER_ID)])
+        conflicted = gate("fail", ("mergeable", "conflicts with the base branch"))
+        o = AutoMergeTest.merging(self, tracker, FakeMerger(conflicted))
+        o.sweep()
+        self.assertEqual(tracker.issues[5]["assignee"], MERGER_ID)   # not handed back: the keeper takes it
+        sessions.update("odysseus", 5, conflict_noted="abc1234def")  # the keeper gave up at this head
+        o.sweep()
+        self.assertEqual(tracker.issues[5]["assignee"], OWNER)
+        self.assertIn("conflicts with the base branch", tracker.comments[-1][2])
 
 
 class GithubIdentityTest(unittest.TestCase):
