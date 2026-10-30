@@ -10,7 +10,7 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 from lib.common import AiError, REPOS  # noqa: E402
-from lib import apitester, coderabbit, context, cost, doctor, kb, review, ship, tests, workflow  # noqa: E402
+from lib import apitester, coderabbit, context, cost, doctor, kb, rabbitdigest, review, ship, tests, workflow  # noqa: E402
 
 
 def build_parser():
@@ -141,6 +141,11 @@ def build_parser():
     sp.add_argument("--wait", action="store_true", help="poll every 30 s until the state is not pending")
     sp.add_argument("--timeout", type=float, default=10, help="minutes to wait with --wait (default 10)")
 
+    sp = add("rabbit-digest", rabbitdigest.cmd_digest, "(ai rabbit digest) CodeRabbit's findings across Agent Odysseus "
+             "PRs, categorised, as a markdown report")
+    sp.add_argument("--repo", choices=repos, help="one repo (default: every codeRabbitRepos entry)")
+    sp.add_argument("--since", metavar="DATE", help="only PRs created on or after YYYY-MM-DD")
+
     sp = add("reply", review.cmd_reply, 'post replies from JSON {"<comment id>": "<reply>"}')
     sp.add_argument("repo", choices=repos)
     sp.add_argument("pr", type=int)
@@ -167,6 +172,9 @@ def build_parser():
 
 
 def main(argv=None):
+    argv = sys.argv[1:] if argv is None else list(argv)
+    if argv[:2] == ["rabbit", "digest"]:           # `ai rabbit digest` is the rabbit-digest command
+        argv = ["rabbit-digest", *argv[2:]]
     args = build_parser().parse_args(argv)
     try:
         code = args.func(args)

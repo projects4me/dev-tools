@@ -5,6 +5,20 @@
   "coAuthor": "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>",
   "prFooter": "🤖 Generated with [Claude Code](https://claude.com/claude-code)",
   "codeRabbitRepos": ["gaia", "prometheus", "hermes"],
+  "shipSize": {
+    "warnOver": 10,
+    "refuseOver": 15,
+    "generated": [
+      "gaia/docs/generated/**",
+      "docs/generated/**",
+      "tools/api-tester/apis/backend.json",
+      "**/package-lock.json",
+      "**/yarn.lock",
+      "**/pnpm-lock.yaml",
+      "**/composer.lock",
+      "**/poetry.lock"
+    ]
+  },
   "neverCommit": [
     "tests/.phpunit.result.cache"
   ],
