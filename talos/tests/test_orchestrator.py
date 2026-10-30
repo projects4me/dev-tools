@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from lib import db, registry, sessions  # noqa: E402
 from lib.config import TalosError  # noqa: E402
-from lib.orchestrator import policy  # noqa: E402
+from lib.orchestrator import github, policy  # noqa: E402
 from lib.orchestrator import state as store  # noqa: E402
 from lib.orchestrator.worker import Orchestrator  # noqa: E402
 from lib.policy import ASSIGNEE_EVENT  # noqa: E402
@@ -269,6 +269,27 @@ class SweepTest(unittest.TestCase):
         self.assertFalse(o._wake.is_set())
         o.on_event({"eventName": ASSIGNEE_EVENT})
         self.assertTrue(o._wake.is_set())
+
+
+class GithubIdentityTest(unittest.TestCase):
+    WORKER = SimpleNamespace(projects={"A Gaia": "gaia", "A Prometheus": "prometheus", "A Other": "not-a-repo"})
+
+    def gh(self, push):
+        def run(*args):
+            if args[:2] == ("api", "user"):
+                return "agent-agamemnon\n"
+            repo = args[1].split("/")[-1]
+            return json.dumps({"pull": True, "push": push.get(repo, False)})
+        return run
+
+    def test_reports_login_and_repos_it_can_merge_in(self):
+        result = github.check_identity(self.WORKER, self.gh({"gaia": True, "prometheus": True}))
+        self.assertEqual(result, "agent-agamemnon, write access to gaia, prometheus")
+
+    def test_names_repos_without_write_access(self):
+        with self.assertRaises(TalosError) as e:
+            github.check_identity(self.WORKER, self.gh({"gaia": True}))
+        self.assertIn("no write access to prometheus", str(e.exception))
 
 
 if __name__ == "__main__":

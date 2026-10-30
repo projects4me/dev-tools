@@ -35,7 +35,7 @@ class BranchCheckedOut(WorkspaceError):
         super().__init__(f"branch {branch} is checked out in {folder}")
 
 
-def _ai_common():
+def ai_common():
     """ai/lib/common.py, the one place that knows each repo's base branch. Loaded by file because `lib` is also
     the name of this package; common.py's imports are the standard library's."""
     spec = importlib.util.spec_from_file_location(
@@ -48,7 +48,7 @@ def _ai_common():
 
 
 def base_branch(repo):
-    return _ai_common().base_branch(repo)
+    return ai_common().base_branch(repo)
 
 
 def applies(repo):

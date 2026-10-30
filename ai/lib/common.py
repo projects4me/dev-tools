@@ -20,6 +20,7 @@ LOCAL_DIR = WORKSPACE / "dev-tools"
 # the same name as talos/lib/workspaces.py RUNTIME_NAME
 RUNTIME_NAME = ".dev-tools-runtime"     # the runtime copy of dev-tools (installer/runtime.py)
 ODYSSEUS = DEV_TOOLS / "odysseus" / "odysseus"
+AGAMEMNON = DEV_TOOLS / "agamemnon" / "agamemnon"
 P4M = DEV_TOOLS / "installer" / "p4m.py"
 GAIA_MCP = DEV_TOOLS / "gaia-mcp"
 STATE_DIR = LOCAL_DIR / "ai" / "state"
@@ -124,6 +125,14 @@ def ody(repo, tool, *args, check=True):
     if not bash:
         raise AiError("bash not found (the odysseus wrapper needs it; on Windows, Git for Windows' Git Bash)")
     return run([bash, str(ODYSSEUS), tool, *args], cwd=repo_dir(repo), check=check)
+
+
+def agamemnon(*args, check=True):
+    """Run gh as Agent Agamemnon through dev-tools/agamemnon: it approves and merges agent PRs, never commits."""
+    bash = find_bash()
+    if not bash:
+        raise AiError("bash not found (the agamemnon wrapper needs it; on Windows, Git for Windows' Git Bash)")
+    return run([bash, str(AGAMEMNON), "gh", *args], cwd=WORKSPACE, check=check)
 
 
 def now():
