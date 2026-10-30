@@ -1,6 +1,7 @@
 {
   "reviewer": "",
   "agentLogin": "agent-odysseus",
+  "mergerLogin": "agent-agamemnon",
   "timezoneLabel": "",
   "coAuthor": "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>",
   "prFooter": "🤖 Generated with [Claude Code](https://claude.com/claude-code)",
