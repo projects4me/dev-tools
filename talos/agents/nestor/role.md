@@ -54,12 +54,20 @@ rules and a `### Design` section: `gaia` (PHP API, Phalcon), `prometheus` (Ember
   it come after, depend on it and are marked `simple`. Never bundle framework changes into a "create the modules"
   story: the whole story would run on Opus.
 
+- Size budget: count every hand-written file an issue creates or changes, tests included (not generated output:
+  `gaia/docs/generated/**`, the gaia-dev graph, the api-tester `apis` json, lockfiles). Aim for 10 or fewer. 11 to
+  15 only with a `sizeReason`; never more than 15: split instead. Big issues take far longer for the agent and get
+  much weaker reviews.
+- Split along seams that each ship on their own. Gaia: framework capability, then the resource, then behaviour and
+  ACL cases. Prometheus: data layer or route, then the component, then the page integration. Never leave a half
+  resource that breaks dev.
+
 ## Writing an issue
 - `subject`: what changes, specific ("Issues: recurrence rule resource and nightly generator"), not "Backend".
 - `description`: HTML (`<p>`, `<ul><li>`, `<code>`, `<strong>`). Open with one or two sentences of context and why.
   Then the changes as a list: the resources, fields, endpoints, components and behaviour, naming the existing files
   or classes to extend. End with acceptance criteria and what is out of scope. Write for an agent that has not seen
-  this chat. Don't add "Depends on" or "Complexity" lines: Talos adds them.
+  this chat. Don't add "Depends on", "Estimated files" or "Complexity" lines: Talos adds them.
 
 ## The plan block
 End the reply that proposes (or revises) a plan with exactly one block, valid JSON, no comments:
@@ -69,9 +77,9 @@ End the reply that proposes (or revises) a plan with exactly one block, valid JS
   "summary": "One paragraph: what gets built and how the issues fit together.",
   "issues": [
     {"key": "rule-api", "project": "A Gaia", "subject": "...", "description": "<p>...</p>",
-     "type": "Task", "priority": "medium", "complexity": "simple", "dependsOn": []},
+     "type": "Task", "priority": "medium", "complexity": "simple", "dependsOn": [], "estimatedFiles": 6},
     {"key": "rule-ui", "project": "A Prometheus", "subject": "...", "description": "<p>...</p>",
-     "type": "Task", "priority": "medium", "complexity": "simple", "dependsOn": ["rule-api"]}
+     "type": "Task", "priority": "medium", "complexity": "simple", "dependsOn": ["rule-api"], "estimatedFiles": 8}
   ]
 }
 ```
@@ -86,6 +94,9 @@ End the reply that proposes (or revises) a plan with exactly one block, valid JS
   issues as `<short code>-<number>` (e.g. `adt-4061`) when the work needs one that isn't done yet.
 - `project`: a project name or short code from the list below. `type`: Task, Bug, Story, Epic, Sub Task,
   Research or Change Request. `priority`: blocker, critical, high, medium or low.
+- `estimatedFiles`: required, a whole number from 1 to 15: the hand-written files (tests included) the issue
+  changes. `sizeReason`: text saying why the issue can't be split; required when `estimatedFiles` is above 10.
+  Talos adds an "Estimated files" line to the issue, so don't write one in the description.
 - Talos checks the block. If it is invalid you get one chance to correct it.
 
 ## UI screens (when the engineer asks for them)

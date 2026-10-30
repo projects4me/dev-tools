@@ -5,8 +5,11 @@ Nestor ends a reply with one fenced block
     ```nestor-plan
     {"summary": "...", "issues": [{"key": "api", "project": "A Gaia", "subject": "...", "description": "<p>..</p>",
       "type": "Task", "priority": "medium", "complexity": "simple", "dependsOn": [],
-      "milestone": "Claude-v1", "screens": ["grouped-list"]}, ...]}
+      "milestone": "Claude-v1", "screens": ["grouped-list"], "estimatedFiles": 6, "sizeReason": "..."}, ...]}
     ```
+
+`estimatedFiles` is required: the hand-written files (tests included) the issue creates or changes, 1 to 15.
+`sizeReason` (text) is required above 10: why the issue can't be split.
 
 `milestone` is optional (Claude-v1 unless the engineer asked for another; one the project doesn't have is
 marked `newMilestone` and created on approval); `screens` lists keys of UI screens
@@ -30,6 +33,8 @@ TYPES = ("Task", "Bug", "Story", "Epic", "Sub Task", "Research", "Change Request
 KEY = re.compile(r"^[a-z0-9][a-z0-9-]{0,39}$")
 EXISTING = re.compile(r"^[a-z]+-\d+$")      # an issue that already exists, e.g. "adt-4061"
 DEFAULT_MILESTONE = "Claude-v1"
+TARGET_FILES = 10       # more than this needs a sizeReason
+MAX_FILES = 15          # more than this must be split
 
 
 def internal(depends, keys):
@@ -119,6 +124,17 @@ def parse(raw, projects, milestones=None, screen_keys=()):
                 milestone = known[milestone.lower()]   # the project's exact spelling
             else:
                 new_milestone = True                   # created in the project when the plan is approved
+        files = issue.get("estimatedFiles")
+        reason = issue.get("sizeReason")
+        reason = " ".join(reason.split()) if isinstance(reason, str) else ""
+        if isinstance(files, bool) or not isinstance(files, int) or files < 1:
+            errors.append(f"{where}.estimatedFiles: required, a whole number of hand-written files (tests included), "
+                          f"at least 1")
+            files = None
+        elif files > MAX_FILES:
+            errors.append(f"{where}.estimatedFiles: {files} is more than {MAX_FILES}; split the issue")
+        elif files > TARGET_FILES and not reason:
+            errors.append(f"{where}.sizeReason: required when estimatedFiles is more than {TARGET_FILES}")
         screens = issue.get("screens") or []
         if not isinstance(screens, list) or not all(isinstance(k, str) for k in screens):
             errors.append(f"{where}.screens: a list of screen keys")
@@ -129,7 +145,7 @@ def parse(raw, projects, milestones=None, screen_keys=()):
         out.append({"key": key, "project": name, "projectCode": projects.get(name), "subject": subject,
                     "description": description, "type": type_, "priority": priority,
                     "complexity": complexity, "dependsOn": depends, "milestone": milestone,
-                    "newMilestone": new_milestone,
+                    "newMilestone": new_milestone, "estimatedFiles": files, "sizeReason": reason,
                     "screens": list(dict.fromkeys(screens))})
     for issue in out:
         for d in issue["dependsOn"]:

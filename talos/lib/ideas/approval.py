@@ -97,10 +97,13 @@ class Approval:
 
     @staticmethod
     def description(issue, refs):
-        """The issue's description plus "Depends on" (plan keys become the numbers created for them; existing issues
+        """The issue's description plus "Depends on", "Estimated files" (plan keys become the numbers created for them; existing issues
         such as adt-4061 are kept as written) and "Screens" (the PNGs attached to it) lines."""
         depends = [refs.get(d, d) for d in issue["dependsOn"]]
         line = f"<p><strong>Depends on:</strong> {', '.join(depends)}</p>" if depends else ""
+        if issue.get("estimatedFiles"):
+            line += f"<p><strong>Estimated files:</strong> {issue['estimatedFiles']}"
+            line += f" ({html.escape(issue['sizeReason'])})</p>" if issue.get("sizeReason") else "</p>"
         shots = issue.get("screens") or []
         if shots:
             line += f"<p><strong>Screens:</strong> {', '.join(f'{k}.png' for k in shots)}</p>"
