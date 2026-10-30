@@ -40,7 +40,7 @@ class Dispatcher:
     """Worker pool for one agent: `maxParallel` threads, each issue in its own workspace (or container) and test
     slot."""
 
-    def __init__(self, agent, tracker, claude, dry_run=False, mcp=None, collector=None):
+    def __init__(self, agent, tracker, claude, dry_run=False, mcp=None, collector=None, merge_route=None):
         self.agent = agent
         self.tracker = tracker
         self.claude = claude
@@ -60,7 +60,8 @@ class Dispatcher:
         self._pause = UsagePause()  # no dispatching while a Claude usage limit holds
         self._deps = DependencyGate(agent.dependency_done_statuses)   # issues waiting on "Depends on" issues
         self._releases = queue.Queue()      # changed issue numbers (None = unknown) for the release worker
-        self.bot_review = bot_review.Watcher(agent, self.user_id, tracker, self.submit)    # the CodeRabbit loop
+        # the CodeRabbit loop; merge_route(issue) names an orchestrator that merges a clean PR itself (or None)
+        self.bot_review = bot_review.Watcher(agent, self.user_id, tracker, self.submit, route=merge_route)
 
     # -- queueing ----------------------------------------------------------------------------
 

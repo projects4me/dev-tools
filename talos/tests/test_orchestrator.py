@@ -14,6 +14,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from lib import db, registry, sessions  # noqa: E402
 from lib.config import TalosError  # noqa: E402
 from lib.orchestrator import github, policy  # noqa: E402
+from lib.orchestrator.merging import MergeSweeper  # noqa: E402
+from lib.orchestrator.setup import MergeRoute  # noqa: E402
 from lib.orchestrator import state as store  # noqa: E402
 from lib.orchestrator.worker import Orchestrator  # noqa: E402
 from lib.policy import ASSIGNEE_EVENT  # noqa: E402
@@ -148,6 +150,12 @@ class FakeTracker:
     def comment(self, number, title, body):
         self.comments.append((number, title, body))
 
+    def set_status(self, number, status):
+        self.issues[number]["status"] = status
+
+    def hand_off(self, number, status, assignee):
+        self.issues[number].update(status=status, assignee=assignee)
+
 
 class SweepTest(unittest.TestCase):
     def setUp(self):
@@ -269,6 +277,151 @@ class SweepTest(unittest.TestCase):
         self.assertFalse(o._wake.is_set())
         o.on_event({"eventName": ASSIGNEE_EVENT})
         self.assertTrue(o._wake.is_set())
+
+
+MERGER_ID = "60"
+
+
+def gate(state, *failing):
+    checks = [{"name": name, "state": state, "detail": detail} for name, detail in failing]
+    return {"state": state, "sha": "abc1234def", "checks": checks}
+
+
+class FakeMerger:
+    """Scripted `ai mergecheck` results (the last repeats) and an `ai merge` that merges when the gate is ok."""
+
+    def __init__(self, *gates, pr=77, already_merged=False):
+        self.gates, self.pr, self.merged = list(gates), pr, []
+        self.already_merged = already_merged
+
+    def find_pr(self, repo, issue):
+        return {"number": self.pr, "merged": self.already_merged,
+                "merge_sha": "beadfeed" if self.already_merged else None}
+
+    def check(self, repo, pr):
+        return self.gates.pop(0) if len(self.gates) > 1 else self.gates[0]
+
+    def merge(self, repo, pr):
+        result = self.check(repo, pr)
+        if result["state"] == "ok":
+            self.merged.append((repo, pr))
+            result = {**result, "merged": "f00dfeedcafe"}
+        return result
+
+
+class AutoMergeTest(SweepTest):
+    def setUp(self):
+        super().setUp()
+        log = mock.patch("lib.orchestrator.merging.log")
+        log.start()
+        self.addCleanup(log.stop)
+
+    def merging(self, tracker, merger, dry_run=False, **settings):
+        o = self.orchestrator(tracker, dry_run, auto_merge_milestones=("aga-v1",), **settings)
+        o.merges = MergeSweeper(o.agent, o.worker, tracker, merger, MERGER_ID, [OWNER], now=lambda: self.clock[0],
+                                dry_run=dry_run)
+        return o
+
+    def clean(self, number=5, **fields):
+        return issue(number, **{"status": "in_review", "assignee": MERGER_ID, **fields})
+
+    def test_policy(self):
+        self.assertEqual(policy.merge_target(issue(1), ["AGA-v1"], MERGER_ID, paused=False), MERGER_ID)
+        self.assertIsNone(policy.merge_target(issue(1, milestone="aga-v2"), ["aga-v1"], MERGER_ID, paused=False))
+        self.assertIsNone(policy.merge_target(issue(1), ["aga-v1"], MERGER_ID, paused=True))
+        self.assertTrue(policy.is_merge_candidate(self.clean(), ["aga-v1"], PROJECTS, MERGER_ID))
+        self.assertFalse(policy.is_merge_candidate(self.clean(assignee=OWNER), ["aga-v1"], PROJECTS, MERGER_ID))
+        self.assertEqual(policy.merge_step("ok", 0, 60, 0, 5)[0], policy.MERGE)
+        self.assertEqual(policy.merge_step("pending", 10, 60, 0, 5)[0], policy.WAIT)
+        self.assertEqual(policy.merge_step("pending", 61, 60, 0, 5)[0], policy.HAND_BACK)
+        self.assertEqual(policy.merge_step("fail", 0, 60, 0, 5)[0], policy.HAND_BACK)
+        self.assertEqual(policy.merge_step("ok", 0, 60, 5, 5)[0], policy.HAND_BACK)
+
+    def test_merges_a_clean_pr_and_sets_the_issue_done(self):
+        tracker, merger = FakeTracker([self.clean()]), FakeMerger(gate("ok"))
+        self.merging(tracker, merger).sweep()
+        self.assertEqual(merger.merged, [("gaia", 77)])
+        self.assertEqual(tracker.issues[5]["status"], "done")
+        self.assertIn("merged automatically", tracker.comments[-1][1])
+        self.assertEqual([m["issue"] for m in store.merges_on("agamemnon", "2026-10-31")], [5])
+        self.assertIn("merges: #5 merged PR gaia#77", store.get("agamemnon")["last_sweep"])
+
+    def test_a_failed_gate_goes_to_the_reviewer_with_the_reason(self):
+        tracker = FakeTracker([self.clean()])
+        merger = FakeMerger(gate("fail", ("people", "hammad requested changes")))
+        self.merging(tracker, merger).sweep()
+        self.assertEqual(merger.merged, [])
+        self.assertEqual((tracker.issues[5]["status"], tracker.issues[5]["assignee"]), ("in_review", OWNER))
+        self.assertIn("hammad requested changes", tracker.comments[-1][2])
+
+    def test_pending_waits_then_goes_to_the_reviewer(self):
+        tracker = FakeTracker([self.clean()])
+        merger = FakeMerger(gate("pending", ("ci", "still running: build")))
+        o = self.merging(tracker, merger, auto_merge_wait_minutes=30)
+        o.sweep()
+        self.assertEqual(tracker.issues[5]["assignee"], MERGER_ID)            # still waiting
+        self.clock[0] = "2026-10-31T10:31:00+05:00"
+        o.sweep()
+        self.assertEqual(tracker.issues[5]["assignee"], OWNER)
+        self.assertIn("still pending after 31 min", tracker.comments[-1][2])
+
+    def test_daily_limit(self):
+        tracker = FakeTracker([self.clean(5), self.clean(6)])
+        self.merging(tracker, FakeMerger(gate("ok")), max_auto_merges_per_day=1).sweep()
+        self.assertEqual(tracker.issues[5]["status"], "done")
+        self.assertEqual((tracker.issues[6]["status"], tracker.issues[6]["assignee"]), ("in_review", OWNER))
+        self.assertIn("daily limit", tracker.comments[-1][2])
+
+    def test_only_its_own_auto_merge_milestones(self):
+        tracker = FakeTracker([self.clean(5, milestone="aga-v2"), self.clean(6, assignee=OWNER)])
+        merger = FakeMerger(gate("ok"))
+        self.merging(tracker, merger).sweep()
+        self.assertEqual(merger.merged, [])
+
+    def test_a_paused_orchestrator_hands_its_merges_to_the_owner(self):
+        tracker, merger = FakeTracker([self.clean()]), FakeMerger(gate("ok"))
+        store.update("agamemnon", paused=True)
+        self.merging(tracker, merger).sweep()
+        self.assertEqual(merger.merged, [])
+        self.assertEqual(tracker.issues[5]["assignee"], OWNER)
+        self.assertIn("is paused", tracker.comments[-1][2])
+
+    def test_dry_run_merges_nothing_and_starts_no_wait(self):
+        tracker, merger = FakeTracker([self.clean()]), FakeMerger(gate("ok"))
+        self.merging(tracker, merger, dry_run=True).sweep()
+        self.assertEqual((merger.merged, tracker.issues[5]["status"], tracker.comments), ([], "in_review", []))
+        self.assertIsNone(store.find_open_merge("agamemnon", 5, 77))
+
+    def test_a_pr_already_merged_is_finished_not_handed_back(self):
+        tracker = FakeTracker([self.clean()])
+        o = self.merging(tracker, FakeMerger(gate("pending")))
+        o.sweep()                                   # starts the wait record
+        o.merges.merger = FakeMerger(gate("ok"), already_merged=True)   # merged, but setting done failed last time
+        o.sweep()
+        self.assertEqual(tracker.issues[5]["status"], "done")
+        self.assertEqual([m["merge_sha"] for m in store.merges_on("agamemnon", "2026-10-31")], ["beadfeed"])
+        self.assertIn("merged automatically", tracker.comments[-1][1])
+
+    def test_route_reads_the_merger_lazily_and_retries(self):
+        calls = []
+
+        def user_id():
+            calls.append(1)
+            if len(calls) == 1:
+                raise TalosError("Gaia down")
+            return MERGER_ID
+        agent = SimpleNamespace(name="agamemnon", display_name="Agent Agamemnon",
+                                orchestration=registry.Orchestration(worker="odysseus",
+                                                                     auto_merge_milestones=("aga-v1",)))
+        paused = [False]
+        route = MergeRoute(agent, user_id, lambda: paused[0])
+        with mock.patch("lib.orchestrator.setup.log"):
+            self.assertIsNone(route(issue(1)))                   # Gaia down: the reviewer, retried next time
+        self.assertEqual(route(issue(1)), (MERGER_ID, "Agent Agamemnon"))
+        self.assertIsNone(route(issue(1, milestone="aga-v2")))
+        paused[0] = True
+        self.assertIsNone(route(issue(1)))
+        self.assertEqual(len(calls), 2)
 
 
 class GithubIdentityTest(unittest.TestCase):

@@ -102,3 +102,39 @@ def fail_streak(streak, events, retry_reasons, max_retries):
 
 def breaker_tripped(streak, limit):
     return limit > 0 and streak >= limit
+
+
+# -- automatic merges -------------------------------------------------------------------------------
+
+MERGE, WAIT, HAND_BACK = "merge", "wait", "hand_back"
+REVIEW_STATUS = "in_review"     # where the CodeRabbit loop leaves an issue it hands off
+
+
+def auto_merges(issue, milestones):
+    """The issue's milestone is one whose CodeRabbit-clean PRs are merged automatically (exact name, any case)."""
+    return _lower(issue.get("milestone")) in {_lower(m) for m in milestones}
+
+
+def merge_target(issue, milestones, merger_id, paused):
+    """Who the CodeRabbit loop hands a clean issue to: the merger for an auto-merge milestone while it isn't
+    paused, else None (the reviewer, as before)."""
+    return merger_id if merger_id and not paused and auto_merges(issue, milestones) else None
+
+
+def is_merge_candidate(issue, milestones, projects, merger_id):
+    """Handed to the merger by the CodeRabbit loop: in review, assigned to it, in an auto-merge milestone."""
+    return (issue.get("project") in projects and auto_merges(issue, milestones)
+            and _lower(issue.get("status")) == REVIEW_STATUS and issue.get("assignee") == merger_id)
+
+
+def merge_step(gate_state, waited_minutes, wait_limit, merged_today, daily_limit):
+    """(MERGE | WAIT | HAND_BACK, why) for one issue, from `ai mergecheck`'s state (ok / pending / fail)."""
+    if merged_today >= daily_limit:
+        return HAND_BACK, f"the daily limit of {daily_limit} automatic merge(s) is reached"
+    if gate_state == "ok":
+        return MERGE, "the merge gate passed"
+    if gate_state == "pending":
+        if waited_minutes >= wait_limit:
+            return HAND_BACK, f"the merge gate was still pending after {int(waited_minutes)} min"
+        return WAIT, "the merge gate is pending"
+    return HAND_BACK, "the merge gate failed"

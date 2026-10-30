@@ -56,6 +56,56 @@ def record_assignment(agent, issue, worker, at):
         conn.close()
 
 
+def open_merge(agent, issue, repo, pr, at):
+    """The issue's merge record still waiting (ended_at NULL), created when it is first seen."""
+    conn = db.connect()
+    try:
+        with conn:
+            row = conn.execute("SELECT * FROM auto_merges WHERE agent = ? AND issue = ? AND ended_at IS NULL "
+                               "ORDER BY id DESC", (agent, issue)).fetchone()
+            if row and row["pr"] == pr:
+                return dict(row)
+            if row:             # a different PR now: the old wait is over
+                conn.execute("UPDATE auto_merges SET ended_at = ?, outcome = 'superseded' WHERE id = ?", (at, row["id"]))
+            conn.execute("INSERT INTO auto_merges (agent, issue, repo, pr, first_seen_at) VALUES (?, ?, ?, ?, ?)",
+                         (agent, issue, repo, pr, at))
+            return dict(conn.execute("SELECT * FROM auto_merges WHERE id = last_insert_rowid()").fetchone())
+    finally:
+        conn.close()
+
+
+def find_open_merge(agent, issue, pr):
+    """The issue's merge record for this PR still waiting, or None (read only)."""
+    conn = db.connect()
+    try:
+        row = conn.execute("SELECT * FROM auto_merges WHERE agent = ? AND issue = ? AND pr = ? AND ended_at IS NULL "
+                           "ORDER BY id DESC", (agent, issue, pr)).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def close_merge(record_id, at, outcome, merge_sha=None, detail=None):
+    conn = db.connect()
+    try:
+        with conn:
+            conn.execute("UPDATE auto_merges SET ended_at = ?, outcome = ?, merge_sha = ?, detail = ? WHERE id = ?",
+                         (at, outcome, merge_sha, detail, record_id))
+    finally:
+        conn.close()
+
+
+def merges_on(agent, day):
+    """The PRs merged automatically on `day` (YYYY-MM-DD, local time), oldest first."""
+    conn = db.connect()
+    try:
+        return [dict(r) for r in conn.execute(
+            "SELECT * FROM auto_merges WHERE agent = ? AND outcome = 'merged' AND substr(ended_at, 1, 10) = ? "
+            "ORDER BY ended_at", (agent, day))]
+    finally:
+        conn.close()
+
+
 def events_since(agent, since):
     """What the worker did with the issues this orchestrator fed, after `since` and after each issue's latest
     assignment, oldest first: handbacks (reason, auto_retries) and successful runs (see policy.fail_streak)."""

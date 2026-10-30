@@ -49,6 +49,9 @@ class Orchestration:
     auto_retry_reasons: tuple = AUTO_RETRY_REASONS   # handback reason codes that are restarted automatically
     max_auto_retries: int = 2           # automatic restarts per issue (cleared by `talos reset`)
     fail_streak_limit: int = 3          # consecutive failed or blocked handbacks before it pauses itself
+    auto_merge_milestones: tuple = ()   # milestones (exact name, any case) whose CodeRabbit-clean PRs it merges itself
+    max_auto_merges_per_day: int = 5    # automatic merges per day; past it, PRs go to the reviewer
+    auto_merge_wait_minutes: float = 60  # how long a still-pending merge gate (CI, CodeRabbit) is waited for
 
 
 @dataclass
@@ -216,8 +219,12 @@ def _load_orchestrator(path, raw):
     reasons = raw.get("autoRetryReasons", list(AUTO_RETRY_REASONS))
     if not isinstance(reasons, list) or not all(isinstance(r, str) and r for r in reasons):
         raise TalosError(f"{path}: autoRetryReasons must be a list of reason codes")
+    merge_milestones = raw.get("autoMergeMilestones", [])
+    if not isinstance(merge_milestones, list) or not all(isinstance(m, str) and m.strip() for m in merge_milestones):
+        raise TalosError(f"{path}: autoMergeMilestones must be a list of milestone names")
     numbers = {}
-    for key, default, least in (("maxInFlight", 0, 0), ("maxAutoRetries", 2, 0), ("failStreakLimit", 3, 1)):
+    for key, default, least in (("maxInFlight", 0, 0), ("maxAutoRetries", 2, 0), ("failStreakLimit", 3, 1),
+                                ("maxAutoMergesPerDay", 5, 0)):
         try:
             numbers[key] = int(raw.get(key, default))
         except (TypeError, ValueError):
@@ -227,10 +234,11 @@ def _load_orchestrator(path, raw):
     try:
         sweep = float(raw.get("sweepMinutes", 5))
         debounce = float(raw.get("debounceSeconds", 5))
+        merge_wait = float(raw.get("autoMergeWaitMinutes", 60))
     except (TypeError, ValueError):
-        raise TalosError(f"{path}: sweepMinutes and debounceSeconds must be numbers")
-    if sweep <= 0 or debounce < 0:
-        raise TalosError(f"{path}: sweepMinutes must be above 0 and debounceSeconds not below 0")
+        raise TalosError(f"{path}: sweepMinutes, debounceSeconds and autoMergeWaitMinutes must be numbers")
+    if sweep <= 0 or debounce < 0 or merge_wait < 0:
+        raise TalosError(f"{path}: sweepMinutes must be above 0, debounceSeconds and autoMergeWaitMinutes not below 0")
     orchestration = Orchestration(
         worker=str(raw["worker"]),
         milestone_prefix=prefix,
@@ -241,6 +249,9 @@ def _load_orchestrator(path, raw):
         auto_retry_reasons=tuple(reasons),
         max_auto_retries=numbers["maxAutoRetries"],
         fail_streak_limit=numbers["failStreakLimit"],
+        auto_merge_milestones=tuple(m.strip() for m in merge_milestones),
+        max_auto_merges_per_day=numbers["maxAutoMergesPerDay"],
+        auto_merge_wait_minutes=merge_wait,
     )
     return Agent(
         name=raw["name"], display_name=raw.get("displayName", raw["name"]), role=raw.get("role", ""),
