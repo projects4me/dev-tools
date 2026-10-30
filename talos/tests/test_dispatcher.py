@@ -1,6 +1,7 @@
 """Dispatcher with a stub tracker and runner: iteration limit, model choice, escalation, hand-offs."""
 
 import sys
+import json
 import tempfile
 import threading
 import unittest
@@ -275,6 +276,7 @@ class DispatcherTest(unittest.TestCase):
             outcome = dispatcher_mod.Dispatcher(make_agent(), tracker, "claude").handle(42)
         self.assertEqual(outcome, "failed")
         self.assertEqual(tracker.handoffs, [("pending", "1")])
+        self.assertEqual(self.reason(), "talos_error")
 
     def test_branch_checked_out_elsewhere_hands_back_without_a_run(self):
         tracker = StubTracker(make_issue())
@@ -287,7 +289,10 @@ class DispatcherTest(unittest.TestCase):
         self.assertEqual(outcome, "needs_input")
         self.assertEqual(tracker.handoffs, [("feedback", "1")])
         self.assertIn("checked out elsewhere", tracker.comments[0])
-        self.assertEqual(sessions.get("odysseus", 42), {})   # no run, no iteration
+        state = sessions.get("odysseus", 42)
+        self.assertEqual((state["runs"], state["handoff_reason"]), (0, "branch_checked_out"))   # no run, no iteration
+        self.assertEqual(json.loads(state["handoff_detail"])["branch"], "claude-issue-42")
+        self.assertEqual(json.loads(state["handoff_detail"])["repo"], "gaia")
 
     def test_gaia_pack_is_built_in_the_issue_workspace(self):
         seen = {}
@@ -335,6 +340,57 @@ class DispatcherTest(unittest.TestCase):
     def test_complex_issue_runs_on_opus(self):
         self.dispatch(make_issue(complexity="complex"), [result("needs_input")])
         self.assertEqual(self.models, ["opus"])
+
+    def reason(self):
+        return sessions.get("odysseus", 42)["handoff_reason"]
+
+    def test_agent_outcomes_record_their_reason(self):
+        self.dispatch(make_issue(), [result("needs_input")])
+        self.assertEqual(self.reason(), "agent_needs_input")
+        self.assertTrue(sessions.get("odysseus", 42)["handoff_at"])
+        self.dispatch(make_issue(), [result("blocked")])
+        self.assertEqual(self.reason(), "agent_blocked")
+
+    def test_escalation_at_the_top_model_is_agent_needs_input(self):
+        self.dispatch(make_issue(complexity="complex"), [result("escalate")])
+        self.assertEqual(self.reason(), "agent_needs_input")
+
+    def test_budget_stops_record_their_reason(self):
+        self.dispatch(make_issue(), [{"is_error": True, "subtype": "error_max_turns", "num_turns": 5}])
+        self.assertEqual(self.reason(), "turn_budget")
+        self.dispatch(make_issue(), [{"is_error": True, "subtype": "error_max_budget_usd"}])
+        self.assertEqual(self.reason(), "cost_budget")
+
+    def test_claude_error_and_missing_outcome_are_run_error(self):
+        self.dispatch(make_issue(), [{"is_error": True, "subtype": "exit 1", "result": "boom"}])
+        self.assertEqual(self.reason(), "run_error")
+        self.dispatch(make_issue(), [{"subtype": "success", "result": "hi"}])
+        self.assertEqual(self.reason(), "run_error")
+
+    def test_exception_around_the_runner_is_talos_error(self):
+        tracker = StubTracker(make_issue())
+
+        def boom(*a, **k):
+            raise RuntimeError("no claude")
+
+        with mock.patch.object(dispatcher_mod.runner, "run", boom):
+            dispatcher_mod.Dispatcher(make_agent(), tracker, "claude").handle(42)
+        self.assertEqual(self.reason(), "talos_error")
+
+    def test_iteration_limit_records_its_reason(self):
+        sessions.update("odysseus", 42, runs=10)
+        self.dispatch(make_issue(), [])
+        self.assertEqual(self.reason(), "iteration_limit")
+
+    def test_done_still_assigned_is_not_handed_back(self):
+        self.dispatch(make_issue(), [result("done")])
+        self.assertEqual(self.reason(), "not_handed_back")
+
+    def test_interrupted_run_records_its_reason(self):
+        sessions.update("odysseus", 42, running=True)
+        tracker = StubTracker(make_issue())
+        dispatcher_mod.Dispatcher(make_agent(), tracker, "claude").recover_interrupted()
+        self.assertEqual(self.reason(), "interrupted")
 
     def test_needs_input_hands_off_as_feedback(self):
         outcome, tracker = self.dispatch(make_issue(), [result("needs_input")])

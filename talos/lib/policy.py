@@ -172,19 +172,23 @@ def read_pr(result):
 
 
 def read_outcome(result, now=None):
-    """(outcome, summary, comment, handoff, reset_at) from a `claude -p --output-format json` result dict.
+    """(outcome, summary, comment, handoff, reset_at, reason) from a `claude -p --output-format json` result dict.
 
     A usage or rate-limit stop is the outcome LIMITED, with the time it resets (or None).
+
+    reason is the handback reason code for a stop that is not Claude's own outcome (turn_budget, cost_budget,
+    talos_error, run_error), else None; Claude's own needs_input and blocked map to agent_* by the caller.
 
     Missing or malformed structured output counts as a failure, never as success.
     """
     limited, reset_at = read_limit(result, now or datetime.now().astimezone())
     if limited:
-        return LIMITED, "Claude usage or rate limit reached", "", "", reset_at
+        return LIMITED, "Claude usage or rate limit reached", "", "", reset_at, None
     if not isinstance(result, dict):
-        return "failed", "no result from Claude", "", "", None
+        return "failed", "no result from Claude", "", "", None, "run_error"
     if result.get("subtype") in ("error_max_turns", "error_max_budget_usd"):
-        if result.get("subtype") == "error_max_turns":
+        turns = result.get("subtype") == "error_max_turns"
+        if turns:
             limit = f"{result.get('num_turns') or 'the'}-turn budget"
         else:
             cost = result.get("total_cost_usd")
@@ -192,15 +196,17 @@ def read_outcome(result, now=None):
         return ("needs_input", f"stopped at the {limit}",
                 f"<p>The run stopped at the {limit} before finishing, so nothing more is spent "
                 f"without a look. The session is kept: assign the issue back to continue where it stopped, "
-                f"or add a comment that narrows the work first.</p>", "", None)
+                f"or add a comment that narrows the work first.</p>", "", None,
+                "turn_budget" if turns else "cost_budget")
     if result.get("is_error") or result.get("subtype") not in (None, "success"):
         detail = result.get("result") or result.get("subtype") or "unknown error"
-        return "failed", f"Claude run ended with {result.get('subtype')}: {str(detail)[:1500]}", "", "", None
+        return ("failed", f"Claude run ended with {result.get('subtype')}: {str(detail)[:1500]}", "", "", None,
+                "talos_error" if result.get("subtype") == "talos error" else "run_error")
     out = result.get("structured_output")
     if not isinstance(out, dict) or out.get("outcome") not in OUTCOMES:
-        return "failed", "Claude finished without a valid outcome", str(result.get("result") or "")[:1500], "", None
+        return "failed", "Claude finished without a valid outcome", str(result.get("result") or "")[:1500], "", None, "run_error"
     return (out["outcome"], str(out.get("summary") or ""), str(out.get("comment") or ""),
-            str(out.get("handoff") or ""), None)
+            str(out.get("handoff") or ""), None, None)
 
 
 # -- Claude usage / rate limits ------------------------------------------------------------------

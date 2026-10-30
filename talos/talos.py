@@ -148,7 +148,7 @@ def cmd_reset(args):
     """Give an issue a fresh iteration allowance after a human has looked at it."""
     agent = load_agents(args.agent)[0]
     before = sessions.get(agent.name, args.issue)
-    fields = {"runs": 0}
+    fields = {"runs": 0, "auto_retries": 0}
     if args.model:
         fields["escalated"] = False
     sessions.update(agent.name, args.issue, **fields)
