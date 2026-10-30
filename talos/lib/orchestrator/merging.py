@@ -5,6 +5,7 @@ per sweep."""
 import html
 from datetime import datetime
 
+from .. import sessions
 from ..config import TalosError, log
 from . import policy
 from . import state as store
@@ -17,13 +18,15 @@ def _now():
 class MergeSweeper:
     """Merges as one orchestrator agent (kind orchestrator) for its worker (kind issues)."""
 
-    def __init__(self, agent, worker, tracker, merger, my_id, owners, now=_now, dry_run=False):
+    def __init__(self, agent, worker, tracker, merger, my_id, owners, now=_now, dry_run=False,
+                 worker_state=sessions.get):
         self.agent, self.worker, self.tracker = agent, worker, tracker
         self.settings = agent.orchestration
         self.merger = merger            # merge.Merger: find PRs, run the merge gate, merge
         self.my_id = str(my_id) if my_id else None   # the orchestrator's Gaia user: issues handed to it to merge
         self.owner = owners[0] if owners else None   # who gets an issue that isn't merged
         self.now, self.dry_run = now, dry_run
+        self.worker_state = worker_state    # the worker's Talos state per issue (conflict_noted: the keeper gave up)
         self.projects = list(worker.projects)
 
     def enabled(self):
@@ -63,10 +66,15 @@ class MergeSweeper:
         record, waited = self._wait_record(number, repo, pr["number"])
         merged_today = len(store.merges_on(self.agent.name, self.now()[:10]))
         gate = self.merger.check(repo, pr["number"])
-        step, why = policy.merge_step(gate.get("state"), waited, s.auto_merge_wait_minutes, merged_today,
+        # behind or conflicting only: the branch keeper brings it up to date or has it resolved, so wait for that,
+        # unless it already gave up on a conflict at this head
+        state = gate.get("state")
+        if policy.only_mergeability_fails(gate) and                 self.worker_state(self.worker.name, number).get("conflict_noted") != gate.get("sha"):
+            state = "pending"
+        step, why = policy.merge_step(state, waited, s.auto_merge_wait_minutes, merged_today,
                                       s.max_auto_merges_per_day)
         if step == policy.WAIT:
-            return "waiting (" + failing(gate, "pending") + ")"
+            return "waiting (" + failing(gate, "pending" if state == gate.get("state") else "fail") + ")"
         if step == policy.HAND_BACK:
             detail = why if gate.get("state") == "ok" else f"{why}: {failing(gate)}"
             return self._hand_back(issue, pr["number"], detail, record)

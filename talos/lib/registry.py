@@ -52,6 +52,7 @@ class Orchestration:
     auto_merge_milestones: tuple = ()   # milestones (exact name, any case) whose CodeRabbit-clean PRs it merges itself
     max_auto_merges_per_day: int = 5    # automatic merges per day; past it, PRs go to the reviewer
     auto_merge_wait_minutes: float = 60  # how long a still-pending merge gate (CI, CodeRabbit) is waited for
+    max_conflict_attempts: int = 1      # merge-conflict resolutions per issue handed to the worker (0 = none)
 
 
 @dataclass
@@ -224,7 +225,7 @@ def _load_orchestrator(path, raw):
         raise TalosError(f"{path}: autoMergeMilestones must be a list of milestone names")
     numbers = {}
     for key, default, least in (("maxInFlight", 0, 0), ("maxAutoRetries", 2, 0), ("failStreakLimit", 3, 1),
-                                ("maxAutoMergesPerDay", 5, 0)):
+                                ("maxAutoMergesPerDay", 5, 0), ("maxConflictAttempts", 1, 0)):
         try:
             numbers[key] = int(raw.get(key, default))
         except (TypeError, ValueError):
@@ -252,6 +253,7 @@ def _load_orchestrator(path, raw):
         auto_merge_milestones=tuple(m.strip() for m in merge_milestones),
         max_auto_merges_per_day=numbers["maxAutoMergesPerDay"],
         auto_merge_wait_minutes=merge_wait,
+        max_conflict_attempts=numbers["maxConflictAttempts"],
     )
     return Agent(
         name=raw["name"], display_name=raw.get("displayName", raw["name"]), role=raw.get("role", ""),

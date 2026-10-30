@@ -90,6 +90,9 @@ repo never switch branches under each other:
 - The workspace is sticky: uncommitted work survives a `needs_input` pause. `talos clean <issue>` removes it when
   the issue is finished (links, worktrees and folder; the branch stays), refusing uncommitted changes unless
   `--force`. Issues in the workspace repo itself (`pr4m`) run in the workspace root as before.
+- Before each run the branch follows GitHub when it moved ahead there (Agent Agamemnon brought it up to date with
+  its base): a clean worktree whose head GitHub's `claude-issue-N` contains is fast-forwarded
+  (`workspaces.follow_remote`); local changes or commits of its own leave it as it is.
 - Every run shares the workspace's Claude auto-memory (`~/.claude/projects/<workspace slug>/memory`, `lib/memory.py`):
   Talos passes `--settings {"autoMemoryDirectory": ...}`, so a run loads the team's `MEMORY.md` and its new memories
   land there, whatever its cwd. Nothing is linked, so `talos clean`/`gc` never reach the memory. Parallel runs write
@@ -402,6 +405,17 @@ and is `enabled: false` until the engineer turns it on.
   While Agamemnon is paused, issues already handed to it go to the reviewer instead of waiting. Merging lives in
   `lib/orchestrator/merging.py` (`MergeSweeper`), separate from feeding the worker. Each attempt is kept in
   talos.db (`auto_merges`); `talos status` lists today's automatic merges.
+- **Keeping agent PRs mergeable** (`lib/orchestrator/keeper.py`, every sweep while not paused): for each open
+  `claude-issue-N` PR in the worker's repos whose issue waits for a review or a merge (in_review, held by an owner
+  or by Agamemnon; never one the worker is on, with a run in flight, or checked out by hand outside `.runs`):
+  - *behind* its base: brought up to date on GitHub as Agamemnon (`update-branch`, a merge of the base, never a
+    rebase); CI and CodeRabbit run again on the new head.
+  - *conflicting*: handed to the worker with the one-off action `merge_conflict` (`next_action` in talos.db; see
+    Odysseus's `actions`): merge the base, resolve so both changes survive, run the suite, push, and end
+    `awaiting_bot_review` so CodeRabbit reviews the new head. Up to `maxConflictAttempts` (1) per issue; then the
+    owner is told once per PR head (an issue waiting to be merged automatically goes back to them). `talos reset`
+    allows another attempt.
+  An automatic merge whose gate fails only on mergeability waits for this instead of going to the reviewer.
 - **GitHub identity**: Agamemnon approves and merges as `agent-agamemnon`, through `dev-tools/agamemnon/agamemnon gh …`
   with the token in `agamemnon/agamemnon.env` (see `agamemnon/README.md`). `talos check --agent agamemnon` shows the
   login and fails when the token can't write to one of the worker's repos.
@@ -411,7 +425,8 @@ and is `enabled: false` until the engineer turns it on.
 Readable by other tools while Talos runs (WAL mode), e.g. a future Projects4Me UI panel.
 
 - `issues`: one row per agent and issue: session to resume, its cumulative cost, run count (toward
-  `maxIterations`), escalation, `running`, the live session id, `started_at`, `last_ended_at`.
+  `maxIterations`), escalation, `running`, the live session id, `started_at`, `last_ended_at`; why it was last
+  handed back; automatic restarts; an orchestrator's `next_action` for the next run; merge-conflict attempts.
 - `runs`: one row per Claude run, inserted when it starts (`ended_at` NULL while running): iteration, model,
   session, resumed or not, status at start, duration, outcome, summary, **`cost_usd` (this run alone)** and
   `session_cost_usd` (Claude reports a resumed session's cumulative cost; Talos subtracts what the session had

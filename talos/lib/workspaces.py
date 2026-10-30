@@ -121,6 +121,7 @@ def ensure(root, tools, issue, repo):
         unlink(folder / name)
     if not (folder / name / ".git").exists():
         _add_worktree(root / name, folder / name, issue, base_branch(repo))
+    follow_remote(folder / name, issue)
     # The `ai` wrapper hands over to <its folder>/../../.dev-tools-runtime when that exists, so this link sends
     # the run's `dev-tools/ai/ai` to the tooling Talos runs from, also when dev-tools/ is the issue's worktree.
     links = {RUNTIME_NAME: tools, **{n: root / n for n in LINKED}}
@@ -151,6 +152,27 @@ def _add_worktree(main, dest, issue, base):
         _git(main, "worktree", "add", str(dest), branch)
     else:
         _git(main, "worktree", "add", "-b", branch, str(dest), f"origin/{base}")
+
+
+def follow_remote(worktree, issue):
+    """Fast-forward claude-issue-N to the copy on GitHub when that moved ahead (Agent Agamemnon updates a PR branch
+    that fell behind its base) and the local branch has nothing of its own: a clean tree whose head GitHub's branch
+    contains. Anything else is left alone. Returns True when it moved the branch."""
+    branch = branch_name(issue)
+    _git(worktree, "fetch", "-q", "origin", branch, check=False)       # a branch never pushed has no copy: fine
+    remote = _git(worktree, "rev-parse", "--verify", "--quiet", f"refs/remotes/origin/{branch}", check=False)
+    if not remote or _git(worktree, "rev-parse", "HEAD", check=False) == remote:
+        return False
+    if _git(worktree, "status", "--porcelain", check=False) or not _succeeds(
+            worktree, "merge-base", "--is-ancestor", "HEAD", remote):
+        return False
+    _git(worktree, "merge", "--ff-only", "-q", remote)
+    print(f"talos: {branch} fast-forwarded to origin/{branch} ({remote[:7]})", file=sys.stderr)
+    return True
+
+
+def _succeeds(cwd, *args):
+    return subprocess.run(["git", *args], cwd=cwd, capture_output=True, stdin=subprocess.DEVNULL).returncode == 0
 
 
 def branch_holder(root, repo, issue):

@@ -62,12 +62,13 @@ def is_status_event(envelope):
 
 
 def decide(issue, agent, agent_user_id, require_allowed_modifier=False, dependency_statuses=None,
-           done_statuses=DONE_STATUSES):
+           done_statuses=DONE_STATUSES, action_override=None):
     """Whether the agent should work this issue now, from the issue as Gaia has it.
 
     require_allowed_modifier is for reconciliation, where there is no event telling us who
     assigned it: only act if the last person to change the issue is allowed to hand off work.
     dependency_statuses ({number: status}) covers the issue's "Depends on" issues; any not done hold it.
+    action_override names an action to run instead of the status's (an orchestrator's choice, e.g. merge_conflict).
     """
     if issue["assignee"] != agent_user_id:
         return Decision(False, "no longer assigned to the agent")
@@ -78,13 +79,14 @@ def decide(issue, agent, agent_user_id, require_allowed_modifier=False, dependen
         return Decision(False, f"milestone '{issue['milestone']}' is not one of {agent.milestones}")
     if require_allowed_modifier and issue["modifiedUser"] not in agent.accept_from:
         return Decision(False, "last changed by a user who can't hand this agent work")
-    action = agent.action_for(issue["status"])
+    override = agent.action_for(action_override) if action_override else None
+    action = override or agent.action_for(issue["status"])
     if not action:
         return Decision(False, f"no action for status '{issue['status']}'")
     waiting = unmet_dependencies(issue.get("dependsOn") or [], dependency_statuses or {}, done_statuses)
     if waiting:
         return Decision(False, "waiting on " + ", ".join(f"#{n}" for n in waiting), waiting_on=tuple(waiting))
-    return Decision(True, f"status '{issue['status']}'", action, repo)
+    return Decision(True, f"action '{action_override}'" if override else f"status '{issue['status']}'", action, repo)
 
 
 def choose_model(agent, issue, escalated=False):

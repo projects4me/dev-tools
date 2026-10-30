@@ -7,7 +7,7 @@ from . import db
 
 COLUMNS = ("session_id", "session_cost_usd", "running", "runs", "escalated", "last_model",
            "live_session_id", "started_at", "last_ended_at", "handoff_reason", "handoff_detail", "handoff_at",
-           "auto_retries")
+           "auto_retries", "next_action", "conflict_attempts", "conflict_noted")
 
 
 def get(agent, issue):

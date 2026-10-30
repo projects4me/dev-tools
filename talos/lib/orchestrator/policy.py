@@ -1,5 +1,7 @@
 """Orchestrator decisions as pure functions: which issues to feed the worker, in what order, and when to stop."""
 
+import re
+
 from ..dependency_gate import DONE_STATUSES, unmet_dependencies
 
 PRIORITIES = ("blocker", "critical", "high", "medium", "low")   # Gaia's, most urgent first
@@ -138,3 +140,57 @@ def merge_step(gate_state, waited_minutes, wait_limit, merged_today, daily_limit
             return HAND_BACK, f"the merge gate was still pending after {int(waited_minutes)} min"
         return WAIT, "the merge gate is pending"
     return HAND_BACK, "the merge gate failed"
+
+
+# -- keeping agent PRs mergeable --------------------------------------------------------------------
+
+UP_TO_DATE, BEHIND, CONFLICT, UNKNOWN = "up_to_date", "behind", "conflict", "unknown"
+RESOLVE, TELL, NOTHING = "resolve", "tell", "nothing"
+AGENT_BRANCH = re.compile(r"^claude-issue-(\d+)$")
+
+
+def issue_of_branch(name):
+    """The issue number of an agent branch (claude-issue-N), or None."""
+    match = AGENT_BRANCH.match(str(name or ""))
+    return int(match.group(1)) if match else None
+
+
+def mergeability(pr):
+    """CONFLICT, BEHIND, UNKNOWN (GitHub still computing) or UP_TO_DATE, from `gh pr list`'s mergeable and
+    mergeStateStatus."""
+    mergeable, merge_state = str(pr.get("mergeable") or ""), str(pr.get("mergeStateStatus") or "")
+    if mergeable == "CONFLICTING" or merge_state == "DIRTY":
+        return CONFLICT
+    if mergeable == "UNKNOWN" or merge_state == "UNKNOWN":
+        return UNKNOWN
+    if merge_state == "BEHIND":
+        return BEHIND
+    return UP_TO_DATE
+
+
+def keep_skip_reason(issue, projects, holders, worker_state):
+    """Why an agent PR's issue is left alone when its branch is behind or conflicts, or None. Only issues waiting for a
+    review or a merge (in_review, held by an owner or the orchestrator) are touched, never one the worker is on."""
+    if issue.get("project") not in projects:
+        return f"project '{issue.get('project')}' is not one of the worker's"
+    if _lower(issue.get("status")) != REVIEW_STATUS:
+        return f"status '{issue.get('status')}', not waiting for a review or a merge"
+    if issue.get("assignee") not in holders:
+        return "assigned to someone the orchestrator doesn't act for"
+    if (worker_state or {}).get("running"):
+        return "a run is in flight"
+    return None
+
+
+def conflict_step(attempts, max_attempts, noted_head, head):
+    """RESOLVE (hand it to the worker to merge the base and resolve), TELL (the attempts are used up: tell the owner,
+    once per PR head) or NOTHING."""
+    if int(attempts or 0) < max_attempts:
+        return RESOLVE
+    return TELL if noted_head != head else NOTHING
+
+
+def only_mergeability_fails(gate):
+    """The merge gate failed only because the branch conflicts or is behind: the keeper deals with that."""
+    failed = [c for c in gate.get("checks") or [] if c.get("state") == "fail"]
+    return gate.get("state") == "fail" and bool(failed) and all(c.get("name") == "mergeable" for c in failed)

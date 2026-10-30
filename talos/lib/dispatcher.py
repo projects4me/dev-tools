@@ -190,17 +190,24 @@ class Dispatcher:
             log(f"#{number} held: dependency status unreadable, retrying on the next status change ({e})",
                 self.agent.name)
             return "held"
+        override = sessions.get(self.agent.name, number).get("next_action") or None
         decision = policy.decide(issue, self.agent, self.user_id, require_allowed_modifier=reconcile,
-                                 dependency_statuses=statuses, done_statuses=self._deps.done_statuses)
+                                 dependency_statuses=statuses, done_statuses=self._deps.done_statuses,
+                                 action_override=override)
         if review and (decision.waiting_on or not decision.run):
             bot_review.drop(self.agent.name, number)    # held or not to be worked: out of the CodeRabbit loop
         if decision.waiting_on:
             return self._hold(number, decision, reconcile, dependencies)
         was_held = self._deps.clear(number)
+        if override:            # an orchestrator's one-off choice (e.g. merge_conflict): this run or none, never a
+            sessions.update(self.agent.name, number, next_action="")    # later, unrelated one
         if not decision.run:
             log(f"#{number} skipped: {decision.reason}" + (" (left the held set)" if was_held else ""),
                 self.agent.name)
             return None
+        if override and review:     # the orchestrator's action wins over a stale CodeRabbit round
+            bot_review.drop(self.agent.name, number)
+            review = {}
         bot_round = review.get("phase") == bot_review.ROUND
         if not bot_round:
             return self._work(number, issue, decision, decision.action)

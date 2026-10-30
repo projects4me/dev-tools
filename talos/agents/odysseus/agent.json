@@ -37,6 +37,10 @@
       "resume": true,
       "prompt": "The blocker on Projects4Me issue #{issue} ({project}, repo {repo}) should be resolved and {reviewer} assigned it back to you. Read the latest comments (dev-tools/ai/ai issue {issue}), make sure branch claude-issue-{issue} is checked out in {repo} (dev-tools/ai/ai start {repo} {issue} if not), restart the timer with dev-tools/ai/ai timer {issue}, then continue the work. When it is ready to ship, end with outcome ready_to_ship and a handoff note; Talos ships it in a fresh session."
     },
+    "merge_conflict": {
+      "resume": true,
+      "prompt": "Agent Agamemnon found that the PR for Projects4Me issue #{issue} ({project}, repo {repo}) conflicts with its base branch now that other work was merged, and gave the issue back to you to resolve it. Find the PR in the issue's comments (dev-tools/ai/ai issue {issue}); make sure branch claude-issue-{issue} is checked out in {repo} (dev-tools/ai/ai start {repo} {issue} if not); restart the timer with dev-tools/ai/ai timer {issue}. Then git fetch origin and merge the base branch (origin/dev; origin/main for dev-tools) into claude-issue-{issue}: merge, never rebase. Resolve every conflict so both changes survive: read the commits on the base branch that touched the conflicting lines and the issues and PRs they belong to. Run the full suite (dev-tools/ai/ai test {repo}), commit the merge as Agent Odysseus (dev-tools/odysseus/odysseus git commit) and push to the odysseus remote. End with outcome awaiting_bot_review and the PR number, so CodeRabbit reviews the new head. If a conflict needs a decision you can't make from the code and the issues, end with needs_input and explain it."
+    },
     "in_review": {
       "prompt": "{reviewer} reviewed the PR for Projects4Me issue #{issue} ({project}, repo {repo}) and assigned it back to you. Find the PR number in the issue's comments (dev-tools/ai/ai issue {issue}), restart the timer with dev-tools/ai/ai timer {issue}, then run /address-review {repo} <pr> {issue}."
     }
