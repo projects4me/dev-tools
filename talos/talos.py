@@ -18,6 +18,7 @@ from lib import runs as run_log
 from lib.config import LISTENER, STATE_DIR, TALOS_DIR, WORKSPACE, TalosError, claude_bin, log, settings
 from lib.dispatcher import Dispatcher, lease_file
 from lib.ideas import setup as ideas_setup
+from lib.orchestrator import github as orchestrator_github
 from lib.orchestrator import setup as orchestrator_setup
 from lib.orchestrator import state as orchestrator_state
 from lib.hermes import Listener
@@ -307,6 +308,9 @@ def cmd_check(args):
         report("sim (ideas)", sim)
     for agent in agents:
         report(f"agent {agent.name}", lambda a=agent: f"Gaia user {Tracker(a).user_id()}")
+        if agent.kind == "orchestrator":
+            report(f"github {agent.name}", lambda a=agent: orchestrator_github.check_identity(
+                load_agents(a.orchestration.worker)[0]))
     return 0 if ok else 1
 
 

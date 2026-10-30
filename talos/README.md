@@ -388,6 +388,9 @@ and is `enabled: false` until the engineer turns it on.
   stops still restarted automatically don't count; a run that ships or opens the PR ends the streak) it pauses
   itself. `talos pause|resume agamemnon` (resume also clears the streak); `talos status` shows its state and last
   sweep; `talos run --dry-run` only logs what it would do.
+- **GitHub identity**: Agamemnon approves and merges as `agent-agamemnon`, through `dev-tools/agamemnon/agamemnon gh …`
+  with the token in `agamemnon/agamemnon.env` (see `agamemnon/README.md`). `talos check --agent agamemnon` shows the
+  login and fails when the token can't write to one of the worker's repos.
 
 ## State: `state/talos.db` (SQLite)
 

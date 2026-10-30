@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# Run gh as Agent Agamemnon (the orchestrator that approves and merges agent PRs) without touching anyone's own
+# gh configuration.
+#   agamemnon gh pr review 12 --approve --repo Projects4Me/gaia   -> gh with the agent's token (GH_TOKEN from agamemnon.env)
+# Agamemnon never commits or pushes, so there is no git subcommand: Agent Odysseus writes the code.
+# Settings come from agamemnon.env (git-ignored; copy agamemnon.env.example and fill it in).
+set -euo pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# The runtime copy of dev-tools (`p4m runtime`) runs main's tooling while this checkout is worked;
+# P4M_RUNTIME=off runs this copy.
+RT="$HERE/../../.dev-tools-runtime/agamemnon/agamemnon"
+if [ "${P4M_RUNTIME:-}" != off ] && [ -f "$RT" ] && [ "$(cd "$(dirname "$RT")" && pwd)" != "$HERE" ]; then
+  exec bash "$RT" "$@"
+fi
+# agamemnon.env stays in <workspace>/dev-tools, also when this runs from the runtime copy (see `p4m runtime`).
+ENV_FILE="$(cd "$HERE/../.." && pwd)/dev-tools/agamemnon/agamemnon.env"
+if [ -f "$ENV_FILE" ]; then set -a; source "$ENV_FILE"; set +a; fi
+
+cmd="${1:-}"; shift || true
+case "$cmd" in
+  gh)
+    [ -n "${GH_TOKEN:-}" ] || { echo "GH_TOKEN is empty in $ENV_FILE (copy agamemnon.env.example and add the token)" >&2; exit 1; }
+    export GH_TOKEN
+    GH="$(command -v gh || true)"
+    [ -n "$GH" ] || [ ! -x "/c/Program Files/GitHub CLI/gh.exe" ] || GH="/c/Program Files/GitHub CLI/gh.exe"
+    [ -n "$GH" ] || { echo "GitHub CLI (gh) not found: install it (Ubuntu: sudo apt install gh)" >&2; exit 1; }
+    exec "$GH" "$@"
+    ;;
+  *)
+    echo "usage: agamemnon gh <args...>" >&2; exit 2
+    ;;
+esac

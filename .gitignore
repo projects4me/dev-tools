@@ -17,6 +17,7 @@ sim/config.local.json
 gaia-mcp/*.env
 !gaia-mcp/gaia-mcp.env.example
 odysseus/odysseus.env
+agamemnon/agamemnon.env
 talos/container.env
 
 # runtime state
