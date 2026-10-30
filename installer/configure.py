@@ -7,6 +7,7 @@ Asks once (re-running offers the previous answers as defaults) and then:
   - writes the engineer's own settings: ai/config.local.json (reviewer, timezone label),
     talos/config.local.json (Hermes URL) and talos/agents/odysseus/agent.local.json (Talos acts only on
     issues this engineer assigns, and hands work back to them),
+  - optionally sets up Agent Agamemnon, the orchestrator that feeds issues to Odysseus (skipped: it stays disabled),
   - registers the gaia MCP server with Claude Code and installs Talos' listener dependency,
   - checks each piece and reports what works.
 
@@ -34,6 +35,8 @@ ODYSSEUS_ENV = TOOLS_DIR / "odysseus" / "odysseus.env"
 AI_LOCAL = TOOLS_DIR / "ai" / "config.local.json"
 TALOS_LOCAL = TOOLS_DIR / "talos" / "config.local.json"
 AGENT_LOCAL = TOOLS_DIR / "talos" / "agents" / "odysseus" / "agent.local.json"
+AGAMEMNON_ENV = TOOLS_DIR / "gaia-mcp" / "agamemnon.env"
+AGAMEMNON_LOCAL = TOOLS_DIR / "talos" / "agents" / "agamemnon" / "agent.local.json"
 SSH_DIR = Path.home() / ".ssh"
 AGENT_KEY = SSH_DIR / "agent_odysseus"
 SSH_HOST = "github-odysseus"
@@ -158,6 +161,15 @@ def collect(previous, answers):
     have_key = AGENT_KEY.exists()
     a["sshKey"] = ask("Path to the agent's SSH private key" + (" (Enter keeps the installed one)" if have_key else ""),
                       "" if have_key else None, answers=answers, key="sshKey")
+    _say("\nAgent Agamemnon (optional: the orchestrator that feeds issues to Odysseus; the team lead shares these)")
+    ag_env = read_env(AGAMEMNON_ENV)
+    a["agamemnon"] = str(ask("Set up Agent Agamemnon? (yes/no)", previous.get("agamemnon") or "no",
+                             answers=answers, key="agamemnon")).strip().lower() in ("y", "yes", "true", "1")
+    if a["agamemnon"]:
+        a["agamemnonEmail"] = ask("Agamemnon Projects4Me email", ag_env.get("GAIA_EMAIL") or "agent.agamemnon@projects4.me",
+                                  answers=answers, key="agamemnonEmail")
+        a["agamemnonPassword"] = ask("Agamemnon Projects4Me password", ag_env.get("GAIA_PASSWORD"), SECRET,
+                                     answers, "agamemnonPassword")
     return a
 
 
@@ -262,8 +274,45 @@ def write_engineer_settings(a, user_id):
     talos = json.loads(TALOS_LOCAL.read_text(encoding="utf-8")) if TALOS_LOCAL.exists() else {}
     talos["hermesUrl"] = a["hermesUrl"]
     write_json(TALOS_LOCAL, talos)
-    write_json(AGENT_LOCAL, {"acceptAssignmentsFrom": [user_id], "handoffTo": user_id, "reviewerName": a["name"]})
+    ody = json.loads(AGENT_LOCAL.read_text(encoding="utf-8")) if AGENT_LOCAL.exists() else {}
+    accepted = [str(x) for x in ody.get("acceptAssignmentsFrom", [])]   # keep ids added earlier (Agamemnon's)
+    ody.update({"acceptAssignmentsFrom": accepted + ([user_id] if user_id not in accepted else []),
+                "handoffTo": user_id, "reviewerName": a["name"]})
+    write_json(AGENT_LOCAL, ody)
     _ok(f"Talos acts on issues you assign and hands back to you -> {AGENT_LOCAL.relative_to(TOOLS_DIR)}")
+
+
+def setup_agamemnon(a, user_id):
+    """Switch on Agent Agamemnon: its credentials, its Talos settings (owned by this engineer, enabled) and its
+    user id among the ids Odysseus accepts assignments from. Skipped: Agamemnon stays disabled. Re-running changes
+    nothing that is already right; ids already in acceptAssignmentsFrom are kept."""
+    if not a.get("agamemnon"):
+        _ok("Agent Agamemnon skipped (disabled)")
+        return
+    write_private(AGAMEMNON_ENV, "\n".join([
+        "# Written by `dev-tools/installer/p4m configure` (Agent Agamemnon). Git-ignored.",
+        f"GAIA_URL={a['gaiaUrl']}", f"GAIA_UI_URL={a['appUrl']}",
+        f"GAIA_EMAIL={a['agamemnonEmail']}", f"GAIA_PASSWORD={a['agamemnonPassword']}",
+        f"GAIA_CLIENT_ID={a['clientId']}", f"GAIA_CLIENT_SECRET={a['clientSecret']}", ""]))
+    _ok(f"Agamemnon credentials -> {AGAMEMNON_ENV.relative_to(TOOLS_DIR)}")
+    sub = dict(a, agentEmail=a["agamemnonEmail"], agentPassword=a["agamemnonPassword"])
+    server, g = gaia_client(sub)
+    try:
+        users = g.find("user", f"(User.email : {a['agamemnonEmail']})", limit=1)
+    except server.GaiaError as e:
+        raise SystemExit(f"p4m configure: could not sign in to {a['gaiaUrl']} as {a['agamemnonEmail']}: {e}")
+    if not users:
+        raise SystemExit(f"p4m configure: signed in, but no user record was found for {a['agamemnonEmail']}")
+    ag_id = str(users[0]["id"])
+    _ok(f"Agamemnon is Gaia user {ag_id} ({users[0].get('name')}) on {a['gaiaUrl']}")
+    write_json(AGAMEMNON_LOCAL, {"enabled": True, "owners": [user_id]})
+    _ok(f"Agamemnon enabled, owned by you -> {AGAMEMNON_LOCAL.relative_to(TOOLS_DIR)}")
+    ody = json.loads(AGENT_LOCAL.read_text(encoding="utf-8")) if AGENT_LOCAL.exists() else {}
+    accepted = [str(x) for x in ody.get("acceptAssignmentsFrom", [])]
+    if ag_id not in accepted:
+        ody["acceptAssignmentsFrom"] = accepted + [ag_id]
+        write_json(AGENT_LOCAL, ody)
+    _ok(f"Odysseus accepts assignments from Agamemnon ({ag_id})")
 
 
 def find_claude():
@@ -374,9 +423,11 @@ def main(argv=None):
     add_remotes()
     user_id = resolve_engineer(a, previous, answers)
     write_engineer_settings(a, user_id)
+    setup_agamemnon(a, user_id)
     register_mcp()
     install_talos_deps()
-    write_json(ANSWERS, {k: v for k, v in a.items() if k not in ("clientSecret", "agentPassword", "ghToken", "sshKey")}
+    write_json(ANSWERS, {k: v for k, v in a.items()
+                         if k not in ("clientSecret", "agentPassword", "ghToken", "sshKey", "agamemnonPassword")}
                | {"gaiaUserId": user_id})
     if not args.skip_checks:
         verify(a)
