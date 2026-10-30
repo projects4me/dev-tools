@@ -19,7 +19,8 @@ ship.json:
   "migration":  "markdown",                        optional, default "None"
   "outOfScope": "markdown",                        optional
   "notes":      "<p>html</p>",                     tracker notes: decisions, deviations, follow-ups
-  "timeNote":   "what the last stretch covered"    optional
+  "timeNote":   "what the last stretch covered",   optional
+  "sizeReason": "why this can't be split"          required over 15 hand-written files
 }
 """
 
@@ -27,8 +28,8 @@ import html
 import json
 from pathlib import Path
 
-from . import coderabbit, cost, gaiapack, results, workflow
-from .common import (AiError, PROJECT_FOR_REPO, REPOS, STATE_DIR, base_branch, config, git, ody, say)
+from . import coderabbit, cost, gaiapack, results, sizecheck, workflow
+from .common import (AiError, PROJECT_FOR_REPO, REPOS, STATE_DIR, base_branch, config, git, ody, say, tracker_call)
 
 SHORTCODE = {"A Gaia": "agaia", "A Prometheus": "aprom", "A Hermes": "ah", "A Ares": "aa", "A Dev Tool": "adt"}
 REQUIRED = ("title", "files", "what", "why")
@@ -141,9 +142,21 @@ def cost_warning(repo, issue):
         return None
 
 
+def size_result(repo, issue, spec):
+    """The size gate for the spec's files; the issue's "Estimated files: N" is shown when the tracker has it."""
+    try:
+        estimate = sizecheck.estimate_from(tracker_call("get_issue", issue_number=issue).get("description"))
+    except Exception:  # noqa: BLE001 - the estimate is only shown, never required
+        estimate = None
+    result = sizecheck.check(spec["files"], spec.get("sizeReason"), estimate)
+    say(result["warning"] or result["line"])
+    return result
+
+
 def cmd_ship(args):
     repo, issue = args.repo, args.issue
     spec = load_spec(args.file)
+    size = size_result(repo, issue, spec)
     ref = issue_ref(repo, issue)
     if not config().get("reviewer"):            # before anything is posted
         raise AiError("no reviewer configured: run `dev-tools/installer/p4m configure` (sets ai/config.local.json)")
@@ -185,7 +198,7 @@ def cmd_ship(args):
     if args.defer_handoff and not defer:
         say(f"CodeRabbit not enabled for {repo}: handing off now (in_review), nothing to wait for; "
             f"finish as done, not awaiting_bot_review")
-    notes += cost_note(issue) + (f"<p>{html.escape(warning)}</p>" if warning else "")
+    notes += sizecheck.tracker_note(size) + cost_note(issue) + (f"<p>{html.escape(warning)}</p>" if warning else "")
     workflow.pr_hand_off(issue, progress["pr"], git(repo, "rev-parse", "--short", "HEAD"),
                          git(repo, "rev-parse", "--short", f"origin/{base_branch(repo)}"),
                          spec.get("timeNote") or f"commit and PR ({spec['title']})", notes_html=notes,
