@@ -328,6 +328,7 @@ function renderPlan(plans) {
           el("span", {}, icon(issue.complexity === "complex" ? "cogs" : "cog"), ` ${issue.complexity}`),
           el("span", { title: issue.newMilestone ? "Created in the project on approval" : "" }, icon("flag-o"),
             ` ${issue.milestone || "Claude-v1"}${issue.newMilestone ? " (new)" : ""}`),
+          issue.estimatedFiles ? el("span", { title: issue.sizeReason || "" }, icon("file-o"), ` ${issue.estimatedFiles} files`) : null,
           issue.dependsOn.length ? el("span", {}, icon("level-up"), ` after ${issue.dependsOn.join(", ")}`) : null,
           (issue.screens || []).length ? el("span", {}, icon("picture-o"), ` ${issue.screens.join(", ")}`) : null,
           c ? el("a", { href: c.url, target: "_blank", rel: "noopener" }, icon("external-link"), ` ${c.project_code}-${c.number}`)

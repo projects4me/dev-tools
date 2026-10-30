@@ -39,7 +39,7 @@ def make_agent(**overrides):
 
 def issue(key, project="A Gaia", depends=(), **kw):
     return {"key": key, "project": project, "subject": f"Do {key}", "description": f"<p>{key}</p>",
-            "complexity": "simple", "dependsOn": list(depends), **kw}
+            "complexity": "simple", "dependsOn": list(depends), "estimatedFiles": 3, **kw}
 
 
 def block(*issues, summary="Build it"):
@@ -125,6 +125,25 @@ class PlanTest(unittest.TestCase):
             plan.parse(json.dumps(bad), PROJECTS)
         for part in ("summary", "key", "project", "complexity", "missing", "used twice"):
             self.assertIn(part, str(e.exception))
+
+    def test_estimated_files(self):
+        def parse(**kw):
+            return plan.parse(json.dumps({"summary": "s", "issues": [issue("a", **kw)]}), PROJECTS)["issues"][0]
+        self.assertEqual(parse(estimatedFiles=7)["estimatedFiles"], 7)
+        got = parse(estimatedFiles=12, sizeReason="  one  migration ")
+        self.assertEqual((got["estimatedFiles"], got["sizeReason"]), (12, "one migration"))
+        self.assertEqual(parse(estimatedFiles=15, sizeReason="x")["estimatedFiles"], 15)
+        self.assertEqual(parse(estimatedFiles=10)["sizeReason"], "")
+        for bad in ("3", 3.5, 0, -1, True):
+            with self.assertRaisesRegex(ValueError, "estimatedFiles"):
+                parse(estimatedFiles=bad)
+        with self.assertRaisesRegex(ValueError, "sizeReason"):
+            parse(estimatedFiles=11)
+        with self.assertRaisesRegex(ValueError, "split"):
+            parse(estimatedFiles=16, sizeReason="x")
+        raw = {"summary": "s", "issues": [{k: v for k, v in issue("a").items() if k != "estimatedFiles"}]}
+        with self.assertRaisesRegex(ValueError, "estimatedFiles"):
+            plan.parse(json.dumps(raw), PROJECTS)
 
     def test_cycles_and_order(self):
         with self.assertRaisesRegex(ValueError, "circular"):
@@ -499,7 +518,8 @@ class IdeasFlowTest(TempDb):
         self.worker.handle(("approve", 7, plan_id))
         made = {s: d for s, d, _ in self.tracker.created}
         self.assertEqual(sorted(made), ["Do ui", "External Request: Do again", "External Request: Do api"])
-        self.assertEqual(made["Do ui"], "<p>ui</p><p><strong>Depends on:</strong> agaia-5001</p>")
+        self.assertEqual(made["Do ui"], "<p>ui</p><p><strong>Depends on:</strong> agaia-5001</p>"
+                         "<p><strong>Estimated files:</strong> 3</p>")
         self.assertTrue(made["External Request: Do api"].startswith(
             '<p><strong>External Request</strong> from A Prometheus (idea "Recurring issues", raised by Hammad Hassan)'))
         self.assertEqual(made["External Request: Do again"].count("External Request</strong>"), 1)
