@@ -15,7 +15,7 @@ from typing import Callable
 
 from .. import workspaces
 from ..orchestrator import state as orchestrator_state
-from . import journal, verbs
+from . import journal, narrative, verbs
 from .verbs import Refused
 
 LOG_LINES = 80
@@ -94,7 +94,20 @@ class Aga:
         at = stamp(self.p.now())
         action_id = journal.record(incident["id"], incident["issue"], verb.name, args, act.before, act.after,
                                    str(why).strip(), act.undo, act.undo_note, at)
-        return {**act.result, "action": action_id, "undo": act.undo_note}
+        out = {**act.result, "action": action_id, "undo": act.undo_note}
+        out["comment"] = self._post_comment(verb.name, args, str(why).strip(), act, action_id)
+        return out
+
+    def _post_comment(self, verb_name, args, why, act, action_id):
+        """The issue's own record of the action. The action is already done and journaled, so a failed comment is
+        reported in the result instead of raised."""
+        try:
+            self.p.tracker.comment(self.number, narrative.title(self.s, verb_name),
+                                   narrative.body(self.s, self.incident, verb_name, args, why, act.result,
+                                                  action_id, act.undo_note))
+            return "posted"
+        except Exception as e:      # noqa: BLE001
+            return f"not posted: {e}"
 
     # -- shared reads ----------------------------------------------------------------------
 

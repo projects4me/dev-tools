@@ -357,3 +357,31 @@ class WorkspaceVerbTest(AgaTest):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CommentTest(AgaTest):
+    def test_acting_verb_comments_on_the_issue(self):
+        out = self.aga("ci_failed", "retry", why="CI flaked")
+        self.assertEqual(out["comment"], "posted")
+        number, title, body = self.tracker.comments[-1]
+        self.assertEqual((number, title), (ISSUE, "Agent Agamemnon: retry"))
+        for text in ("ci_failed", "CI flaked", f"talos agamemnon undo {out['action']}", "Agent Odysseus"):
+            self.assertIn(text, body)
+
+    def test_irreversible_action_says_so(self):
+        self.tracker.issues[ISSUE]["assignee"] = OWNER
+        self.merger.merge_result = {"state": "ok", "sha": "abc", "merged": "def"}
+        self.aga("everything", "merge", why="green")
+        body = self.tracker.comments[-1][2]
+        self.assertNotIn("talos agamemnon undo", body)
+        self.assertIn("cannot be undone", body)
+
+    def test_reads_do_not_comment(self):
+        self.aga("ci_failed", "status")
+        self.assertEqual(self.tracker.comments, [])
+
+    def test_failed_comment_does_not_undo_the_action(self):
+        self.tracker.comment = mock.Mock(side_effect=RuntimeError("gaia down"))
+        out = self.aga("ci_failed", "retry", why="x")
+        self.assertIn("not posted", out["comment"])
+        self.assertEqual(len(journal.actions()), 1)
