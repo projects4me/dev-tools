@@ -1,0 +1,38 @@
+{
+  "tiers": {
+    "read": "look only: read state, logs and gate output",
+    "wait": "wait for a resource or a retry delay",
+    "retry": "re-run a step Talos or CI already ran",
+    "restore": "back up and restore known generated files in a workspace",
+    "handoff": "hand the issue to Odysseus or resolve a conflict through it",
+    "pause": "pause dispatch",
+    "notify": "tell the owner"
+  },
+  "incidents": {
+    "test_contention": {
+      "tiers": ["read", "wait", "retry"],
+      "does": "wait for a free test slot, then retry"
+    },
+    "ci_failed": {
+      "tiers": ["read", "retry", "handoff"],
+      "does": "re-run the failed job, then hand the issue to Odysseus"
+    },
+    "merge_conflict": {
+      "tiers": ["read", "handoff"],
+      "does": "resolve the conflict (see the conflict issue) or hand the issue to Odysseus"
+    },
+    "dirty_generated": {
+      "tiers": ["read", "restore"],
+      "does": "back up and restore the known generated files",
+      "generatedFiles": []
+    },
+    "docker_down": {
+      "tiers": ["read", "pause", "notify"],
+      "does": "detect, pause dispatch and notify the owner; starting Docker is not in the premise"
+    },
+    "handback_failed": {
+      "tiers": ["read", "retry"],
+      "does": "retry the handback"
+    }
+  }
+}

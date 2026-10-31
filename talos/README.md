@@ -416,6 +416,12 @@ and is `enabled: false` until the engineer turns it on.
     owner is told once per PR head (an issue waiting to be merged automatically goes back to them). `talos reset`
     allows another attempt.
   An automatic merge whose gate fails only on mergeability waits for this instead of going to the reviewer.
+- **Premise and incident packet** (`lib/agamemnon/`, groundwork for Agamemnon as an AI agent): `agents/agamemnon/premise.json`
+  lists the incident types it may handle (`test_contention`, `ci_failed`, `merge_conflict`, `dirty_generated`,
+  `docker_down`, `handback_failed`), each with its allowed tool tiers; anything not listed goes to the owner. Widening it
+  is a config change. `classifier.classify(reason, summary, log_tail)` maps a handback to an incident type or `other`;
+  `packet.build(...)` assembles the JSON packet the agent is given (issue, PR, handback, run summary and log tail,
+  mergecheck, git and Docker state, the other in-flight issues' files, its earlier comments). Nothing acts on them yet.
 - **GitHub identity**: Agamemnon approves and merges as `agent-agamemnon`, through `dev-tools/agamemnon/agamemnon gh …`
   with the token in `agamemnon/agamemnon.env` (see `agamemnon/README.md`). `talos check --agent agamemnon` shows the
   login and fails when the token can't write to one of the worker's repos.
