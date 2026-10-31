@@ -55,6 +55,10 @@ class Orchestration:
     auto_merge_wait_minutes: float = 60  # how long a still-pending merge gate (CI, CodeRabbit) is waited for
     max_conflict_attempts: int = 1      # merge-conflict resolutions per issue handed to the worker (0 = none)
     overlap_ignore: tuple = OVERLAP_IGNORE   # globs of files that never hold an issue (generated, additive registries)
+    aga_max_actions: int = 5            # `aga` actions per incident (reads don't count)
+    aga_wait_max_minutes: float = 30    # the longest `aga wait-for` waits
+    aga_poll_seconds: float = 30        # how often `aga wait-for` looks again
+    aga_hold_until_hour: int = 6        # `aga hold-until-tomorrow` gives the issue back at this hour (local time)
 
 
 @dataclass
@@ -230,7 +234,8 @@ def _load_orchestrator(path, raw):
         raise TalosError(f"{path}: autoMergeMilestones must be a list of milestone names")
     numbers = {}
     for key, default, least in (("maxInFlight", 0, 0), ("maxAutoRetries", 2, 0), ("failStreakLimit", 3, 1),
-                                ("maxAutoMergesPerDay", 5, 0), ("maxConflictAttempts", 1, 0)):
+                                ("maxAutoMergesPerDay", 5, 0), ("maxConflictAttempts", 1, 0),
+                                ("agaMaxActionsPerIncident", 5, 0), ("agaHoldUntilHour", 6, 0)):
         try:
             numbers[key] = int(raw.get(key, default))
         except (TypeError, ValueError):
@@ -241,10 +246,16 @@ def _load_orchestrator(path, raw):
         sweep = float(raw.get("sweepMinutes", 5))
         debounce = float(raw.get("debounceSeconds", 5))
         merge_wait = float(raw.get("autoMergeWaitMinutes", 60))
+        aga_wait = float(raw.get("agaWaitMaxMinutes", 30))
+        aga_poll = float(raw.get("agaPollSeconds", 30))
     except (TypeError, ValueError):
-        raise TalosError(f"{path}: sweepMinutes, debounceSeconds and autoMergeWaitMinutes must be numbers")
+        raise TalosError(f"{path}: sweepMinutes, debounceSeconds, autoMergeWaitMinutes, agaWaitMaxMinutes and "
+                         f"agaPollSeconds must be numbers")
     if sweep <= 0 or debounce < 0 or merge_wait < 0:
         raise TalosError(f"{path}: sweepMinutes must be above 0, debounceSeconds and autoMergeWaitMinutes not below 0")
+    if aga_wait < 0 or aga_poll <= 0 or numbers["agaHoldUntilHour"] > 23:
+        raise TalosError(f"{path}: agaWaitMaxMinutes may not be below 0, agaPollSeconds must be above 0 and "
+                         f"agaHoldUntilHour an hour from 0 to 23")
     orchestration = Orchestration(
         worker=str(raw["worker"]),
         milestone_prefix=prefix,
@@ -260,6 +271,10 @@ def _load_orchestrator(path, raw):
         auto_merge_wait_minutes=merge_wait,
         max_conflict_attempts=numbers["maxConflictAttempts"],
         overlap_ignore=tuple(g.strip() for g in overlap_ignore),
+        aga_max_actions=numbers["agaMaxActionsPerIncident"],
+        aga_wait_max_minutes=aga_wait,
+        aga_poll_seconds=aga_poll,
+        aga_hold_until_hour=numbers["agaHoldUntilHour"],
     )
     return Agent(
         name=raw["name"], display_name=raw.get("displayName", raw["name"]), role=raw.get("role", ""),

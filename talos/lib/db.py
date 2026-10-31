@@ -119,6 +119,36 @@ CREATE TABLE IF NOT EXISTS overlap_holds (
     checked_at          TEXT,                   -- the latest sweep that found the overlap
     PRIMARY KEY (agent, issue)
 );
+CREATE TABLE IF NOT EXISTS aga_incidents (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    issue               INTEGER NOT NULL,
+    type                TEXT    NOT NULL,       -- the incident type (premise.json)
+    opened_at           TEXT,
+    closed_at           TEXT,                   -- NULL while open: aga acts only for an open incident
+    note                TEXT                    -- how it ended
+);
+CREATE TABLE IF NOT EXISTS aga_actions (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    incident            INTEGER NOT NULL,       -- aga_incidents.id
+    issue               INTEGER NOT NULL,
+    verb                TEXT    NOT NULL,
+    args                TEXT,                   -- JSON
+    state_before        TEXT,                   -- JSON: SHAs, statuses, assignees the verb read before acting
+    state_after         TEXT,                   -- JSON: the same after acting; undo refuses when it has moved since
+    why                 TEXT,                   -- the reasoning given
+    undo                TEXT,                   -- JSON undo operation, NULL when the action cannot be undone
+    undo_note           TEXT,                   -- the undo command, or why there is none
+    at                  TEXT,
+    undone_at           TEXT,
+    undone_note         TEXT
+);
+CREATE TABLE IF NOT EXISTS aga_holds (
+    issue               INTEGER PRIMARY KEY,
+    until               TEXT    NOT NULL,       -- given back to the worker by the orchestrator's sweep after this
+    assignee            TEXT,                   -- who had the issue before the hold
+    released_at         TEXT
+);
+CREATE INDEX IF NOT EXISTS aga_actions_by_at ON aga_actions (at);
 CREATE INDEX IF NOT EXISTS auto_merges_by_issue ON auto_merges (agent, issue);
 CREATE INDEX IF NOT EXISTS runs_by_issue ON runs (agent, issue);
 CREATE INDEX IF NOT EXISTS runs_by_start ON runs (started_at);

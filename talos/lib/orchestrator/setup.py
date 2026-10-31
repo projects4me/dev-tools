@@ -3,6 +3,7 @@
 import dataclasses
 
 from .. import policy, workspaces
+from ..agamemnon.holds import release_due
 from ..config import WORKSPACE, TalosError, log
 from ..hermes import Listener
 from ..registry import load_agents
@@ -14,7 +15,7 @@ from .keeper import BranchKeeper
 from .merge import Merger
 from .merging import MergeSweeper
 from .overlap import IssueFiles, OverlapGate
-from .worker import Orchestrator
+from .worker import Orchestrator, _now
 
 
 class MergeRoute:
@@ -68,8 +69,9 @@ def start(agent, cfg, dry_run):
     keeper = BranchKeeper(agent, worker, tracker, github.agamemnon_gh, worker_id, me, owners,
                           lambda repo, issue: workspaces.branch_holder(WORKSPACE, repo, issue), dry_run=dry_run)
     overlap = OverlapGate(agent, worker, tracker, IssueFiles(tracker.child_env), dry_run=dry_run)
+    holds = lambda: release_due(tracker, worker_id, me, _now(), agent.name, dry_run)    # noqa: E731
     orchestrator = Orchestrator(agent, worker, tracker, worker_id, dry_run=dry_run, merges=merges, keeper=keeper,
-                                overlap=overlap)
+                                overlap=overlap, holds=holds)
     orchestrator.start()
     Listener(agent, tracker, [policy.ASSIGNEE_EVENT, policy.STATUS_EVENT], orchestrator.on_event,
              orchestrator.on_ready, cfg["hermesUrl"], cfg.get("nodeBin", "node"),

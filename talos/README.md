@@ -431,6 +431,31 @@ and is `enabled: false` until the engineer turns it on.
   is a config change. `classifier.classify(reason, summary, log_tail)` maps a handback to an incident type or `other`;
   `packet.build(...)` assembles the JSON packet the agent is given (issue, PR, handback, run summary and log tail,
   mergecheck, git and Docker state, the other in-flight issues' files, its earlier comments). Nothing acts on them yet.
+- **The `aga` tool** (`dev-tools/agamemnon/aga <verb>`, `talos/aga.py`, `lib/agamemnon/`): the only way an Agamemnon
+  session acts (raw git, gh and the Gaia write tools are to be denied in its session). The session gets the id of an
+  open incident in `AGA_INCIDENT` (`journal.open_incident`); the issue and the incident type are read from talos.db,
+  never from the command line. Every verb checks, and refuses (exit 3, `{"refused": …}`, nothing done) otherwise:
+  the premise grants its tier for the incident type, the issue is in an `aga-` milestone, an acting verb has a
+  `--why` and the incident has taken fewer than `agaMaxActionsPerIncident` (5) actions; then its own preconditions.
+  - Level 0, read (tier `read`, not journaled): `status`, `logs`, `diff`, `mergecheck`, `workspace`, `overlap`.
+  - Level 1, reversible and private: `backup` (tier `restore`: commits the workspace's tracked and untracked files
+    through a scratch index to `refs/agamemnon/backup/<issue>/<time>` and pushes it as Odysseus; never `git
+    stash`), `restore <files>` (tier `restore`: only the incident's `generatedFiles` in the premise, only after a
+    backup in the same incident), `retry` and `rerun-ci` (tier `retry`), `wait-for <issue>|slot` (tier `wait`, at
+    most `agaWaitMaxMinutes`, polling every `agaPollSeconds`), `hold-until-tomorrow` (tier `wait`: assigned to
+    Agamemnon until `agaHoldUntilHour` (6:00) the next day, when the orchestrator's sweep gives it to the worker;
+    not for in_review issues), `send --notes` (tier `handoff`: a comment, then assigned to the worker).
+  - Level 2, reversible and visible: `update-branch` and `push-merge` (tier `update`: a merge of the base on GitHub,
+    never a rebase; a committed merge pushed only as a fast-forward), `merge` (tier `merge`: through `ai merge` and
+    its gate, only for `autoMergeMilestones`, within `maxAutoMergesPerDay` together with the automatic merges).
+    The premise grants `update` and `merge` to no incident type yet.
+  - Level 3 has no verb: force push, deleting branches or workspaces with unpushed work, closing PRs, writing
+    main/dev, changing config or limits.
+- **Action journal and undo**: each acting verb is a row in `aga_actions` (incident, issue, verb, arguments, the state
+  before and after: SHAs, statuses, assignees, the reasoning, and how to undo it). `talos agamemnon log [--since
+  <time>] [--issue N] [--json]` lists them; `talos agamemnon undo <id>` or `undo --since <time>` (newest first,
+  stopping at the first refusal) undoes them, refusing where the state has moved since the action. Pushes, branch
+  updates and merges cannot be undone there (that needs a force push or a revert, level 3).
 - **GitHub identity**: Agamemnon approves and merges as `agent-agamemnon`, through `dev-tools/agamemnon/agamemnon gh …`
   with the token in `agamemnon/agamemnon.env` (see `agamemnon/README.md`). `talos check --agent agamemnon` shows the
   login and fails when the token can't write to one of the worker's repos.
@@ -451,6 +476,8 @@ Readable by other tools while Talos runs (WAL mode), e.g. a future Projects4Me U
   the last engineer message a turn has taken in, `last_ended_at`.
 - `orchestrators` / `orchestrated`: per orchestrator, paused or not (and why), its failure streak and last sweep;
   the issues it assigned, to whom and when.
+- `aga_incidents` / `aga_actions` / `aga_holds`: Agamemnon's incidents, its action journal (state before and after,
+  reasoning, undo) and the issues `aga hold-until-tomorrow` holds.
 - `auto_merges`: one row per automatic merge attempt: issue, repo, PR, when it was first seen, and how it ended
   (merged with its merge commit, or handed back with the reason).
 - `bot_reviews`: one row per issue in the CodeRabbit loop: repo, PR, the issue's status when the wait began,
