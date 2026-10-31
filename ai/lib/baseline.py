@@ -8,9 +8,10 @@ branch being worked on is never touched.
 import json
 import shutil
 
-from .common import AiError, STATE_DIR, git, p4m, run, say
+from .common import AiError, STATE_DIR, git, p4m, run, say, state_locked
 
 BASELINE_DIR = STATE_DIR / "baseline"
+LOCK_WAIT = 3 * 3600         # another run's baseline runs whole suites: wait for it rather than fail
 
 
 def _file(repo):
@@ -53,7 +54,21 @@ def worktree(repo, sha):
 
 
 def require(repo, sha, suites, runner):
-    """Make sure the baseline has `suites` for `sha`, running the missing ones with runner(suite, src)."""
+    """Make sure the baseline has `suites` for `sha`, running the missing ones with runner(suite, src).
+    Parallel Talos runs share the baseline worktree and its test container, so one run at a time fills it;
+    the others then find the suites it recorded."""
+    try:
+        with state_locked(f"baseline-{repo}", wait_seconds=LOCK_WAIT,
+                          waiting=f"waiting for another run's {repo} baseline"):
+            return _require(repo, sha, suites, runner)
+    except AiError:
+        have = load(repo, sha)      # the run holding the lock may have recorded what this one needs
+        if all(s in have for s in suites):
+            return have
+        raise
+
+
+def _require(repo, sha, suites, runner):
     have = load(repo, sha)
     missing = [s for s in suites if s not in have]
     if not missing:

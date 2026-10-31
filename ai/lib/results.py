@@ -7,7 +7,7 @@ import hashlib
 import json
 import subprocess
 
-from .common import STATE_DIR, git, repo_dir
+from .common import STATE_DIR, checkout_state_file, git, repo_dir
 
 
 def tree_fingerprint(repo, rev="HEAD"):
@@ -25,7 +25,8 @@ def tree_fingerprint(repo, rev="HEAD"):
 
 
 def _file(repo):
-    return STATE_DIR / f"test-last-{repo}.json"
+    """This checkout's own result: `ai ship` in a Talos run reads the run its own workspace recorded."""
+    return checkout_state_file(f"test-last-{repo}", ".json")
 
 
 def last(repo):

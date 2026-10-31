@@ -7,7 +7,7 @@
   miss or a targeted run that executed no test is a failure.
 - `--changed` runs only the tests mapped from the branch's changed files (testmap.py); `ai ship` still
   needs a full run on the final tree (results.py).
-- Raw output goes to dev-tools/ai/state/test-<repo>-<suite>.log.
+- Raw output goes to dev-tools/ai/state/test-<repo>-<suite>.log (-issue-N in a Talos run's own checkout).
 """
 
 import json
@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import baseline, results, testmap
-from .common import STATE_DIR, WORKSPACE, base_branch, config, git, p4m, repo_dir, say
+from .common import STATE_DIR, WORKSPACE, base_branch, checkout_state_file, config, git, p4m, repo_dir, say
 
 PHPUNIT_FOLDERS = ("tests/libraries/security", "tests/libraries/utils", "tests/services", "tests/tools")
 
@@ -41,7 +41,7 @@ class SuiteResult:
 def _run_logged(name, cmd, cwd=WORKSPACE):
     """Run cmd, writing its output to the log as it arrives (a hung run still leaves a readable log)."""
     STATE_DIR.mkdir(exist_ok=True)
-    log = STATE_DIR / f"test-{name}.log"
+    log = checkout_state_file(f"test-{name}", ".log")
     chunks = []
     with open(log, "w", encoding="utf-8") as f, subprocess.Popen(
             cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
@@ -324,7 +324,7 @@ def cmd_explain(args):
     if args.repo != "gaia":
         say("--explain reads api-tester logs: gaia only")
         return 2
-    log = STATE_DIR / "test-gaia-api.log"
+    log = checkout_state_file(f"test-gaia-api{_tag(repo_dir('gaia'), slot_of(args))}", ".log")
     if not log.exists():
         say(f"no api log at {log}: run `ai test gaia` first")
         return 2

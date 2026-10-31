@@ -316,6 +316,7 @@ class BaselineContainerTest(unittest.TestCase):
         from unittest import mock
         from lib import baseline
         with tempfile.TemporaryDirectory() as d, mock.patch.object(baseline, "BASELINE_DIR", Path(d)), \
+                mock.patch("lib.common.STATE_DIR", Path(d)), \
                 mock.patch.object(baseline, "load", return_value=have), \
                 mock.patch.object(baseline, "run") as run, mock.patch.object(baseline, "say"):
             (Path(d) / "gaia").mkdir()
@@ -326,6 +327,92 @@ class BaselineContainerTest(unittest.TestCase):
         calls, src = self._require({"api": []}, ["api"])
         self.assertEqual(len(calls), 1)
         self.assertEqual(calls[0][-4:], ["test", "clean", "--src", str(src)])
+
+
+class CheckoutStateTest(unittest.TestCase):
+    """Parallel Talos runs (one workspace per issue) keep their own test logs and results; the ship gate reads
+    its own checkout's."""
+
+    def setUp(self):
+        from lib import common, results
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        state = Path(self.dir.name)
+        for patch in (mock.patch.object(common, "STATE_DIR", state), mock.patch.object(results, "STATE_DIR", state),
+                      mock.patch.object(tests, "STATE_DIR", state)):
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def in_run(self, issue):
+        return mock.patch.dict("os.environ", {"P4M_WORKSPACE": str(Path(self.dir.name) / f"issue-{issue}")})
+
+    def outside_runs(self):
+        env = mock.patch.dict("os.environ")
+        env.start()
+        self.addCleanup(env.stop)
+        import os
+        os.environ.pop("P4M_WORKSPACE", None)
+
+    def test_runs_from_two_checkouts_record_separate_results(self):
+        from lib import results
+        with self.in_run(1):
+            results.record("prometheus", True, True, ["one"], "tree-1")
+        with self.in_run(2):
+            results.record("prometheus", False, True, ["two"], "tree-2")
+        with self.in_run(1):
+            self.assertEqual(results.last("prometheus")["lines"], ["one"])
+        with self.in_run(2):
+            self.assertEqual(results.last("prometheus")["lines"], ["two"])
+        self.outside_runs()
+        self.assertIsNone(results.last("prometheus"))
+
+    def test_ship_gate_reads_its_own_checkouts_result(self):
+        from lib import results
+        with self.in_run(1):
+            results.record("prometheus", True, True, ["RESULT: PASS"], "tree-1")
+        with self.in_run(2):
+            results.record("prometheus", False, True, ["RESULT: FAIL"], "tree-2")
+        with mock.patch.object(results, "tree_fingerprint", return_value="tree-1"), self.in_run(1):
+            self.assertEqual(ship.test_gate("prometheus"), ["RESULT: PASS"])
+        with mock.patch.object(results, "tree_fingerprint", return_value="tree-2"), self.in_run(2):
+            with self.assertRaises(AiError):
+                ship.test_gate("prometheus")
+
+    def test_runs_from_two_checkouts_write_separate_logs(self):
+        logs = []
+        for issue in (1, 2):
+            with self.in_run(issue):
+                _, _, log = tests._run_logged("prometheus-ember", [sys.executable, "-c", f"print({issue})"])
+                logs.append(log)
+        self.assertEqual([l.name for l in logs], ["test-prometheus-ember-issue-1.log",
+                                                  "test-prometheus-ember-issue-2.log"])
+        self.assertEqual([l.read_text(encoding="utf-8").strip() for l in logs], ["1", "2"])
+
+    def test_outside_a_talos_run_the_names_are_unchanged(self):
+        from lib import results
+        self.outside_runs()
+        results.record("gaia", True, True, ["x"], "tree")
+        self.assertTrue((Path(self.dir.name) / "test-last-gaia.json").exists())
+
+    def test_baseline_runs_one_at_a_time(self):
+        from lib import baseline
+        with mock.patch("lib.common.STATE_DIR", Path(self.dir.name)), \
+                mock.patch.object(baseline, "_require", return_value={"ember": []}) as inner:
+            lock = Path(self.dir.name) / "baseline-prometheus.lock"
+            inner.side_effect = lambda *a: self.assertTrue(lock.exists()) or {"ember": []}
+            self.assertEqual(baseline.require("prometheus", "abc", ["ember"], runner=None), {"ember": []})
+            inner.assert_called_once_with("prometheus", "abc", ["ember"], None)
+
+    def test_baseline_lock_timeout_reads_the_other_runs_result(self):
+        from lib import baseline
+        from lib.common import AiError
+        with mock.patch.object(baseline, "state_locked", side_effect=AiError("held")), \
+                mock.patch.object(baseline, "load", return_value={"ember": ["x"]}):
+            self.assertEqual(baseline.require("prometheus", "abc", ["ember"], runner=None), {"ember": ["x"]})
+        with mock.patch.object(baseline, "state_locked", side_effect=AiError("held")), \
+                mock.patch.object(baseline, "load", return_value={}):
+            with self.assertRaises(AiError):
+                baseline.require("prometheus", "abc", ["ember"], runner=None)
 
 
 class RunWorkspaceSrcTest(unittest.TestCase):
