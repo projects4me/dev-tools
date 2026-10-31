@@ -12,7 +12,8 @@ Pure Python standard library, like `p4m`: nothing to install.
 | `gaia_list_projects` | Projects visible to the user, filterable by name or short code |
 | `gaia_project_options` | A project's issue types, statuses, priorities, milestones and members |
 | `gaia_list_issues` | A project's issues, newest first; filter by status, subject text, or assigned to me |
-| `gaia_get_issue` | One issue by number, with its description, complexity, comments and logged/estimated time |
+| `gaia_get_issue` | One issue by number, with its description, complexity, comments, logged/estimated time and attached files |
+| `gaia_get_file` | Read a file attached to an issue, by name or id: an image (PNG, JPEG, GIF, WebP) comes back as an image the agent sees; any other file is saved under the system temp folder (`gaia-mcp/<issue>/`) and its path returned. Max 10 MB |
 | `gaia_create_issue` | Create an issue (defaults: Task, `new`, `medium`, assigned to me, starts today, ends a week later, milestone Claude-v1); `complexity` is required. A milestone the project doesn't have yet (Claude-v1 or the one named) is created; `""` means the backlog |
 | `gaia_create_milestone` | Create a milestone in a project, or return the existing one with that name (defaults: in progress, from today for 30 days) |
 | `gaia_add_comment` | Add an HTML comment to the issue's thread (creates the thread on first comment, like Prometheus) |

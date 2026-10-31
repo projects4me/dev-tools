@@ -16,6 +16,7 @@ import os
 import re
 import ssl
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.parse
@@ -356,6 +357,10 @@ class Gaia:
 # Tool implementations
 # ---------------------------------------------------------------------------------------------
 
+class Content(list):
+    """A tool result that is already MCP content blocks (e.g. an image), passed through instead of as JSON text."""
+
+
 def type_label(issuetype, labels):
     """An issue type's en-us label, falling back to its value."""
     name = (issuetype or {}).get("name")
@@ -505,7 +510,16 @@ class Tools:
                         "entries": [{"on": (l.get("spentOn") or l.get("dateCreated") or "")[:10],
                                      "by": l.get("createdUserName"), "time": format_minutes(log_minutes(l)),
                                      "description": l.get("description")} for l in logs]}
+        out["files"] = [{k: f.get(k) for k in ("id", "name", "fileType", "fileSize", "dateCreated")}
+                        for f in self._files(i["id"])]
         return out
+
+    def _files(self, issue_id):
+        """The issue's attachments, oldest first. GET /upload has no list action, so they come through the issue's
+        files relation, in a read of their own without a limit (Gaia's limit counts the joined rows)."""
+        found = self.g.find("issue", f"(Issue.id : {issue_id})", rels="files", limit=-1)
+        files = [f for f in ((found[0].get("files") if found else None) or []) if str(f.get("deleted") or 0) != "1"]
+        return sorted(files, key=lambda f: f.get("dateCreated") or "")
 
     def add_comment(self, args):
         issue = self.g.issue_by_number(args["issue_number"])
@@ -543,6 +557,41 @@ class Tools:
         with open(path, "rb") as f:
             self.g.upload(os.path.basename(path), f.read(), {"relatedId": issue["id"], "relatedTo": "issue"})
         return {"attached": os.path.basename(path), "issueNumber": issue["issueNumber"]}
+
+    VIEWABLE = ("image/png", "image/jpeg", "image/gif", "image/webp")
+    FILE_MAX = 10 * 1024 * 1024
+
+    def get_file(self, args):
+        issue = self.g.issue_by_number(args["issue_number"], rels=None)
+        want_id, want_name = args.get("upload_id"), (args.get("name") or "").strip().lower()
+        if not want_id and not want_name:
+            raise GaiaError("Pass the file's name or upload_id (gaia_get_issue lists them under files).")
+        files = self._files(issue["id"])
+        # a name attached twice means the latest one
+        match = [f for f in files if f.get("id") == want_id] if want_id else \
+            [f for f in files if (f.get("name") or "").lower() == want_name]
+        if not match:
+            names = ", ".join(f.get("name") or f.get("id") for f in files) or "none"
+            raise GaiaError(f"Issue #{issue['issueNumber']} has no attachment "
+                            f"'{want_id or args.get('name')}'. Its files: {names}.")
+        f = match[-1]
+        if int(f.get("fileSize") or 0) > self.FILE_MAX:
+            raise GaiaError(f"{f.get('name')} is larger than 10 MB.")
+        content = self.g.download(f["id"])
+        if len(content) > self.FILE_MAX:
+            raise GaiaError(f"{f.get('name')} is larger than 10 MB.")
+        about = {"issueNumber": issue["issueNumber"], "name": f.get("name"), "id": f["id"],
+                 "fileType": f.get("fileType"), "fileSize": len(content)}
+        if f.get("fileType") in self.VIEWABLE:
+            return Content([{"type": "text", "text": json.dumps(about, ensure_ascii=False)},
+                            {"type": "image", "data": base64.b64encode(content).decode(),
+                             "mimeType": f["fileType"]}])
+        folder = os.path.join(tempfile.gettempdir(), "gaia-mcp", str(issue["issueNumber"]))
+        os.makedirs(folder, exist_ok=True)
+        path = os.path.join(folder, re.sub(r"[^\w.-]", "_", f.get("name") or f["id"]))
+        with open(path, "wb") as out:
+            out.write(content)
+        return dict(about, path=path)
 
     def log_time(self, args):
         issue = self.g.issue_by_number(args["issue_number"])
@@ -889,10 +938,18 @@ TOOLS = [
       "required": ["issue_number", "description"]}),
     ("gaia_get_issue", "get_issue",
      "Get one issue by its issue number, with description, its latest comments (oldest first; olderComments says "
-     "whether there are more) and logged/estimated time.",
+     "whether there are more), logged/estimated time and its attached files (read them with gaia_get_file).",
      {"type": "object", "properties": {
          "issue_number": {"type": "integer"},
          "comments": {"type": "integer", "minimum": 1, "maximum": 100, "description": "Latest comments to return (default 10)."}},
+      "required": ["issue_number"]}),
+    ("gaia_get_file", "get_file",
+     "Read a file attached to an issue (gaia_get_issue lists them under files), e.g. a mockup. An image comes back "
+     "as an image you can see; any other file is saved locally and its path returned. Max 10 MB.",
+     {"type": "object", "properties": {
+         "issue_number": {"type": "integer"},
+         "name": {"type": "string", "description": "The attachment's file name, e.g. agents-list.png."},
+         "upload_id": {"type": "string", "description": "The attachment's id (instead of name)."}},
       "required": ["issue_number"]}),
     ("gaia_create_issue", "create_issue",
      "Create an issue in a Projects4Me project. Defaults: type Task, status new, priority medium, assignee me, "
@@ -987,6 +1044,8 @@ class Server:
                 raise LookupError(f"Unknown tool: {name}")
             try:
                 result = getattr(self.tools, self.by_name[name])(params.get("arguments") or {})
+                if isinstance(result, Content):
+                    return {"content": list(result)}
                 return {"content": [{"type": "text", "text": json.dumps(result, indent=2, ensure_ascii=False)}]}
             except (GaiaError, ValueError, KeyError) as e:
                 msg = f"Missing argument: {e}" if isinstance(e, KeyError) else str(e)
