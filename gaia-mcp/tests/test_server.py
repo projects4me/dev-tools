@@ -205,6 +205,11 @@ class IssueGaia:
         self.timelogs = [{"context": "spent", "hours": 1, "spentOn": "2026-10-02 00:00:00"},
                          {"context": "spent", "minutes": 30, "spentOn": "2026-10-03 00:00:00"},
                          {"context": "est", "days": 1, "dateCreated": "2026-10-01 00:00:00"}]
+        self.files = [{"id": "up-2", "name": "detail.png", "fileType": "image/png", "fileSize": "3",
+                       "dateCreated": "2026-10-02 00:00:00"},
+                      {"id": "up-1", "name": "notes.md", "fileType": "text/markdown", "fileSize": "5",
+                       "dateCreated": "2026-10-01 00:00:00"}]
+        self.blobs = {"up-1": b"notes", "up-2": b"PNG"}
         self.issue_rels, self.finds = None, []
 
     def type_labels(self):
@@ -215,10 +220,14 @@ class IssueGaia:
         return dict(self.issue)
 
     def find(self, module, query=None, rels=None, fields=None, sort=None, order=None, limit=None, page=None):
-        self.finds.append({"module": module, "query": query, "sort": sort, "order": order, "limit": limit})
+        self.finds.append({"module": module, "query": query, "rels": rels, "sort": sort, "order": order,
+                           "limit": limit})
         rows = {"comment": sorted(self.comments, key=lambda c: c["dateCreated"], reverse=True),
-                "timelog": self.timelogs}[module]
+                "timelog": self.timelogs, "issue": [dict(self.issue, files=self.files)]}[module]
         return rows[:limit] if limit and limit > 0 else rows
+
+    def download(self, upload_id):
+        return self.blobs[upload_id]
 
 
 class GetIssueTest(unittest.TestCase):
@@ -243,7 +252,8 @@ class GetIssueTest(unittest.TestCase):
         self.assertEqual(len(out["comments"]), 12)
         self.assertFalse(out["olderComments"])
         self.tools.get_issue({"issue_number": 4075, "comments": 10000})
-        self.assertEqual(self.g.finds[-2]["limit"], server.Tools.COMMENTS_MAX + 1)
+        last = [f for f in self.g.finds if f["module"] == "comment"][-1]
+        self.assertEqual(last["limit"], server.Tools.COMMENTS_MAX + 1)
 
     def test_an_issue_without_a_conversation_room_has_no_comments(self):
         self.g.issue["conversationRoomId"] = None
@@ -258,6 +268,47 @@ class GetIssueTest(unittest.TestCase):
         q = next(f for f in self.g.finds if f["module"] == "timelog")
         self.assertIn("i-1", q["query"])
         self.assertGreater(q["limit"], 0)
+
+    def test_files_come_from_their_own_unlimited_read_oldest_first(self):
+        out = self.tools.get_issue({"issue_number": 4075})
+        self.assertEqual([f["name"] for f in out["files"]], ["notes.md", "detail.png"])
+        q = next(f for f in self.g.finds if f["module"] == "issue")
+        self.assertEqual((q["rels"], q["limit"]), ("files", -1))
+        self.assertIn("i-1", q["query"])
+
+
+class GetFileTest(unittest.TestCase):
+    def setUp(self):
+        self.g = IssueGaia()
+        self.tools = server.Tools(self.g)
+
+    def test_an_image_comes_back_as_an_image_block(self):
+        import base64
+        out = self.tools.get_file({"issue_number": 4075, "name": "Detail.PNG"})
+        self.assertIsInstance(out, server.Content)
+        image = next(b for b in out if b["type"] == "image")
+        self.assertEqual((image["mimeType"], base64.b64decode(image["data"])), ("image/png", b"PNG"))
+
+    def test_another_file_is_saved_and_its_path_returned(self):
+        out = self.tools.get_file({"issue_number": 4075, "upload_id": "up-1"})
+        self.assertEqual(Path(out["path"]).read_bytes(), b"notes")
+        self.assertEqual(Path(out["path"]).name, "notes.md")
+
+    def test_only_the_issues_own_files_and_up_to_10_mb(self):
+        with self.assertRaisesRegex(server.GaiaError, "detail.png"):
+            self.tools.get_file({"issue_number": 4075, "upload_id": "someone-elses"})
+        with self.assertRaises(server.GaiaError):
+            self.tools.get_file({"issue_number": 4075})
+        self.g.files[0]["fileSize"] = str(11 * 1024 * 1024)
+        with self.assertRaisesRegex(server.GaiaError, "10 MB"):
+            self.tools.get_file({"issue_number": 4075, "name": "detail.png"})
+
+    def test_the_server_passes_content_blocks_through(self):
+        srv = server.Server.__new__(server.Server)
+        srv.tools, srv.by_name = self.tools, {n: m for n, m, _, _ in server.TOOLS}
+        reply = srv.handle({"method": "tools/call",
+                            "params": {"name": "gaia_get_file", "arguments": {"issue_number": 4075, "name": "detail.png"}}})
+        self.assertEqual([b["type"] for b in reply["content"]], ["text", "image"])
 
 
 class IssueTypeTest(unittest.TestCase):
