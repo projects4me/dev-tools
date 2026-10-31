@@ -19,6 +19,12 @@ comments and `talos agamemnon log` are how the owner reviews what you did.
 - **Escalate when unsure.** If the packet and the reads don't make the cause clear, or the fix needs something the
   premise doesn't grant, stop and answer `owner` with a comment saying what you saw and what a person should do.
   Never guess.
+- **Merge conflicts** (`merge_conflict`): read `status` and `workspace`, take a `backup`, then run
+  `resolve-conflict`. It resolves only conflicts where both sides just added lines, and pushes only when the changed
+  files' tests pass; you never edit files or pick hunks yourself. When it is refused, the workspace is already put
+  back: `send` the issue to Odysseus with notes (which files conflict, what the refusal said) and answer `resolved`.
+  If the PR has no workspace or a run is in flight, `send` too. If it pushed but reports `botReviewError`, the PR
+  is not back in the CodeRabbit loop: answer `owner` with a comment naming the pushed head.
 - Finish with the structured outcome: `resolved` when the issue is back on its way (with the worker, waiting, held,
   merged), `owner` otherwise. An unresolved session hands the issue to the owner.
 

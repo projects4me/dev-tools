@@ -15,7 +15,7 @@ from typing import Callable
 
 from .. import workspaces
 from ..orchestrator import state as orchestrator_state
-from . import journal, narrative, verbs
+from . import conflicts, journal, narrative, verbs
 from .verbs import Refused
 
 LOG_LINES = 80
@@ -23,6 +23,9 @@ DIFF_LINES = 400
 BACKUP_REF = "refs/agamemnon/backup"
 PUSH_REMOTE = "odysseus"
 REVIEW_STATUS = "in_review"
+CONFLICT_INCIDENT = "merge_conflict"
+CONFLICT_ACTION = "merge_conflict"      # the worker's action for a conflict (orchestrator/keeper.py)
+TEST_LINES = 40
 # who the backup commits are by (Agamemnon has no git identity; the commit is never on a branch)
 BACKUP_AUTHOR = {"GIT_AUTHOR_NAME": "Agent Agamemnon", "GIT_AUTHOR_EMAIL": "agent.agamemnon@projects4.me",
                  "GIT_COMMITTER_NAME": "Agent Agamemnon", "GIT_COMMITTER_EMAIL": "agent.agamemnon@projects4.me"}
@@ -54,6 +57,10 @@ class Ports:
     free_slot: Callable                 # free_slot() -> a free Gaia test slot number, or None
     now: Callable = field(default=lambda: datetime.now().astimezone())
     sleep: Callable = field(default=time.sleep)
+    ody_git: Callable = None            # ody_git(cwd, *args, check=True): git as Agent Odysseus (commits it makes)
+    test_changed: Callable = None       # test_changed(folder, repo) -> (passed, output): ai test <repo> --changed
+    bot_review: Callable = None         # bot_review(issue, repo, pr): the PR back into the worker's CodeRabbit loop
+    update_worker_state: Callable = None    # update_worker_state(issue, **fields): the worker's talos.db issues row
 
 
 @dataclass
@@ -278,9 +285,23 @@ class Aga:
             raise Refused(f"#{self.number} is already with {self.s.worker.display_name}")
         self.p.tracker.comment(self.number, f"{self.s.display_name}: notes for {self.s.worker.display_name}",
                                "".join(f"<p>{html.escape(p)}</p>" for p in notes.split("\n\n")))
-        before, after = self._assign_worker("already with the worker")
+        undo = {"op": "assign", "issue": self.number}
+        if self.incident["type"] == CONFLICT_INCIDENT:
+            # the worker's run resolves the conflict (its merge_conflict action), and it counts as the one attempt
+            # the orchestrator gives it, so the next conflict goes to the owner
+            st = self.p.worker_state(self.number)
+            undo["workerState"] = {"next_action": st.get("next_action") or "",
+                                   "conflict_attempts": int(st.get("conflict_attempts") or 0)}
+            self.p.update_worker_state(self.number, next_action=CONFLICT_ACTION,
+                                       conflict_attempts=undo["workerState"]["conflict_attempts"] + 1)
+        try:
+            before, after = self._assign_worker("already with the worker")
+        except Exception:
+            if "workerState" in undo:
+                self.p.update_worker_state(self.number, **undo["workerState"])
+            raise
         return Act({"issue": self.number, "assignee": self.s.worker_id}, before, after,
-                   {"op": "assign", "issue": self.number, "assignee": before["assignee"]},
+                   {**undo, "assignee": before["assignee"]},
                    "talos agamemnon undo <id> gives the issue back to whom it was assigned to (the notes comment "
                    "stays)")
 
@@ -359,15 +380,123 @@ class Aga:
         parents = (self.p.git(folder, "rev-list", "--parents", "-n", "1", "HEAD") or "").split()[1:]
         if len(parents) < 2:
             raise Refused("HEAD is not a merge commit")
+        remote_head = self.remote_head(folder, branch)
+        self.p.push(folder, f"HEAD:refs/heads/{branch}")
+        return Act({"issue": self.number, "pushed": head}, {"remoteHead": remote_head}, {"remoteHead": head}, None,
+                   "cannot be undone here: taking a pushed commit back needs a force push (tier 3)")
+
+    def remote_head(self, folder, branch):
+        """The branch's head on the push remote (None when it has none); Refused when HEAD does not contain it, as
+        the push would not be a fast-forward."""
         remote = (self.p.git(folder, "ls-remote", PUSH_REMOTE, f"refs/heads/{branch}") or "").split()
         remote_head = remote[0] if remote else None
         if remote_head and self.p.git(folder, "merge-base", "--is-ancestor", remote_head, "HEAD",
                                       check=False) is None:
             raise Refused(f"{PUSH_REMOTE}/{branch} ({remote_head[:7]}) is not in HEAD: that push would not be a "
                           f"fast-forward")
-        self.p.push(folder, f"HEAD:refs/heads/{branch}")
-        return Act({"issue": self.number, "pushed": head}, {"remoteHead": remote_head}, {"remoteHead": head}, None,
-                   "cannot be undone here: taking a pushed commit back needs a force push (tier 3)")
+        return remote_head
+
+    def _resolve_conflict(self, args):
+        """Merge origin/<base> into the PR branch in the issue's own workspace and resolve the conflicts, only when
+        conflicts.resolve finds every hunk additive; then the changed files' tests must pass before the merge is
+        pushed as Agent Odysseus and the PR goes back through the CodeRabbit loop. Anything else is aborted and
+        the workspace is put back as it was (Refused), so the worker can be sent instead."""
+        pr = self.open_pr()
+        folder = self.folder()
+        repo, branch = self.repo(), workspaces.branch_name(self.number)
+        if self.p.worker_state(self.number).get("running"):
+            raise Refused(f"#{self.number} has a run in flight: its workspace is in use")
+        if self.p.git(folder, "rev-parse", "--abbrev-ref", "HEAD") != branch:
+            raise Refused(f"the workspace is not on {branch}")
+        if (self.p.git(folder, "status", "--porcelain") or "").strip():
+            raise Refused("the workspace has uncommitted changes")
+        if not any(a["verb"] == "backup" and not a["undone_at"]
+                   for a in journal.actions(incident_id=self.incident["id"])):
+            raise Refused("take a backup first: the workspace is put back from it if anything goes wrong")
+        head = self.p.git(folder, "rev-parse", "HEAD")
+        pr_head = self.pr_head(pr)
+        if head != pr_head:
+            raise Refused(f"the workspace is at {head[:7]}, the PR at {pr_head[:7]}: bring the workspace to the PR's "
+                          f"head first")
+        remote_head = self.remote_head(folder, branch)
+        base = workspaces.base_branch(repo)
+        self.p.git(folder, "fetch", "-q", "origin", base)
+        merged = self.p.ody_git(folder, "merge", "--no-ff", "--no-commit", f"origin/{base}", check=False)
+        try:
+            if not self.p.git(folder, "rev-parse", "-q", "--verify", "MERGE_HEAD", check=False):
+                raise Refused(f"nothing to merge: origin/{base} is already in {branch}")
+            resolved = self._resolve_files(folder, merged is None)
+            self.p.ody_git(folder, "commit", "--no-edit", "-m",
+                           f"Merge origin/{base} into {branch}\n\n{self.s.display_name} resolved the additive "
+                           f"conflicts in: {', '.join(r.path for r in resolved) or 'none'} (incident "
+                           f"{self.incident['id']}).")
+        except Exception:
+            self.p.git(folder, "merge", "--abort", check=False)
+            self.p.git(folder, "reset", "--hard", head, check=False)
+            raise
+        try:
+            passed, output = self.p.test_changed(folder, repo)
+        except Exception:
+            self.p.git(folder, "reset", "--hard", head, check=False)
+            raise
+        if not passed:
+            self.p.git(folder, "reset", "--hard", head)
+            tail = "\n".join(str(output or "").splitlines()[-TEST_LINES:])
+            raise Refused(f"the merge resolved, but the changed files' tests failed; the merge was dropped and the "
+                          f"workspace is back at {head[:7]}:\n{tail}")
+        merge = self.p.git(folder, "rev-parse", "HEAD")
+        try:
+            self.p.push(folder, f"HEAD:refs/heads/{branch}")
+        except Exception:
+            self.p.git(folder, "reset", "--hard", head, check=False)
+            raise
+        files = {r.path: r.hunks for r in resolved}
+        result = {"issue": self.number, "pr": pr["number"], "pushed": merge, "resolved": files}
+        try:
+            self.p.bot_review(self.number, repo, pr["number"])
+        except Exception as e:      # the push happened: journal it anyway, the session hands the issue on itself
+            result["botReviewError"] = str(e)
+        return Act(result,
+                   {"head": head, "remoteHead": remote_head},
+                   {"head": merge, "remoteHead": merge, "resolved": files}, None,
+                   f"cannot be undone here: taking a pushed merge back needs a force push (tier 3); the branch "
+                   f"before it is {head[:7]}, also in this incident's backup")
+
+    def _resolve_files(self, folder, conflicted):
+        """Resolve and stage each conflicting file; Refused (naming the hunks) unless every one is additive."""
+        if not conflicted:
+            return []
+        stages = {}
+        for line in (self.p.git(folder, "ls-files", "-u", "-z") or "").split("\0"):
+            if line.strip():
+                meta, path = line.split("\t", 1)
+                stages.setdefault(path, set()).add(meta.split()[2])
+        if not stages:
+            raise Refused("the merge failed without conflicting files (see the workspace)")
+        problems, resolved = [], []
+        for path, have in sorted(stages.items()):
+            if have != {"1", "2", "3"}:
+                problems.append(f"{path}: added, deleted or renamed on one side, not changed on both")
+                continue
+            self.p.git(folder, "checkout", "--conflict=diff3", "--", path)
+            try:
+                text = (folder / path).read_bytes().decode("utf-8")
+            except UnicodeDecodeError:
+                problems.append(f"{path}: not UTF-8 text")
+                continue
+            result = conflicts.resolve(path, text)
+            if not result.additive:
+                problems.extend(f"{path} {p}" for p in result.problems)
+                continue
+            resolved.append(result)
+        if problems:
+            raise Refused("not every conflict is additive on both sides, so it is left to the worker:\n"
+                          + "\n".join(problems))
+        for result in resolved:
+            with open(folder / result.path, "w", encoding="utf-8", newline="") as f:
+                f.write(result.text)
+            self.p.git(folder, "add", "--", result.path)
+        return resolved
 
     def _merge(self, args):
         o = self.s.orchestration

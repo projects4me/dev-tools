@@ -258,6 +258,26 @@ class TriageTest(unittest.TestCase):
         self.assertEqual(self.tracker.handed, [])
         self.assertEqual(sessions.get("odysseus", 6)["conflict_noted"], "abc")
 
+    def test_a_first_conflict_goes_to_triage_before_the_worker(self):
+        agent, worker = self.agent()
+        offered = mock.Mock(**{"enabled.return_value": True,
+                               "offer.return_value": triage.Decision(True, "triage: merge_conflict incident 1")})
+        keeper = BranchKeeper(agent, worker, self.tracker, None, WORKER_ID, MY_ID, [OWNER], lambda r, n: None,
+                              now=lambda: NOW, triage=offered)
+        pr = {"number": 77, "headRefOid": "abc", "headRefName": "claude-issue-6"}
+        issue = an_issue(6, status="in_review", assignee=OWNER)
+        self.assertEqual(keeper._conflict(issue, "gaia", pr, {}), "conflict: triage: merge_conflict incident 1")
+        self.assertEqual(offered.offer.call_args.args[:2], (6, triage.CONFLICT))
+        self.assertIn("merge conflict", offered.offer.call_args.args[3])
+        self.assertEqual((self.tracker.issues[6]["assignee"], sessions.get("odysseus", 6)), (MY_ID, {}))
+        offered.offer.return_value = triage.Decision(False, "already triaged")    # declined: the worker gets it
+        self.assertIn("handed to Agent Odysseus", keeper._conflict(issue, "gaia", pr, {}))
+        self.assertEqual(self.tracker.issues[6]["assignee"], WORKER_ID)
+        self.assertEqual(sessions.get("odysseus", 6)["conflict_attempts"], 1)
+        offered.offer.reset_mock()
+        keeper._conflict(issue, "gaia", pr, {"conflict_attempts": 1, "conflict_noted": "abc"})
+        offered.offer.assert_not_called()                                       # no second look before the owner
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,6 +1,8 @@
 """Keeping agent PRs mergeable: once one PR merges, another open agent PR can fall behind its base or conflict with
 it. A branch that is only behind is brought up to date on GitHub (a merge of the base, never a rebase); a conflict
-goes back to the worker to resolve (merge_conflict), a limited number of times, then to the owner.
+goes first to an Agamemnon triage session, which resolves it itself when every hunk is additive (agamemnon/conflicts.py)
+or sends it to the worker with notes; without triage it goes to the worker to resolve (merge_conflict). Either way the
+worker has a limited number of attempts, then the owner gets it.
 
 Conflict attempts are counted per issue: an issue is one PR in one repo (the house rule Nestor plans by), so the
 issue's count is its PR's."""
@@ -103,8 +105,29 @@ class BranchKeeper:
                 + ("hand it to the worker" if step == policy.RESOLVE else "tell the owner"), self.agent.name)
             return f"conflict: would {step} (dry run)"
         if step == policy.RESOLVE:
+            if attempts == 0:
+                taken = self._triage_first(number, repo, pr)
+                if taken:
+                    return taken
             return self._resolve(issue, repo, pr, attempts + 1)
         return self._tell(issue, repo, pr, attempts)
+
+    def _triage_first(self, number, repo, pr):
+        """Before the worker's attempt, a triage session resolves the conflict itself when every hunk is additive
+        (`aga resolve-conflict`), or sends the issue to the worker with notes. Its note when it took the conflict,
+        else None (triage off, outside the premise, or used up on this issue: the worker gets it as before)."""
+        if not (self.triage and self.triage.enabled()):
+            return None
+        decision = self.triage.offer(number, "conflict", None,
+                                     f"merge conflict: PR {repo}#{pr['number']} conflicts with its base; "
+                                     f"{self.agent.display_name} resolves it if every hunk is additive, else "
+                                     f"{self.worker.display_name} does", pr=pr["number"])
+        if not decision.taken:
+            return None
+        waiting = store.find_open_merge(self.agent.name, number, pr["number"])
+        if waiting:                         # an automatic merge waits on this PR: it starts over after the fix
+            store.close_merge(waiting["id"], self.now(), "conflict", detail="merge conflict taken into triage")
+        return f"conflict: {decision.note}"
 
     def _resolve(self, issue, repo, pr, attempt):
         number = issue["number"]

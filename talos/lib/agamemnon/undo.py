@@ -81,6 +81,8 @@ class Undoer:
     def _assign(self, action, op):
         self._moved(action, self._issue_state(op["issue"]), ("status", "assignee", "running"))
         self.p.tracker.assign(op["issue"], op["assignee"])
+        if op.get("workerState"):           # a send for a conflict also set the worker's action and attempt count
+            self.p.update_worker_state(op["issue"], **op["workerState"])
         return f"#{op['issue']} assigned back to {op['assignee'] or 'nobody'}"
 
     def _release_hold(self, action, op):
