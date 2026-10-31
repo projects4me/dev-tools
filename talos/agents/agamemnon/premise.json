@@ -8,6 +8,7 @@
     "pause": "pause dispatch",
     "notify": "tell the owner",
     "update": "bring a PR branch up to date with its base or push a resolved merge (visible on GitHub)",
+    "resolve": "resolve a merge conflict whose hunks are all additive, test it and push it (visible on GitHub)",
     "merge": "merge a PR through the merge gate (visible on GitHub)"
   },
   "incidents": {
@@ -20,8 +21,8 @@
       "does": "re-run the failed job, then hand the issue to Odysseus"
     },
     "merge_conflict": {
-      "tiers": ["read", "handoff"],
-      "does": "resolve the conflict (see the conflict issue) or hand the issue to Odysseus"
+      "tiers": ["read", "restore", "resolve", "handoff"],
+      "does": "back up the workspace, then resolve the conflict when every hunk is additive (resolve-conflict); otherwise send the issue to Odysseus with notes"
     },
     "dirty_generated": {
       "tiers": ["read", "restore"],

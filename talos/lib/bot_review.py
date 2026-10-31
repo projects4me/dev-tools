@@ -70,6 +70,17 @@ def drop(agent, issue):
     _write("DELETE FROM bot_reviews WHERE agent = ? AND issue = ?", (agent, issue))
 
 
+def reenter(agent, tracker, user_id, issue, repo, pr, status, deadline):
+    """Put a PR back into the agent's CodeRabbit loop: wait for CodeRabbit on its head, then hand the issue to the
+    agent (the record is written before the assignment event, and dropped if the hand-off fails)."""
+    wait(agent, issue, repo, pr, status, deadline)
+    try:
+        tracker.hand_off(issue, status, user_id)
+    except TalosError:
+        drop(agent, issue)
+        raise
+
+
 def entries(agent, phase=None):
     conn = db.connect()
     try:
@@ -153,13 +164,8 @@ class Watcher:
         pr = self.find_pr(repo, number)
         if not pr or pr.get("merged"):
             return False
-        status = issue["status"]
-        wait(self.agent.name, number, repo, pr["number"], status, self.deadline())   # before the assignment event
-        try:
-            self.tracker.hand_off(number, status, self.user_id)
-        except TalosError:
-            drop(self.agent.name, number)
-            raise
+        reenter(self.agent.name, self.tracker, self.user_id, number, repo, pr["number"], issue["status"],
+                self.deadline())
         log(f"#{number} re-review addressed: waiting for CodeRabbit on {repo} PR {pr['number']} to merge it",
             self.agent.name)
         return True

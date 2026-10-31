@@ -45,6 +45,8 @@ VERBS = {v.name: v for v in (
     Verb("send", "handoff", PRIVATE, "send the issue to the worker with notes"),
     Verb("update-branch", "update", VISIBLE, "merge the base into the PR branch on GitHub (never a rebase)"),
     Verb("push-merge", "update", VISIBLE, "push a resolved merge from the workspace (fast-forward only)"),
+    Verb("resolve-conflict", "resolve", VISIBLE, "merge the base into the branch in the workspace, resolve only "
+         "additive conflicts, test, push as Odysseus, back to CodeRabbit (needs a backup in this incident)"),
     Verb("merge", "merge", VISIBLE, "merge the PR through the merge gate"),
 )}
 

@@ -419,7 +419,10 @@ and is `enabled: false` until the engineer turns it on.
   or by Agamemnon; never one the worker is on, with a run in flight, or checked out by hand outside `.runs`):
   - *behind* its base: brought up to date on GitHub as Agamemnon (`update-branch`, a merge of the base, never a
     rebase); CI and CodeRabbit run again on the new head.
-  - *conflicting*: handed to the worker with the one-off action `merge_conflict` (`next_action` in talos.db; see
+  - *conflicting*: first, with triage on, a triage session (a `merge_conflict` incident) resolves it itself when
+    every conflicting hunk is additive (`aga resolve-conflict`), or sends it to the worker with notes. Without
+    triage, or when it declines (outside the premise, already triaged on this issue), it is handed to the worker
+    with the one-off action `merge_conflict` (`next_action` in talos.db; see
     Odysseus's `actions`): merge the base, resolve so both changes survive, run the suite, push, and end
     `awaiting_bot_review` so CodeRabbit reviews the new head. Up to `maxConflictAttempts` (1) per issue; then the
     owner is told once per PR head (an issue waiting to be merged automatically goes back to them). `talos reset`
@@ -433,7 +436,8 @@ and is `enabled: false` until the engineer turns it on.
   mergecheck, git and Docker state, the other in-flight issues' files, its earlier comments).
 - **Triage sessions** (`lib/agamemnon/triage.py`, on with `agaTriage`, live from the start: no shadow mode). Where
   the orchestrator would leave an issue to the owner (a handback not restarted automatically, other than a question;
-  an automatic merge it hands back, except while paused; a merge conflict whose automatic attempts are used up), it
+  an automatic merge it hands back, except while paused; a merge conflict, before the worker's attempt and once its
+  automatic attempts are used up), it
   classifies the incident first. An incident type in the premise opens an incident (`aga_incidents`, with its source
   and model) and runs a headless Claude Code session the way Nestor runs: role prompt `agents/agamemnon/role.md`,
   the incident packet as input, only `Bash(dev-tools/agamemnon/aga:*)` allowed, no MCP servers, `AGA_INCIDENT` set,
@@ -459,11 +463,22 @@ and is `enabled: false` until the engineer turns it on.
     backup in the same incident), `retry` and `rerun-ci` (tier `retry`), `wait-for <issue>|slot` (tier `wait`, at
     most `agaWaitMaxMinutes`, polling every `agaPollSeconds`), `hold-until-tomorrow` (tier `wait`: assigned to
     Agamemnon until `agaHoldUntilHour` (6:00) the next day, when the orchestrator's sweep gives it to the worker;
-    not for in_review issues), `send --notes` (tier `handoff`: a comment, then assigned to the worker).
+    not for in_review issues), `send --notes` (tier `handoff`: a comment, then assigned to the worker; for a
+    `merge_conflict` incident it also sets the worker's `merge_conflict` action and counts its one attempt).
   - Level 2, reversible and visible: `update-branch` and `push-merge` (tier `update`: a merge of the base on GitHub,
     never a rebase; a committed merge pushed only as a fast-forward), `merge` (tier `merge`: through `ai merge` and
     its gate, only for `autoMergeMilestones`, within `maxAutoMergesPerDay` together with the automatic merges).
     The premise grants `update` and `merge` to no incident type yet.
+    `resolve-conflict` (tier `resolve`, granted to `merge_conflict`): in the issue's own workspace (on its branch,
+    clean, at the PR's head, no run in flight, after a `backup` in the same incident) it merges `origin/<base>`
+    (never a rebase) as Odysseus. Code, not the model, decides (`lib/agamemnon/conflicts.py`): every conflicting
+    hunk must be additive on both sides (in diff3 form the base part is empty; files added, deleted or renamed on
+    one side, or not UTF-8, don't qualify), and the resolution keeps every line both sides added, ours first, and
+    nothing else. Then `ai test <repo> --changed` must pass; the merge commit (signed as Odysseus, its message
+    naming Agamemnon and the incident) is pushed to the odysseus remote as a fast-forward, and the issue goes to the
+    worker waiting for CodeRabbit on the new head (the CodeRabbit loop, as after a deferred ship). Otherwise the
+    merge is aborted, the workspace is put back at the PR's head, and the verb is refused with the reason, so the
+    session sends the issue to Odysseus with notes for its one attempt; after that the owner gets it.
   - Level 3 has no verb: force push, deleting branches or workspaces with unpushed work, closing PRs, writing
     main/dev, changing config or limits.
 - **Action journal and undo**: each acting verb is a row in `aga_actions` (incident, issue, verb, arguments, the state
