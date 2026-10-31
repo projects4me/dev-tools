@@ -91,6 +91,7 @@ def build_parser():
              "context pack for an issue: outlines of the files/classes/endpoints it names, tests, api cases, deps")
     sp.add_argument("issue", type=int)
     sp.add_argument("--repo", choices=repos)
+    sp.add_argument("--json", action="store_true", help="only the files it resolves: {issue, repo, files}")
 
     kb.add_parser(sub)
 

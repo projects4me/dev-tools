@@ -27,12 +27,13 @@ class Orchestrator:
     """Feeds one worker agent (registry.Agent of kind issues) as one orchestrator agent (kind orchestrator)."""
 
     def __init__(self, agent, worker, tracker, worker_id, dry_run=False, branch_holder=_branch_holder, now=_now,
-                 worker_state=sessions.get, merges=None, keeper=None):
+                 worker_state=sessions.get, merges=None, keeper=None, overlap=None):
         self.agent, self.worker, self.tracker = agent, worker, tracker
         self.settings = agent.orchestration
         self.worker_id = str(worker_id)
         self.merges = merges            # merging.MergeSweeper, or None without automatic merges
         self.keeper = keeper            # keeper.BranchKeeper: keeps agent PRs mergeable (None = off)
+        self.overlap = overlap          # overlap.OverlapGate: holds issues whose files are in flight (None = off)
         self.owners = [str(o) for o in (self.settings.owners or [worker.handoff_to]) if o]
         self.max_in_flight = self.settings.max_in_flight or worker.max_parallel
         self.dry_run = dry_run
@@ -106,13 +107,23 @@ class Orchestrator:
                   for i in self.tracker.issues_in(project, self.settings.milestone_prefix)]
         restarts = policy.rank([i for i in issues if self._restart_skip(i) is None])
         news = policy.rank([i for i in issues if self._new_skip(i) is None])
-        done = []
+        if self.overlap:
+            self.overlap.begin(issues, [i["number"] for i in news])
+        done, held = [], []
         for issue, kind in [(i, "restart") for i in restarts] + [(i, "new") for i in news]:
             if len(done) >= slots:
                 break
+            if kind == "new" and self.overlap and self.overlap.hold_reason(issue):
+                held.append(issue["number"])
+                continue
             if self._assign(issue["number"], kind):
                 done.append((issue["number"], kind))
+                if self.overlap:
+                    self.overlap.assigned(issue)
+        if self.overlap:
+            self.overlap.end()
         what = ", ".join(f"#{n} ({kind})" for n, kind in done) or "nothing ready"
+        what += f"; held for overlapping files: {', '.join(f'#{n}' for n in held)}" if held else ""
         return (f"{merged}{len(done)} of {slots} free slot(s) filled: {what}" + (" (dry run)" if self.dry_run else ""),
                 done)
 

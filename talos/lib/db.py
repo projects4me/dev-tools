@@ -109,6 +109,16 @@ CREATE TABLE IF NOT EXISTS auto_merges (
     merge_sha           TEXT,
     detail              TEXT                    -- why it was handed back
 );
+CREATE TABLE IF NOT EXISTS overlap_holds (
+    agent               TEXT    NOT NULL,       -- the orchestrator holding the issue
+    issue               INTEGER NOT NULL,       -- a ready issue not assigned because its files overlap
+    repo                TEXT,
+    blocker             INTEGER,                -- the in-flight issue it waits for
+    files               TEXT,                   -- the shared files, JSON list
+    held_at             TEXT,                   -- since when (the issue was commented on then)
+    checked_at          TEXT,                   -- the latest sweep that found the overlap
+    PRIMARY KEY (agent, issue)
+);
 CREATE INDEX IF NOT EXISTS auto_merges_by_issue ON auto_merges (agent, issue);
 CREATE INDEX IF NOT EXISTS runs_by_issue ON runs (agent, issue);
 CREATE INDEX IF NOT EXISTS runs_by_start ON runs (started_at);
