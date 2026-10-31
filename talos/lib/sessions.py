@@ -7,7 +7,8 @@ from . import db
 
 COLUMNS = ("session_id", "session_cost_usd", "running", "runs", "escalated", "last_model",
            "live_session_id", "started_at", "last_ended_at", "handoff_reason", "handoff_detail", "handoff_at",
-           "auto_retries", "next_action", "conflict_attempts", "conflict_noted")
+           "auto_retries", "next_action", "conflict_attempts", "conflict_noted",
+           "pending_status", "pending_assignee", "pending_tries")
 
 
 def get(agent, issue):
@@ -53,5 +54,25 @@ def interrupted(agent):
     try:
         return [r["issue"] for r in conn.execute("SELECT issue FROM issues WHERE agent = ? AND running = 1",
                                                  (agent,))]
+    finally:
+        conn.close()
+
+
+def pending_handoffs(agent):
+    """{issue: state} of the handbacks Gaia refused that are still to be retried."""
+    conn = db.connect()
+    try:
+        return {r["issue"]: dict(r) for r in conn.execute(
+            "SELECT * FROM issues WHERE agent = ? AND pending_status IS NOT NULL", (agent,))}
+    finally:
+        conn.close()
+
+
+def clear_pending(agent, issue):
+    conn = db.connect()
+    try:
+        with conn:
+            conn.execute("UPDATE issues SET pending_status = NULL, pending_assignee = NULL, pending_tries = 0 "
+                         "WHERE agent = ? AND issue = ?", (agent, issue))
     finally:
         conn.close()

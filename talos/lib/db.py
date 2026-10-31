@@ -29,6 +29,9 @@ CREATE TABLE IF NOT EXISTS issues (
     handoff_detail      TEXT,               -- JSON with the code's details, when it has any
     handoff_at          TEXT,
     auto_retries        INTEGER DEFAULT 0,  -- automatic restarts after mechanical stops (cleared by `talos reset`)
+    pending_status      TEXT,               -- status of a handback Gaia refused, retried until it succeeds
+    pending_assignee    TEXT,               -- assignee of that handback
+    pending_tries       INTEGER DEFAULT 0,  -- retries of it so far
     PRIMARY KEY (agent, issue)
 );
 CREATE TABLE IF NOT EXISTS runs (
@@ -119,6 +122,9 @@ MIGRATIONS = (
     ("issues", "auto_retries", "INTEGER DEFAULT 0"),
     ("issues", "next_action", "TEXT"),            # an action an orchestrator chose for the next run (merge_conflict)
     ("issues", "conflict_attempts", "INTEGER DEFAULT 0"),   # merge-conflict resolutions handed to the agent
+    ("issues", "pending_status", "TEXT"),         # a handback that failed (reason handoff_failed), retried
+    ("issues", "pending_assignee", "TEXT"),
+    ("issues", "pending_tries", "INTEGER DEFAULT 0"),
     ("issues", "conflict_noted", "TEXT"),         # PR head the reviewer was told about once the attempts ran out
 )
 

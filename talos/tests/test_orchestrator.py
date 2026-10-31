@@ -190,6 +190,14 @@ class SweepTest(unittest.TestCase):
         self.assertEqual(self.orchestrator(tracker).sweep(), [])          # now full
         self.assertIn("no free slot", store.get("agamemnon")["last_sweep"])
 
+    def test_finished_and_pending_handback_issues_are_not_in_flight(self):
+        tracker = FakeTracker([issue(1), issue(2), issue(3, status="done", assignee=WORKER_ID),
+                               issue(4, status="wont_fix", assignee=WORKER_ID),
+                               issue(5, status="in_progress", assignee=WORKER_ID),
+                               issue(6, status="in_progress", assignee=WORKER_ID)])
+        sessions.update("odysseus", 6, pending_status="feedback", pending_assignee=OWNER)
+        self.assertEqual(self.orchestrator(tracker).sweep(), [(1, "new")])     # only #5 holds a slot
+
     def test_max_in_flight_defaults_to_worker_max_parallel(self):
         tracker = FakeTracker([issue(1), issue(2)])
         self.assertEqual(self.orchestrator(tracker, max_in_flight=0).sweep(), [(1, "new")])

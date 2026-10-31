@@ -150,6 +150,11 @@ def cmd_status(args):
         for m in orchestrator_state.merges_on(name, datetime.now().astimezone().strftime("%Y-%m-%d")):
             print(f"  merged today  #{m['issue']}  {m['repo']}#{m['pr']}  as {(m.get('merge_sha') or '')[:7]}"
                   f"  at {(m.get('ended_at') or '')[11:16]}")
+    for (agent, issue), entry in sorted(entries.items()):
+        if entry.get("pending_status"):
+            print(f"PENDING HANDBACK  {agent} #{issue}  status '{entry['pending_status']}', assign "
+                  f"{entry.get('pending_assignee')}  retries {entry.get('pending_tries') or 0}  "
+                  f"since {entry.get('handoff_at') or '?'}")
     others = sorted((k, v) for k, v in entries.items() if not v.get("running"))
     if others:
         print("\nIssues worked before:")

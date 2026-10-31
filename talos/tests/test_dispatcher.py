@@ -100,6 +100,30 @@ class DispatcherTest(unittest.TestCase):
                 holder["d"] = d
             return d.handle(42), tracker
 
+    def test_failed_handback_is_recorded_and_retried_until_it_succeeds(self):
+        tracker = StubTracker(make_issue())
+        failures = [TalosError("gaia-mcp memory error"), TalosError("still down")]
+        real = tracker.hand_off
+
+        def flaky(number, status, assignee):
+            if failures:
+                raise failures.pop(0)
+            real(number, status, assignee)
+
+        tracker.hand_off = flaky
+        d = dispatcher_mod.Dispatcher(make_agent(), tracker, "claude")
+        d._hand_off(42, "failed", "title", "<p>x</p>", reason="interrupted")
+        entry = sessions.get("odysseus", 42)
+        self.assertEqual((entry["handoff_reason"], entry["pending_status"]), ("handoff_failed", d.agent.statuses["failed"]))
+        self.assertEqual(d.retry_handoffs("test"), 0)           # fails again, stays pending
+        self.assertEqual(sessions.get("odysseus", 42)["pending_tries"], 1)
+        self.assertEqual(d.retry_handoffs("test"), 1)
+        entry = sessions.get("odysseus", 42)
+        self.assertIsNone(entry["pending_status"])
+        self.assertEqual(entry["handoff_reason"], "interrupted")
+        self.assertEqual(tracker.handoffs, [(d.agent.statuses["failed"], d.agent.handoff_to)])
+        self.assertEqual(sessions.pending_handoffs("odysseus"), {})
+
     def test_run_shares_the_workspaces_memory(self):
         with mock.patch.dict(dispatcher_mod.memory.os.environ, {"CLAUDE_CONFIG_DIR": "cfg"}),                 mock.patch.object(dispatcher_mod, "WORKSPACE", Path("/srv/Pr4M")):
             self.dispatch(make_issue(), [result("needs_input")])

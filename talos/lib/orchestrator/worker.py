@@ -117,10 +117,17 @@ class Orchestrator:
                 done)
 
     def _in_flight(self):
+        """Issues assigned to the worker that it still has to work: finished ones (the worker's done statuses and
+        wont_fix) and ones waiting only on a handback Gaia refused (Talos retries it) don't hold a slot."""
         if self._project_ids is None:
             self._project_ids = self.tracker.project_ids()
-        return sum(len(self.tracker.assigned_issue_numbers(pid, self.worker_id))
-                   for pid in self._project_ids.values())
+        numbers = [n for pid in self._project_ids.values()
+                   for n in self.tracker.assigned_issue_numbers(pid, self.worker_id)]
+        pending = sessions.pending_handoffs(self.worker.name)
+        numbers = [n for n in numbers if n not in pending]
+        finished = {str(s).lower() for s in (*self.worker.dependency_done_statuses, "wont_fix")}
+        statuses = self.tracker.statuses_of(numbers) if numbers else {}
+        return sum(1 for n in numbers if str(statuses.get(n) or "").lower() not in finished)
 
     def _update_breaker(self, st):
         """Count the worker's handbacks since the last sweep; pause when the failure streak reaches the limit.
