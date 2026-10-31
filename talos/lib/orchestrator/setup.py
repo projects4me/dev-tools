@@ -2,8 +2,10 @@
 
 import dataclasses
 
-from .. import policy, workspaces
+from .. import policy, runner, workspaces
+from ..agamemnon import premise, wiring
 from ..agamemnon.holds import release_due
+from ..agamemnon.triage import Triage, launcher
 from ..config import WORKSPACE, TalosError, log
 from ..hermes import Listener
 from ..registry import load_agents
@@ -50,7 +52,21 @@ def merge_routes(agents):
             for a in agents if a.kind == "orchestrator" and a.orchestration.auto_merge_milestones}
 
 
-def start(agent, cfg, dry_run):
+def _triage(agent, worker, tracker, me, owners, claude, dry_run):
+    """Agamemnon's triage sessions (agaTriage), or None when they are off. Sessions a restart cut off go to the owner."""
+    if not agent.orchestration.aga_triage:
+        return None
+    if not claude:
+        raise TalosError("agaTriage needs the claude binary (claudeBin in talos/config.json)")
+    triage = Triage(agent, tracker, me, owners, premise.load(),
+                    launcher(claude, agent.name, agent.orchestration, WORKSPACE, runner.run),
+                    run_log=wiring.run_log(worker.name), in_flight=wiring.in_flight(worker.name), dry_run=dry_run)
+    if not dry_run:
+        triage.recover()
+    return triage
+
+
+def start(agent, cfg, dry_run, claude=None):
     """An orchestrator works the worker's projects as its own Gaia user; it listens to their status and assignee
     changes and sweeps on each (re)connect and every sweepMinutes."""
     worker = load_agents(agent.orchestration.worker)[0]
@@ -70,8 +86,10 @@ def start(agent, cfg, dry_run):
                           lambda repo, issue: workspaces.branch_holder(WORKSPACE, repo, issue), dry_run=dry_run)
     overlap = OverlapGate(agent, worker, tracker, IssueFiles(tracker.child_env), dry_run=dry_run)
     holds = lambda: release_due(tracker, worker_id, me, _now(), agent.name, dry_run)    # noqa: E731
+    triage = _triage(agent, worker, tracker, me, owners, claude, dry_run)
+    merges.triage = keeper.triage = triage
     orchestrator = Orchestrator(agent, worker, tracker, worker_id, dry_run=dry_run, merges=merges, keeper=keeper,
-                                overlap=overlap, holds=holds)
+                                overlap=overlap, holds=holds, triage=triage)
     orchestrator.start()
     Listener(agent, tracker, [policy.ASSIGNEE_EVENT, policy.STATUS_EVENT], orchestrator.on_event,
              orchestrator.on_ready, cfg["hermesUrl"], cfg.get("nodeBin", "node"),

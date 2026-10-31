@@ -107,6 +107,9 @@ class RegistryTest(unittest.TestCase):
                                                                                      "odysseus", "aga-"))
         self.assertEqual((o.max_in_flight, o.sweep_minutes, o.max_auto_retries, o.fail_streak_limit), (0, 5, 2, 3))
         self.assertEqual(o.auto_retry_reasons, RETRY)
+        self.assertEqual((o.aga_triage, o.aga_models, o.aga_max_turns, o.aga_max_cost_usd, o.aga_daily_cost_usd,
+                          o.aga_sessions_per_type),
+                         (True, {"default": "sonnet", "merge_conflict": "opus"}, 40, 2.0, 10.0, 1))
 
     def test_validation(self):
         raw = json.loads((AGAMEMNON / "agent.json").read_text(encoding="utf-8"))
@@ -117,7 +120,9 @@ class RegistryTest(unittest.TestCase):
         for changes, message in (({"failStreakLimit": 0}, "failStreakLimit"), ({"maxInFlight": "x"}, "maxInFlight"),
                                  ({"milestonePrefix": " "}, "milestonePrefix"), ({"sweepMinutes": 0}, "sweepMinutes"),
                                  ({"autoRetryReasons": "turn_budget"}, "autoRetryReasons"),
-                                 ({"gaiaEnv": "gaia-mcp/none.env"}, "gaiaEnv")):
+                                 ({"gaiaEnv": "gaia-mcp/none.env"}, "gaiaEnv"),
+                                 ({"agaMaxCostUsd": 0}, "agaMaxCostUsd"), ({"agaMaxTurns": 0}, "agaMaxTurns"),
+                                 ({"agaModel": {"default": ""}}, "agaModel")):
             self.write(**changes)
             with self.assertRaisesRegex(TalosError, message):
                 registry.load_agent(self.folder)

@@ -125,7 +125,11 @@ CREATE TABLE IF NOT EXISTS aga_incidents (
     type                TEXT    NOT NULL,       -- the incident type (premise.json)
     opened_at           TEXT,
     closed_at           TEXT,                   -- NULL while open: aga acts only for an open incident
-    note                TEXT                    -- how it ended
+    note                TEXT,                   -- how it ended
+    source              TEXT,                   -- where it came from: handback, merge or conflict (triage.py)
+    model               TEXT,                   -- the triage session's model; NULL when no session was run
+    outcome             TEXT,                   -- resolved, owner (handed to the owner) or declined (no session)
+    cost_usd            REAL    DEFAULT 0       -- the triage session's cost
 );
 CREATE TABLE IF NOT EXISTS aga_actions (
     id                  INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -169,6 +173,10 @@ MIGRATIONS = (
     ("auto_merges", "ci_rerun_sha", "TEXT"),      # PR head whose failed CI job(s) were re-run once
     ("auto_merges", "ci_rerun_at", "TEXT"),
     ("auto_merges", "note", "TEXT"),              # steps taken before the end (daily-limit hold, CI re-run)
+    ("aga_incidents", "source", "TEXT"),          # triage sessions (agamemnon/triage.py)
+    ("aga_incidents", "model", "TEXT"),
+    ("aga_incidents", "outcome", "TEXT"),
+    ("aga_incidents", "cost_usd", "REAL DEFAULT 0"),
 )
 
 _init_lock = threading.Lock()
