@@ -30,6 +30,10 @@ SERVER_NAME = "gaia"
 SERVER_VERSION = "0.1.0"
 SUPPORTED_PROTOCOLS = ("2025-06-18", "2025-03-26", "2024-11-05")
 PRIORITIES = ("blocker", "critical", "high", "medium", "low")
+# A project's hasMany relations the issue tools resolve names against. Each is read in its own request: asking for
+# several in one multiplies their rows in Gaia and can run it out of memory (adt-4217).
+PROJECT_RELS = ("members", "milestones", "issuetypes", "issuestatuses")
+NOT_JSON = "raw"     # _http's key for a reply that isn't JSON (e.g. a PHP fatal-error page)
 # Recommended model for the agent that works the issue (simple -> Sonnet, complex -> Opus). Gaia has no
 # field for it, so it lives in the description as a "Complexity: <value>" line; Talos reads it back.
 COMPLEXITIES = ("simple", "complex")
@@ -124,7 +128,7 @@ class Gaia:
         try:
             payload = json.loads(raw) if raw.strip() else {}
         except ValueError:
-            payload = {"raw": raw[:2000]}
+            payload = {NOT_JSON: raw[:2000]}
         return status, payload
 
     def upload(self, name, content, fields):
@@ -177,6 +181,11 @@ class Gaia:
             # Token expired or revoked: sign in again once and retry.
             self.access_token = None
             status, payload = self._http(method, path, params=params, body=body)
+        if method == "GET" and (status >= 500 or not_json(payload)):
+            # Gaia crashed on this request (e.g. it ran out of memory): a read is safe to try once more.
+            status, payload = self._http(method, path, params=params, body=body)
+        if not_json(payload):
+            raise GaiaError(f"Gaia {method} {path} failed ({status}, no JSON reply): {page_text(payload[NOT_JSON])}")
         if status >= 400:
             raise GaiaError(f"Gaia {method} {path} returned {status}: {json.dumps(payload)[:1500]}")
         return payload
@@ -271,13 +280,21 @@ class Gaia:
         if len(matches) > 1:
             names = ", ".join(f"{p.get('name')} ({p.get('shortCode')})" for p in matches)
             raise GaiaError(f"'{name_or_code}' matches more than one project: {names}. Use the short code.")
-        if not rels:
-            return matches[0]
-        found = self.find("project", f"(Project.id : {matches[0]['id']})", rels=rels, limit=-1)
-        return found[0] if found else matches[0]
+        p = dict(matches[0])
+        for rel in [r.strip() for r in (rels or "").split(",") if r.strip()]:
+            # one relation per request (see PROJECT_RELS); no rows is an error, never a project without the relation
+            found = self.find("project", f"(Project.id : {p['id']})", rels=rel, limit=-1)
+            if not found:
+                raise GaiaError(f"Gaia returned no project {p.get('name')} when asked for its {rel}.")
+            p[rel] = found[0].get(rel) or []
+        return p
 
-    def project_options(self, project):
-        p = self.project(project, rels="members,milestones,issuetypes,issuestatuses")
+    def project_options(self, project, needs=PROJECT_RELS):
+        """The project with the relations in `needs` (each its own request), and the statuses an issue can take: the
+        project's own, else the system ones; none when `needs` leaves out issuestatuses."""
+        p = self.project(project, rels=",".join(needs))
+        if "issuestatuses" not in needs:
+            return p, []
         statuses = p.get("issuestatuses") or []
         if not statuses:
             statuses = self.find("issuestatus", "(Issuestatus.system : 1)", limit=-1)
@@ -338,6 +355,32 @@ def type_label(issuetype, labels):
     """An issue type's en-us label, falling back to its value."""
     name = (issuetype or {}).get("name")
     return labels.get(name) or name
+
+
+def not_json(payload):
+    """True for _http's stand-in for a reply that wasn't JSON."""
+    return isinstance(payload, dict) and set(payload) == {NOT_JSON}
+
+
+def page_text(raw, limit=300):
+    """The readable text of an error page (PHP's fatal errors come as HTML), shortened."""
+    text = re.sub(r"<[^>]+>", "", re.sub(r"<br\s*/?>", " ", raw or "", flags=re.IGNORECASE))
+    return re.sub(r"\s+", " ", text).strip()[:limit]
+
+
+def project_rels_for(args, creating):
+    """The project relations resolving these issue arguments needs: each one costs Gaia a request, so only those."""
+    needs = []
+    if creating or args.get("type") is not None:
+        needs.append("issuetypes")
+    if creating or args.get("status") is not None:
+        needs.append("issuestatuses")
+    if creating or args.get("milestone") is not None:
+        needs.append("milestones")
+    who = args.get("assignee")
+    if who is not None and str(who).strip().lower() not in ("", "me", "self"):
+        needs.append("members")     # "me" (the default) is the signed-in user, read without the member list
+    return tuple(needs)
 
 
 def summarize_issue(i, base_ui=None, type_labels=None):
@@ -410,7 +453,7 @@ class Tools:
         }
 
     def list_issues(self, args):
-        p, statuses = self.g.project_options(args["project"])
+        p, statuses = self.g.project_options(args["project"], ("issuestatuses",) if args.get("status") else ())
         clauses = [f"(Issue.projectId : {p['id']})"]
         if args.get("status"):
             s = self.g.pick(statuses, args["status"], "status")
@@ -593,7 +636,7 @@ class Tools:
                 "created": created, "project": p.get("name")}
 
     def create_issue(self, args):
-        p, statuses = self.g.project_options(args["project"])
+        p, statuses = self.g.project_options(args["project"], project_rels_for(args, creating=True))
         me = self.g.me()
         # House rule: Claude's issues go in the project's Claude milestone unless told otherwise. A milestone that
         # doesn't exist yet (the default or a named one) is created; "" means the backlog.
@@ -622,7 +665,7 @@ class Tools:
     def update_issue(self, args):
         issue = self.g.issue_by_number(args["issue_number"])
         p, statuses = self.g.project_options((issue.get("project") or {}).get("shortCode")
-                                             or issue.get("projectShortcode"))
+                                             or issue.get("projectShortcode"), project_rels_for(args, creating=False))
         attrs = self._resolve_fields(p, statuses, args, creating=False)
         if args.get("complexity") is not None:
             attrs["description"] = with_complexity(attrs.get("description", issue.get("description")),

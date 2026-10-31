@@ -78,7 +78,7 @@ class Tracker:
     def issues_in(self, project, milestone_prefix):
         """The project's issues in milestones whose name starts with milestone_prefix (any case), as issue() reads
         them."""
-        p, _ = self._call(self.gaia.project_options, project)
+        p, _ = self._call(self.gaia.project_options, project, ("milestones",))
         prefix = milestone_prefix.lower()
         found = []
         for m in p.get("milestones") or []:
@@ -150,8 +150,8 @@ class Tracker:
         with self._lock:
             names, at = self._milestones.get(project, (None, 0))
             if names is None or time.monotonic() - at > self.MILESTONES_TTL:
-                options = self._call(self.tools.project_options, {"project": project})
-                names = [m["name"] for m in options["milestones"]]
+                options = self._call(self.gaia.project, project, "milestones")
+                names = [m["name"] for m in options.get("milestones") or []]
                 self._milestones[project] = (names, time.monotonic())
             return names
 
