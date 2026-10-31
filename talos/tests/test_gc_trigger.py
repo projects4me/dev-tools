@@ -108,6 +108,57 @@ class CollectAllTest(unittest.TestCase):
         self.assertEqual(res[0][:2], (3, "kept"))
 
 
+class TestContainersTest(unittest.TestCase):
+    """The p4m test containers of finished issues' checkouts go with the gc, even when the workspace stays or is gone."""
+
+    def setUp(self):
+        self.root = fixture_root(self, 1, 2)
+        self.agent = SimpleNamespace(runner={})
+        self.statuses = {1: "done", 2: "in_progress", 3: "done"}
+        self.tracker = SimpleNamespace(issue=lambda n: {"status": self.statuses[n]})
+        self.testenv = mock.Mock()
+        self.testenv.TestEnvError = type("TestEnvError", (Exception,), {})
+        self.testenv.containers.return_value = [("box-1", "issue-1/gaia"), ("box-2", "issue-2/gaia"),
+                                                ("box-3", "issue-3/prometheus"), ("box-x", "gaia")]
+
+    def run_all(self, entries, **kw):
+        return workspace_gc.collect_all(self.root, entries, lambda name: self.agent, lambda agent: self.tracker,
+                                        lambda i: False, testenv=self.testenv, **kw)
+
+    def removed(self):
+        return [c.args[0] for c in self.testenv.remove.call_args_list]
+
+    def test_removes_finished_issues_containers_only(self):
+        res = self.run_all({("a", 1): {}, ("a", 2): {}, ("a", 3): {}})
+        self.assertIn((1, "removed", "test container box-1"), res)
+        self.assertIn((3, "removed", "test container box-3"), res)      # its workspace is already gone
+        self.assertEqual(self.removed(), [["box-1"], ["box-3"]])
+        self.testenv.containers.assert_called_once_with(self.root / ".runs")
+
+    def test_a_kept_dirty_workspace_still_loses_its_containers(self):
+        (self.root / ".runs" / "issue-1" / "gaia" / "new.txt").write_text("x", encoding="utf-8")
+        res = self.run_all({("a", 1): {}}, only=1)
+        self.assertEqual([r[1] for r in res], ["kept", "removed"])
+        self.assertEqual(self.removed(), [["box-1"]])
+
+    def test_never_while_a_run_is_in_flight_and_not_on_a_dry_run(self):
+        res = self.run_all({("a", 1): {"running": 1}, ("a", 3): {}}, dry_run=True)
+        self.assertIn((1, "kept", "run in flight"), res)
+        self.assertIn((3, "would-remove", "test container box-3"), res)
+        self.testenv.remove.assert_not_called()
+
+    def test_docker_unreachable_leaves_them_and_the_gc_carries_on(self):
+        self.testenv.containers.side_effect = self.testenv.TestEnvError("no daemon")
+        res = self.run_all({("a", 1): {}})
+        self.assertIn((1, "removed", "done"), res)
+        self.testenv.remove.assert_not_called()
+
+    def test_a_failed_removal_is_reported_as_kept(self):
+        self.testenv.remove.side_effect = self.testenv.TestEnvError("busy")
+        res = self.run_all({("a", 3): {}}, only=3)
+        self.assertEqual(res, [(3, "kept", "test container box-3: busy")])
+
+
 class LeftoversTest(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())

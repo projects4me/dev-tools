@@ -24,7 +24,7 @@ dev-tools/talos/talos status [--steps 20]                  # what is running now
 dev-tools/talos/talos runs [--issue 3714] [--limit 50]     # per-run stats (issues and idea turns): model, outcome, cost, turns, context
 dev-tools/talos/talos reset odysseus 3714 [--model]        # after a manual look: fresh iteration allowance
 dev-tools/talos/talos clean 3714 [--force]                 # issue finished: remove its .runs/issue-N workspace
-dev-tools/talos/talos gc [--dry-run]                       # remove finished issues' workspaces (also when `talos run` starts; a closed issue is removed even with uncommitted changes)
+dev-tools/talos/talos gc [--dry-run]                       # remove finished issues' workspaces and their p4m test containers (also when `talos run` starts and when an issue turns done; a closed issue is removed even with uncommitted changes, the test containers go even when the workspace stays)
 python -m unittest discover -s dev-tools/talos/tests       # unit tests (from dev-tools/talos: -s tests)
 ```
 

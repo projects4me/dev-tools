@@ -604,3 +604,25 @@ def clean(checkout=None):
     for n in names:
         _docker("rm", "-f", n, check=False)
     return names
+
+
+def containers(under):
+    """[(name, checkout)] of the p4m test containers started for a checkout in the folder `under` (or `under` itself),
+    e.g. a Talos issue workspace; checkout is the label's comparable path relative to `under` ("" for `under`). Slot
+    containers are labelled by slot, so they never match. Raises TestEnvError when docker can't be asked."""
+    prefixes = list(dict.fromkeys(norm(p) for p in (Path(under), Path(under).resolve())))
+    out = _docker("ps", "-a", "--filter", f"label={LABEL}", "--format", f'{{{{.Names}}}}\t{{{{.Label "{LABEL}"}}}}')
+    found = []
+    for line in out.stdout.splitlines():
+        name, _, checkout = line.partition("\t")
+        for p in prefixes:
+            if checkout == p or checkout.startswith(p + "/"):
+                found.append((name, checkout[len(p) + 1:]))
+                break
+    return found
+
+
+def remove(names):
+    """Remove the named test containers (`containers` finds them). Raises TestEnvError when one can't be removed."""
+    for n in names:
+        _docker("rm", "-f", n)
