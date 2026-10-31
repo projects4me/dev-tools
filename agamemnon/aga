@@ -1,0 +1,14 @@
+#!/usr/bin/env sh
+# aga: the guarded tool an Agamemnon session acts with (talos/aga.py). See talos/README.md, Agamemnon's aga tool.
+# pwd -W: a Windows path, because the script path is no longer converted for python (see MSYS_NO_PATHCONV below)
+DIR="$(cd "$(dirname "$0")/../talos" && { pwd -W 2>/dev/null || pwd; })"
+# Python: `python` on Windows (Git Bash; `python3` there may be the Microsoft Store stub, which hangs),
+# `python3` elsewhere (often the only one on Linux); whichever exists if that one doesn't.
+case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) PY=python ;; *) PY=python3 ;; esac
+command -v "$PY" >/dev/null 2>&1 || { [ "$PY" = python ] && PY=python3 || PY=python; }
+export MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*'
+# The runtime copy of dev-tools (`p4m runtime`) runs main's tooling while this checkout is worked;
+# P4M_RUNTIME=off runs this copy.
+RT="$DIR/../../.dev-tools-runtime/talos"
+[ "${P4M_RUNTIME:-}" = off ] || [ ! -f "$RT/aga.py" ] || DIR="$RT"
+exec "$PY" "$DIR/aga.py" "$@"

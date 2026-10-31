@@ -15,6 +15,9 @@ from datetime import datetime
 
 from lib import container, db, policy, runner, sessions, workspace_gc, workspaces
 from lib import runs as run_log
+from lib.agamemnon import journal as agamemnon_journal
+from lib.agamemnon import undo as agamemnon_undo
+from lib.agamemnon import wiring as agamemnon_wiring
 from lib.config import LISTENER, STATE_DIR, TALOS_DIR, WORKSPACE, TalosError, claude_bin, log, settings
 from lib.dispatcher import Dispatcher, lease_file
 from lib.ideas import setup as ideas_setup
@@ -216,6 +219,50 @@ def cmd_reset(args):
     return 0
 
 
+def _since(text):
+    """An ISO time prefix ("2026-10-31", "2026-10-31 18:00") as stored in the journal (T between date and time)."""
+    return text.strip().replace(" ", "T") if text else None
+
+
+def cmd_agamemnon_log(args):
+    """Agamemnon's action journal, oldest first."""
+    rows = agamemnon_journal.actions(since=_since(args.since), issue=args.issue)
+    if args.json:
+        print(json.dumps(rows, indent=2))
+        return 0
+    if not rows:
+        print("no Agamemnon actions" + (f" since {args.since}" if args.since else ""))
+        return 0
+    for a in rows:
+        undone = f"  [undone {a['undone_at']}: {a['undone_note']}]" if a["undone_at"] else ""
+        print(f"{a['id']:>5}  {a['at']}  #{a['issue']} incident {a['incident']}  {a['verb']} "
+              f"{json.dumps(a['args']) if a['args'] else ''}{undone}")
+        print(f"       why: {a['why']}")
+        print(f"       before: {json.dumps(a['state_before'])}  after: {json.dumps(a['state_after'])}")
+        print(f"       undo: {a['undo_note'] or '-'}")
+    return 0
+
+
+def cmd_agamemnon_undo(args):
+    """Undo one action, or every action since a time (newest first), where the state has not moved since."""
+    if (args.id is None) == (args.since is None):
+        raise TalosError("give an action id or --since <time>")
+    undoer = agamemnon_undo.Undoer(*agamemnon_wiring.build())
+    try:
+        if args.id is not None:
+            print(f"{args.id}: {undoer.undo(args.id)}")
+        else:
+            done = undoer.undo_since(_since(args.since))
+            for action_id, note in done:
+                print(f"{action_id}: {note}")
+            if not done:
+                print(f"nothing to undo since {args.since}")
+    except agamemnon_undo.UndoRefused as e:
+        print(f"refused: {e}", file=sys.stderr)
+        return 1
+    return 0
+
+
 def cmd_clean(args):
     """Remove a finished issue's workspace (.runs/issue-N): its links, worktrees and folder; branches stay."""
     try:
@@ -368,6 +415,19 @@ def build_parser():
     sp = sub.add_parser("resume", help="let a paused orchestrator assign issues again (clears its breaker)")
     sp.add_argument("agent")
     sp.set_defaults(func=cmd_resume)
+
+    sp = sub.add_parser("agamemnon", help="Agamemnon's action journal: log and undo (see `aga`)")
+    aga = sp.add_subparsers(dest="agamemnon_command", required=True)
+    sp = aga.add_parser("log", help="the actions Agamemnon took, with the state before and after and the reasoning")
+    sp.add_argument("--since", help="from this time (ISO, e.g. 2026-10-31 or '2026-10-31 18:00')")
+    sp.add_argument("--issue", type=int, help="only this issue")
+    sp.add_argument("--json", action="store_true")
+    sp.set_defaults(func=cmd_agamemnon_log)
+    sp = aga.add_parser("undo", help="undo an action, or all since a time (newest first); refused where the "
+                                     "state has moved since")
+    sp.add_argument("id", type=int, nargs="?", help="the action id (talos agamemnon log)")
+    sp.add_argument("--since", help="undo every action from this time")
+    sp.set_defaults(func=cmd_agamemnon_undo)
 
     sp = sub.add_parser("clean", help="remove a finished issue's workspace (.runs/issue-N); its branch stays")
     sp.add_argument("issue", type=int)

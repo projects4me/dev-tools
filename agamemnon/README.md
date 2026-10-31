@@ -10,6 +10,7 @@ GitHub doesn't let a PR's author give.
 | GitHub account | `agent-agamemnon`, maintainer on the repos |
 | GitHub API token | `agamemnon.env` (git-ignored): `GH_TOKEN=` (template: `agamemnon.env.example`) |
 | Wrapper | `./agamemnon gh …` (there is no `git`: Agamemnon never commits or pushes) |
+| Guarded tool | `./aga <verb>`: the only way an Agamemnon AI session acts (see `talos/README.md`, The `aga` tool) |
 | Projects4Me user | Agent Agamemnon, `agent.agamemnon@projects4.me`; credentials in `gaia-mcp/agamemnon.env` |
 
 `p4m configure` doesn't ask for this token: copy `agamemnon.env.example` to `agamemnon.env` and paste it in.

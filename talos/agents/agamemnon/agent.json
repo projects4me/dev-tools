@@ -22,5 +22,9 @@
   "failStreakLimit": 3,
   "autoMergeMilestones": ["aga-v1"],
   "maxAutoMergesPerDay": 5,
-  "autoMergeWaitMinutes": 60
+  "autoMergeWaitMinutes": 60,
+  "agaMaxActionsPerIncident": 5,
+  "agaWaitMaxMinutes": 30,
+  "agaPollSeconds": 30,
+  "agaHoldUntilHour": 6
 }

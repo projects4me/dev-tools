@@ -5,8 +5,8 @@ records its role.
 
 ## Never auto-merge changes to its own powers
 - The merge gate (`ai mergecheck`) has a `self` check. It fails when a PR changes a path in `agamemnonProtected`
-  (`ai/config.json`, the one list): this agent's folder, `talos/lib/orchestrator/**`, `ai/lib/mergegate.py`
-  and the `agamemnon/**` tool wrapper.
+  (`ai/config.json`, the one list): this agent's folder, `talos/lib/orchestrator/**`, `ai/lib/mergegate.py`,
+  the `aga` tool (`talos/lib/agamemnon/**`, `talos/aga.py`) and the `agamemnon/**` wrappers.
 - A failed gate hands the issue to the owner (in_review) with the reason. Agamemnon never approves such a PR.
 
 ## Tools: propose, never build

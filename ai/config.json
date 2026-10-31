@@ -9,6 +9,8 @@
   "agamemnonProtected": [
     "talos/agents/agamemnon/**",
     "talos/lib/orchestrator/**",
+    "talos/lib/agamemnon/**",
+    "talos/aga.py",
     "ai/lib/mergegate.py",
     "agamemnon/**"
   ],
