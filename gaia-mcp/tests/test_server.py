@@ -31,7 +31,8 @@ class FakeGaia:
         return {"id": "p-1", "name": "A Dev Tool", "shortCode": "adt", "milestones": list(self.milestones),
                 "issuetypes": list(self.types), "members": [{"id": "1", "name": "Hammad Hassan"}]}
 
-    def project_options(self, project):
+    def project_options(self, project, needs=server.PROJECT_RELS):
+        self.needs = tuple(needs)
         return self.project(project), [{"id": "s-new", "name": "new"}]
 
     pick = staticmethod(server.Gaia.pick)
@@ -88,6 +89,83 @@ class MilestoneTest(unittest.TestCase):
         self.assertEqual((first["created"], again["created"]), (True, False))
         self.assertEqual(again["milestone"]["id"], first["milestone"]["id"])
         self.assertIn("gaia_create_milestone", json.dumps([t[0] for t in server.TOOLS]))
+
+
+class ProjectRelationsTest(unittest.TestCase):
+    """adt-4217: one request per project relation, only the ones a call needs, and no project without them."""
+
+    def gaia(self, rows=None):
+        g = server.Gaia()
+        g._projects = [{"id": "p-1", "name": "A Prometheus", "shortCode": "aprom"}]
+        g.finds = []
+
+        def find(module, query=None, rels=None, **kw):
+            g.finds.append(rels)
+            return [{"id": "p-1", rels: [{"id": f"{rels}-1"}]}] if rows is None else rows
+        g.find = find
+        return g
+
+    def test_each_relation_is_its_own_request(self):
+        g = self.gaia()
+        p, statuses = g.project_options("aprom")
+        self.assertEqual(g.finds, list(server.PROJECT_RELS))
+        self.assertEqual((p["members"], statuses), ([{"id": "members-1"}], [{"id": "issuestatuses-1"}]))
+
+    def test_no_rows_is_an_error_not_a_project_without_members(self):
+        with self.assertRaises(server.GaiaError) as e:
+            self.gaia(rows=[]).project_options("aprom", ("members",))
+        self.assertIn("members", str(e.exception))
+
+    def test_only_the_relations_the_arguments_need(self):
+        self.assertEqual(server.project_rels_for({"assignee": "1", "status": "pending"}, creating=False),
+                         ("issuestatuses", "members"))
+        self.assertEqual(server.project_rels_for({"comment": "x", "assignee": "me"}, creating=False), ())
+        self.assertEqual(server.project_rels_for({}, creating=True), ("issuetypes", "issuestatuses", "milestones"))
+        self.assertEqual(server.project_rels_for({"assignee": "hammad"}, creating=True)[-1], "members")
+
+    def test_update_issue_reads_only_what_it_sets(self):
+        g = FakeGaia()
+        server.Tools(g).update_issue({"issue_number": 4100, "status": "new", "assignee": "1"})
+        self.assertEqual(g.needs, ("issuestatuses", "members"))
+
+
+class GaiaReplyTest(unittest.TestCase):
+    """A Gaia that crashes returns a PHP error page, not JSON: that is an error, and a read is tried once more."""
+
+    PAGE = ("<br />\n<b>Fatal error</b>:  Allowed memory size of 134217728 bytes exhausted in "
+            "<b>/var/www/html/core/mvc/controllers/RestController.php</b> on line <b>1194</b><br />\n")
+
+    def gaia(self, *replies):
+        g = server.Gaia()
+        g.calls = []
+        queue = list(replies)
+
+        def http(method, path, params=None, body=None, **kw):
+            g.calls.append(method)
+            return queue.pop(0) if len(queue) > 1 else queue[0]
+        g._http = http
+        return g
+
+    def test_an_error_page_is_an_error_with_its_text(self):
+        g = self.gaia((200, {server.NOT_JSON: self.PAGE}))
+        with self.assertRaises(server.GaiaError) as e:
+            g.request("GET", "project")
+        self.assertIn("Fatal error: Allowed memory size", str(e.exception))
+        self.assertNotIn("<b>", str(e.exception))
+
+    def test_a_read_is_tried_once_more(self):
+        g = self.gaia((200, {server.NOT_JSON: self.PAGE}), (200, {"data": []}))
+        self.assertEqual(g.request("GET", "project"), {"data": []})
+        self.assertEqual(g.calls, ["GET", "GET"])
+
+    def test_a_write_is_not_repeated(self):
+        g = self.gaia((500, {server.NOT_JSON: self.PAGE}))
+        with self.assertRaises(server.GaiaError):
+            g.request("PATCH", "issue/i-1", body={})
+        self.assertEqual(g.calls, ["PATCH"])
+
+    def test_json_replies_pass_through(self):
+        self.assertEqual(self.gaia((200, {"raw": 1, "data": []})).request("GET", "x"), {"raw": 1, "data": []})
 
 
 class IssueGaia:
