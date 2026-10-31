@@ -6,6 +6,12 @@
   "coAuthor": "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>",
   "prFooter": "🤖 Generated with [Claude Code](https://claude.com/claude-code)",
   "codeRabbitRepos": ["gaia", "prometheus", "hermes"],
+  "agamemnonProtected": [
+    "talos/agents/agamemnon/**",
+    "talos/lib/orchestrator/**",
+    "ai/lib/mergegate.py",
+    "agamemnon/**"
+  ],
   "shipSize": {
     "warnOver": 10,
     "refuseOver": 15,
