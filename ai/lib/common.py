@@ -58,6 +58,14 @@ def run_workspace():
     return Path(path) if path else None
 
 
+def checkout_state_file(stem, suffix):
+    """A file in STATE_DIR owned by this checkout: `<stem>-issue-N<suffix>` in a Talos run (named after its
+    run workspace), else `<stem><suffix>`. Talos runs issues in parallel, so test logs and results keyed only
+    by repo would overwrite each other."""
+    root = run_workspace()
+    return STATE_DIR / f"{stem}{'-' + root.name if root else ''}{suffix}"
+
+
 def repo_dir(repo):
     """The repo's folder: in the run's workspace when P4M_WORKSPACE is set. The workspace root repo (pr4m) is
     never a worktree, so it always resolves to WORKSPACE."""
@@ -208,6 +216,21 @@ def timers_locked():
     with ExitStack() as stack:
         try:
             stack.enter_context(filelock.held(STATE_DIR / "timers.lock"))
+        except filelock.LockTimeout as e:
+            raise AiError(str(e))
+        yield
+
+
+@contextmanager
+def state_locked(name, wait_seconds=30, waiting=None):
+    """Hold STATE_DIR/<name>.lock for the block, shared by parallel Talos runs. `waiting` is said once if
+    another process holds it; a timeout raises AiError."""
+    filelock = _filelock()
+    with ExitStack() as stack:
+        try:
+            stack.enter_context(filelock.held(
+                STATE_DIR / f"{name}.lock", wait_seconds=wait_seconds,
+                on_wait=waiting and (lambda p: say(f"{waiting} ({filelock.describe_holder(p)})"))))
         except filelock.LockTimeout as e:
             raise AiError(str(e))
         yield
