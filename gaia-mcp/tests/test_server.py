@@ -83,6 +83,24 @@ class MilestoneTest(unittest.TestCase):
         self.assertEqual(self.issue_post()["milestoneId"], "")
         self.assertFalse([p for p in self.g.posts if p[1] == "milestone"])
 
+    def test_a_bad_type_creates_no_milestone(self):
+        with self.assertRaises(server.GaiaError):
+            self.tools.create_issue({"project": "adt", "subject": "S", "complexity": "simple", "type": "nope"})
+        self.assertEqual(self.g.posts, [])
+
+    def test_a_failed_issue_post_names_the_milestone_it_just_created(self):
+        request = self.g.request
+
+        def failing(method, path, params=None, body=None):
+            if path == "issue":
+                raise server.GaiaError("boom")
+            return request(method, path, params, body)
+        self.g.request = failing
+        with self.assertRaises(server.GaiaError) as e:
+            self.tools.create_issue({"project": "adt", "subject": "S", "complexity": "simple"})
+        self.assertIn("boom", str(e.exception))
+        self.assertIn("m-Claude-v1", str(e.exception))
+
     def test_create_milestone_is_idempotent(self):
         first = self.tools.create_milestone({"project": "adt", "name": "Claude-v1"})
         again = self.tools.create_milestone({"project": "adt", "name": "claude-v1"})
@@ -110,6 +128,13 @@ class ProjectRelationsTest(unittest.TestCase):
         p, statuses = g.project_options("aprom")
         self.assertEqual(g.finds, list(server.PROJECT_RELS))
         self.assertEqual((p["members"], statuses), ([{"id": "members-1"}], [{"id": "issuestatuses-1"}]))
+
+    def test_deleted_relation_rows_are_ignored(self):
+        rows = [{"id": "p-1", "milestones": [{"id": "m-1", "name": "Claude-v1", "deleted": 1},
+                                             {"id": "m-2", "name": "Claude-v1", "deleted": 0},
+                                             {"id": "m-3", "name": "Old", "deleted": "1"}]}]
+        p = self.gaia(rows=rows).project("aprom", rels="milestones")
+        self.assertEqual([m["id"] for m in p["milestones"]], ["m-2"])
 
     def test_no_rows_is_an_error_not_a_project_without_members(self):
         with self.assertRaises(server.GaiaError) as e:

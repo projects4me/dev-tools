@@ -286,8 +286,13 @@ class Gaia:
             found = self.find("project", f"(Project.id : {p['id']})", rels=rel, limit=-1)
             if not found:
                 raise GaiaError(f"Gaia returned no project {p.get('name')} when asked for its {rel}.")
-            p[rel] = found[0].get(rel) or []
+            # Gaia returns soft-deleted rows (deleted: 1) in a project's relations; they are not there for us
+            p[rel] = [r for r in (found[0].get(rel) or []) if not self.is_deleted(r)]
         return p
+
+    @staticmethod
+    def is_deleted(row):
+        return isinstance(row, dict) and str(row.get("deleted") or "0").strip().lower() not in ("0", "false", "")
 
     def project_options(self, project, needs=PROJECT_RELS):
         """The project with the relations in `needs` (each its own request), and the statuses an issue can take: the
@@ -643,8 +648,9 @@ class Tools:
         wanted = args.get("milestone")
         if wanted is None:
             wanted = os.environ.get("GAIA_DEFAULT_MILESTONE", "Claude-v1")
-        milestone, made = (None, False) if wanted == "" else self._ensure_milestone(p, wanted)
+        # Validate every field first: a call that fails must not leave a new milestone behind.
         attrs = self._resolve_fields(p, statuses, {k: v for k, v in args.items() if k != "milestone"}, creating=True)
+        milestone, made = (None, False) if wanted == "" else self._ensure_milestone(p, wanted)
         attrs["milestoneId"] = milestone["id"] if milestone else ""
         attrs["description"] = with_complexity(attrs.get("description"), args.get("complexity"))
         attrs.setdefault("startDate", date.today().isoformat())
@@ -652,10 +658,16 @@ class Tools:
         attrs.setdefault("endDate", (date.fromisoformat(attrs["startDate"]) + timedelta(days=7)).isoformat())
         attrs.update({"projectId": p["id"], "projectShortcode": p.get("shortCode"),
                       "owner": me["id"], "reportedUser": me["id"]})
-        payload = self.g.request("POST", "issue", body={"data": {"type": "issue", "attributes": attrs}})
-        created = self.g.flatten(payload)
-        if not created or not created[0].get("issueNumber"):
-            raise GaiaError(f"Gaia did not confirm the new issue: {json.dumps(payload)[:1500]}")
+        try:
+            payload = self.g.request("POST", "issue", body={"data": {"type": "issue", "attributes": attrs}})
+            created = self.g.flatten(payload)
+            if not created or not created[0].get("issueNumber"):
+                raise GaiaError(f"Gaia did not confirm the new issue: {json.dumps(payload)[:1500]}")
+        except GaiaError as e:
+            if made:
+                raise GaiaError(f"{e} (The milestone '{milestone.get('name')}' (id {milestone.get('id')}) was created "
+                                f"for this issue and is left in place.)") from e
+            raise
         issue = self.g.issue_by_number(created[0]["issueNumber"])
         out = {"created": summarize_issue(issue, self.ui, self.g.type_labels())}
         if made:
