@@ -69,7 +69,7 @@ class Dispatcher:
         """An issue assignment from Hermes: work it when it hands this agent work from an allowed user. A status change
         is only handed to the release worker: this runs on the listener thread, which must not wait on Gaia."""
         if policy.is_status_event(envelope):
-            if self._deps.any_held() or self._collects():   # else no Gaia read is worth making
+            if self._deps.any_held() or self._collects() or sessions.pending_handoffs(self.agent.name):
                 self._releases.put(policy.event_issue_number(envelope))
             return
         number = policy.event_issue(envelope, self.agent, self.user_id)
@@ -78,12 +78,27 @@ class Dispatcher:
 
     def _release_loop(self):
         while True:
-            changed = self._releases.get()
+            try:
+                changed = self._releases.get(timeout=self.RETRY_SECONDS)
+            except queue.Empty:       # nothing changed: still retry the handbacks Gaia refused
+                self._retry_handoffs("timer")
+                continue
+            self._retry_handoffs("status changed or reconnect")
             try:
                 self.release_held("status changed", changed)
             except Exception as e:  # never let one re-check stop the release worker
                 log(f"held re-check failed: {e}", self.agent.name)
             self.collect_finished(changed)
+
+    RETRY_SECONDS = 300
+
+    def _retry_handoffs(self, source):
+        if self.dry_run:
+            return
+        try:
+            self.retry_handoffs(source)
+        except Exception as e:      # never let a retry stop the release worker
+            log(f"hand-off retry failed: {e}", self.agent.name)
 
     def _collects(self):
         return self.collector is not None and not self.dry_run
@@ -511,7 +526,33 @@ class Dispatcher:
             self.tracker.hand_off(number, status, self.agent.handoff_to)
             log(f"#{number} handed off: status '{status}', assigned to {self.agent.handoff_to}", self.agent.name)
         except TalosError as e:
-            log(f"#{number} hand-off failed: {e}", self.agent.name)
+            log(f"#{number} hand-off failed: {e}; recorded, retrying until it succeeds", self.agent.name)
+            sessions.update(self.agent.name, number, pending_status=status, pending_assignee=self.agent.handoff_to,
+                            pending_tries=0, handoff_reason="handoff_failed",
+                            handoff_detail=json.dumps({"reason": reason, "detail": detail, "error": str(e)}))
+
+    def retry_handoffs(self, source):
+        """Try again every handback Gaia refused; one that goes through is cleared. Returns how many succeeded."""
+        done = 0
+        for number, entry in sessions.pending_handoffs(self.agent.name).items():
+            status, assignee = entry["pending_status"], entry["pending_assignee"]
+            tries = int(entry.get("pending_tries") or 0) + 1
+            try:
+                self.tracker.hand_off(number, status, assignee)
+            except TalosError as e:
+                sessions.update(self.agent.name, number, pending_tries=tries)
+                log(f"#{number} hand-off retry {tries} failed ({source}): {e}", self.agent.name)
+                continue
+            try:
+                original = (json.loads(entry.get("handoff_detail") or "{}") or {}).get("reason")
+            except ValueError:
+                original = None
+            sessions.clear_pending(self.agent.name, number)
+            sessions.update(self.agent.name, number, handoff_reason=original or "handed_off", handoff_detail="")
+            log(f"#{number} handed off after {tries} retries ({source}): status '{status}', assigned to {assignee}",
+                self.agent.name)
+            done += 1
+        return done
 
     def _check_handed_back(self, number, log_name):
         """'done' must leave the issue with someone else; otherwise the baton is lost."""
