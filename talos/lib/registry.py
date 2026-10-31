@@ -36,6 +36,7 @@ class Action:
 
 AUTO_RETRY_REASONS = ("turn_budget", "cost_budget", "interrupted", "branch_checked_out", "talos_error")
 OVERLAP_IGNORE = ("docs/*",)       # generated files (Gaia's API docs): two issues regenerating them merge fine
+AGA_MODELS = {"default": "sonnet", "merge_conflict": "opus"}   # triage session model per incident type
 
 
 @dataclass
@@ -59,6 +60,12 @@ class Orchestration:
     aga_wait_max_minutes: float = 30    # the longest `aga wait-for` waits
     aga_poll_seconds: float = 30        # how often `aga wait-for` looks again
     aga_hold_until_hour: int = 6        # `aga hold-until-tomorrow` gives the issue back at this hour (local time)
+    aga_triage: bool = False            # run a triage session for incidents in the premise instead of telling the owner
+    aga_models: dict = field(default_factory=lambda: dict(AGA_MODELS))   # incident type (or "default") -> model
+    aga_max_turns: int = 40             # turns per triage session
+    aga_max_cost_usd: float = 2         # cost per triage session (USD)
+    aga_daily_cost_usd: float = 10      # all triage sessions in a day (USD); past it, incidents go to the owner
+    aga_sessions_per_type: int = 1      # triage sessions per issue and incident type; the next one goes to the owner
 
 
 @dataclass
@@ -235,7 +242,8 @@ def _load_orchestrator(path, raw):
     numbers = {}
     for key, default, least in (("maxInFlight", 0, 0), ("maxAutoRetries", 2, 0), ("failStreakLimit", 3, 1),
                                 ("maxAutoMergesPerDay", 5, 0), ("maxConflictAttempts", 1, 0),
-                                ("agaMaxActionsPerIncident", 5, 0), ("agaHoldUntilHour", 6, 0)):
+                                ("agaMaxActionsPerIncident", 5, 0), ("agaHoldUntilHour", 6, 0),
+                                ("agaMaxTurns", 40, 1), ("agaSessionsPerIncidentType", 1, 0)):
         try:
             numbers[key] = int(raw.get(key, default))
         except (TypeError, ValueError):
@@ -248,9 +256,16 @@ def _load_orchestrator(path, raw):
         merge_wait = float(raw.get("autoMergeWaitMinutes", 60))
         aga_wait = float(raw.get("agaWaitMaxMinutes", 30))
         aga_poll = float(raw.get("agaPollSeconds", 30))
+        aga_cost = float(raw.get("agaMaxCostUsd", 2))
+        aga_daily = float(raw.get("agaDailyCostUsd", 10))
     except (TypeError, ValueError):
-        raise TalosError(f"{path}: sweepMinutes, debounceSeconds, autoMergeWaitMinutes, agaWaitMaxMinutes and "
-                         f"agaPollSeconds must be numbers")
+        raise TalosError(f"{path}: sweepMinutes, debounceSeconds, autoMergeWaitMinutes, agaWaitMaxMinutes, "
+                         f"agaPollSeconds, agaMaxCostUsd and agaDailyCostUsd must be numbers")
+    if aga_cost <= 0 or aga_daily < 0:
+        raise TalosError(f"{path}: agaMaxCostUsd must be above 0 and agaDailyCostUsd not below 0")
+    aga_models = raw.get("agaModel", dict(AGA_MODELS))
+    if not isinstance(aga_models, dict) or not all(isinstance(m, str) and m.strip() for m in aga_models.values()):
+        raise TalosError(f"{path}: agaModel must map incident types (and \"default\") to model names")
     if sweep <= 0 or debounce < 0 or merge_wait < 0:
         raise TalosError(f"{path}: sweepMinutes must be above 0, debounceSeconds and autoMergeWaitMinutes not below 0")
     if aga_wait < 0 or aga_poll <= 0 or numbers["agaHoldUntilHour"] > 23:
@@ -275,6 +290,12 @@ def _load_orchestrator(path, raw):
         aga_wait_max_minutes=aga_wait,
         aga_poll_seconds=aga_poll,
         aga_hold_until_hour=numbers["agaHoldUntilHour"],
+        aga_triage=bool(raw.get("agaTriage", False)),
+        aga_models={**AGA_MODELS, **{str(k): v.strip() for k, v in aga_models.items()}},
+        aga_max_turns=numbers["agaMaxTurns"],
+        aga_max_cost_usd=aga_cost,
+        aga_daily_cost_usd=aga_daily,
+        aga_sessions_per_type=numbers["agaSessionsPerIncidentType"],
     )
     return Agent(
         name=raw["name"], display_name=raw.get("displayName", raw["name"]), role=raw.get("role", ""),

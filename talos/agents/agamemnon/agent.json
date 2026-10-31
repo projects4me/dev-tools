@@ -26,5 +26,11 @@
   "agaMaxActionsPerIncident": 5,
   "agaWaitMaxMinutes": 30,
   "agaPollSeconds": 30,
-  "agaHoldUntilHour": 6
+  "agaHoldUntilHour": 6,
+  "agaTriage": true,
+  "agaModel": {"default": "sonnet", "merge_conflict": "opus"},
+  "agaMaxTurns": 40,
+  "agaMaxCostUsd": 2,
+  "agaDailyCostUsd": 10,
+  "agaSessionsPerIncidentType": 1
 }

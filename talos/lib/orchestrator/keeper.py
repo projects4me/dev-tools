@@ -25,7 +25,8 @@ class BranchKeeper:
     """Acts for one orchestrator agent on the open agent PRs (claude-issue-N) in its worker's repos."""
 
     def __init__(self, agent, worker, tracker, gh, worker_id, my_id, owners, branch_holder,
-                 worker_state=sessions.get, update_worker_state=sessions.update, now=_now, dry_run=False):
+                 worker_state=sessions.get, update_worker_state=sessions.update, now=_now, dry_run=False,
+                 triage=None):
         self.agent, self.worker, self.tracker, self.gh = agent, worker, tracker, gh
         self.settings = agent.orchestration
         self.worker_id, self.my_id = str(worker_id), str(my_id) if my_id else None
@@ -35,6 +36,7 @@ class BranchKeeper:
         self.worker_state, self.update_worker_state = worker_state, update_worker_state
         self.now, self.dry_run = now, dry_run
         self.projects = list(worker.projects)
+        self.triage = triage                    # agamemnon.triage.Triage: looks before the owner does (None = off)
 
     def sweep(self):
         """One pass over the worker's repos. Returns a short note ("" when nothing needed doing)."""
@@ -130,6 +132,14 @@ class BranchKeeper:
     def _tell(self, issue, repo, pr, attempts):
         number = issue["number"]
         self.update_worker_state(self.worker.name, number, conflict_noted=pr["headRefOid"])
+        triage_note = ""
+        if self.triage and self.triage.enabled():
+            decision = self.triage.offer(number, "conflict", None,
+                                         f"merge conflict: PR {repo}#{pr['number']} conflicts with its base after "
+                                         f"{attempts} automatic resolution attempt(s)", pr=pr["number"])
+            if decision.taken:
+                return f"conflict: {decision.note}"
+            triage_note = f" (no triage: {decision.note})" if decision.note else ""
         owner = self.owners[0] if self.owners else None
         if issue.get("assignee") == self.my_id and owner:      # it was waiting to be merged automatically
             self.tracker.hand_off(number, policy.REVIEW_STATUS, owner)
@@ -139,8 +149,9 @@ class BranchKeeper:
                       f"<p>PR {html.escape(repo)}#{pr['number']} conflicts with its base branch, and "
                       f"{attempts} automatic resolution attempt(s) were already used. Please resolve it, or run "
                       f"<code>dev-tools/talos/talos reset {html.escape(self.worker.name)} {number}</code> to allow "
-                      f"another automatic attempt.</p>")
-        return "conflict: told the owner"
+                      f"another automatic attempt.</p>"
+                      + (f"<p>{html.escape(triage_note.strip())}</p>" if triage_note else ""))
+        return "conflict: told the owner" + triage_note
 
     def _comment(self, number, title, body):
         try:

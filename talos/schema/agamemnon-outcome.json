@@ -1,0 +1,20 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["outcome", "summary"],
+  "properties": {
+    "outcome": {
+      "type": "string",
+      "enum": ["resolved", "owner"],
+      "description": "resolved: the incident is handled (the issue is back on its way: with the worker, waiting, held or merged). owner: you could not resolve it within the premise, or were not sure; Talos hands the issue to the owner with your comment."
+    },
+    "summary": {
+      "type": "string",
+      "description": "One or two plain-text sentences: what you found and what you did, for the Talos log and the issue."
+    },
+    "comment": {
+      "type": "string",
+      "description": "HTML for the owner when the outcome is owner: what you saw, what you tried and what a person needs to do. Empty when resolved."
+    }
+  }
+}

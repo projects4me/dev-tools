@@ -430,9 +430,24 @@ and is `enabled: false` until the engineer turns it on.
   `docker_down`, `handback_failed`), each with its allowed tool tiers; anything not listed goes to the owner. Widening it
   is a config change. `classifier.classify(reason, summary, log_tail)` maps a handback to an incident type or `other`;
   `packet.build(...)` assembles the JSON packet the agent is given (issue, PR, handback, run summary and log tail,
-  mergecheck, git and Docker state, the other in-flight issues' files, its earlier comments). Nothing acts on them yet.
+  mergecheck, git and Docker state, the other in-flight issues' files, its earlier comments).
+- **Triage sessions** (`lib/agamemnon/triage.py`, on with `agaTriage`, live from the start: no shadow mode). Where
+  the orchestrator would leave an issue to the owner (a handback not restarted automatically, other than a question;
+  an automatic merge it hands back, except while paused; a merge conflict whose automatic attempts are used up), it
+  classifies the incident first. An incident type in the premise opens an incident (`aga_incidents`, with its source
+  and model) and runs a headless Claude Code session the way Nestor runs: role prompt `agents/agamemnon/role.md`,
+  the incident packet as input, only `Bash(dev-tools/agamemnon/aga:*)` allowed, no MCP servers, `AGA_INCIDENT` set,
+  in the workspace root; model from `agaModel` (Sonnet; Opus for `merge_conflict`), at most `agaMaxTurns` (40) turns
+  and `agaMaxCostUsd` ($2). Sessions run one at a time on their own thread, so sweeps go on; while the incident is
+  open the sweeps leave the issue alone. The session answers `resolved` or `owner` (`schema/agamemnon-outcome.json`);
+  `owner`, an error or a limit hands the issue to the owner as before (an issue Agamemnon holds is assigned to them,
+  in_review for merges and conflicts) with its comment. Not triaged, with a comment saying why: a type outside the
+  premise, the same type on the same issue after `agaSessionsPerIncidentType` (1) session(s), or today's sessions
+  at `agaDailyCostUsd` ($10). A handback is decided once (a declined incident is recorded too). Incidents a restart
+  cut off are closed and go to the owner when `talos run` starts. `talos status` shows the open incidents and
+  today's triage cost; `talos agamemnon log` the actions.
 - **The `aga` tool** (`dev-tools/agamemnon/aga <verb>`, `talos/aga.py`, `lib/agamemnon/`): the only way an Agamemnon
-  session acts (raw git, gh and the Gaia write tools are to be denied in its session). The session gets the id of an
+  session acts (it is the only tool a triage session is allowed). The session gets the id of an
   open incident in `AGA_INCIDENT` (`journal.open_incident`); the issue and the incident type are read from talos.db,
   never from the command line. Every verb checks, and refuses (exit 3, `{"refused": …}`, nothing done) otherwise:
   the premise grants its tier for the incident type, the issue is in an `aga-` milestone, an acting verb has a
@@ -476,7 +491,8 @@ Readable by other tools while Talos runs (WAL mode), e.g. a future Projects4Me U
   the last engineer message a turn has taken in, `last_ended_at`.
 - `orchestrators` / `orchestrated`: per orchestrator, paused or not (and why), its failure streak and last sweep;
   the issues it assigned, to whom and when.
-- `aga_incidents` / `aga_actions` / `aga_holds`: Agamemnon's incidents, its action journal (state before and after,
+- `aga_incidents` / `aga_actions` / `aga_holds`: Agamemnon's incidents (source, triage model, outcome and cost), its
+  action journal (state before and after,
   reasoning, undo) and the issues `aga hold-until-tomorrow` holds.
 - `auto_merges`: one row per automatic merge attempt: issue, repo, PR, when it was first seen, and how it ended
   (merged with its merge commit, or handed back with the reason).

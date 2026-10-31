@@ -36,10 +36,10 @@ def _write(sql, args=()):
 
 # -- incidents -----------------------------------------------------------------------------
 
-def open_incident(issue, incident_type, at):
+def open_incident(issue, incident_type, at, source=None, model=None):
     """A new open incident; its id is what an Agamemnon session is given (AGA_INCIDENT)."""
-    return _write("INSERT INTO aga_incidents (issue, type, opened_at) VALUES (?, ?, ?)",
-                  (int(issue), incident_type, at))
+    return _write("INSERT INTO aga_incidents (issue, type, opened_at, source, model) VALUES (?, ?, ?, ?, ?)",
+                  (int(issue), incident_type, at, source, model))
 
 
 def incident(incident_id):
@@ -47,8 +47,34 @@ def incident(incident_id):
     return rows[0] if rows else None
 
 
-def close_incident(incident_id, at, note=None):
-    _write("UPDATE aga_incidents SET closed_at = ?, note = ? WHERE id = ?", (at, note, int(incident_id)))
+def close_incident(incident_id, at, note=None, outcome=None, cost_usd=None):
+    _write("UPDATE aga_incidents SET closed_at = ?, note = ?, outcome = COALESCE(?, outcome), "
+           "cost_usd = COALESCE(?, cost_usd) WHERE id = ?", (at, note, outcome, cost_usd, int(incident_id)))
+
+
+def incidents(issue=None, open_only=False, since=None):
+    """Incidents oldest first: of one issue, only the open ones, or opened from `since` (an ISO time)."""
+    where, args = [], []
+    for column, value in (("issue = ?", issue), ("opened_at >= ?", since)):
+        if value is not None:
+            where.append(column)
+            args.append(value)
+    if open_only:
+        where.append("closed_at IS NULL")
+    sql = "SELECT * FROM aga_incidents" + (f" WHERE {' AND '.join(where)}" if where else "") + " ORDER BY id"
+    return _query(sql, tuple(args))
+
+
+def sessions_of(issue, incident_type):
+    """How many triage sessions (incidents with a model) the issue already had for the incident type."""
+    return len([i for i in incidents(issue=issue) if i["type"] == incident_type and i.get("model")])
+
+
+def cost_on(day):
+    """The triage sessions' cost on the day (YYYY-MM-DD), by when the incident opened."""
+    rows = _query("SELECT COALESCE(SUM(cost_usd), 0) AS cost FROM aga_incidents WHERE substr(opened_at, 1, 10) = ?",
+                  (day,))
+    return float(rows[0]["cost"] or 0)
 
 
 # -- actions -------------------------------------------------------------------------------

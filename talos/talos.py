@@ -62,7 +62,7 @@ def cmd_run(args):
             continue
         if agent.kind == "orchestrator":
             try:
-                orchestrators.append(orchestrator_setup.start(agent, cfg, args.dry_run))
+                orchestrators.append(orchestrator_setup.start(agent, cfg, args.dry_run, claude))
             except Exception as e:      # one agent's setup never keeps the others from running
                 log(f"not started: {e}", agent.name)
             continue
@@ -159,6 +159,7 @@ def cmd_status(args):
             files = h["files"]
             print(f"  held  #{n}  waits for #{h['blocker']} ({h.get('repo') or '-'}): {', '.join(files[:3])}"
                   + (f" +{len(files) - 3} more" if len(files) > 3 else "") + f"  since {h.get('held_at') or '?'}")
+    _print_incidents()
     for (agent, issue), entry in sorted(entries.items()):
         if entry.get("pending_status"):
             print(f"PENDING HANDBACK  {agent} #{issue}  status '{entry['pending_status']}', assign "
@@ -171,6 +172,18 @@ def cmd_status(args):
             print(f"  {agent} #{issue}  runs {entry.get('runs') or 0}  last model {entry.get('last_model') or '-'}"
                   f"  last ended {entry.get('last_ended_at') or '-'}" + ("  escalated" if entry.get("escalated") else ""))
     return 0
+
+
+def _print_incidents():
+    """Agamemnon's open incidents and what its triage sessions cost today."""
+    today = datetime.now().astimezone().strftime("%Y-%m-%d")
+    incidents, cost = agamemnon_journal.incidents(open_only=True), agamemnon_journal.cost_on(today)
+    if not incidents and not cost:
+        return
+    print(f"AGAMEMNON  {len(incidents)} open incident(s)  triage cost today ${cost:.2f}")
+    for i in incidents:
+        print(f"  incident {i['id']}  #{i['issue']}  {i['type']}  from {i.get('source') or '-'}  "
+              f"on {i.get('model') or '-'}  since {i.get('opened_at') or '?'}")
 
 
 def _print_live(path, steps):

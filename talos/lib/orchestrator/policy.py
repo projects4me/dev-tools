@@ -67,6 +67,27 @@ def restart_skip_reason(issue, state, prefix, projects, owners, worker_id, retry
     return None
 
 
+def triage_skip_reason(issue, state, prefix, projects, owners, worker_id, retry_reasons, max_retries):
+    """Why a handed-back issue is not one the owner got for a mechanical reason (so no triage), or None.
+    Questions for the reviewer and handbacks still restarted automatically are not incidents."""
+    if not in_scope(issue, prefix, projects):
+        return f"not in a {prefix} milestone of the worker's projects"
+    if issue.get("assignee") not in owners:
+        return "not assigned to an owner"
+    if _lower(issue.get("status")) not in RESTART_STATUSES:
+        return f"status '{issue.get('status')}' is not feedback or pending"
+    if issue.get("modifiedUser") != worker_id:
+        return "changed by someone since the handback"
+    reason = (state or {}).get("handoff_reason")
+    if not reason:
+        return "no handback reason"
+    if reason in QUESTION_REASONS:
+        return "a question for the reviewer"
+    if reason in retry_reasons and int((state or {}).get("auto_retries") or 0) < max_retries:
+        return "restarted automatically"
+    return None
+
+
 def is_restart_candidate(issue, state, prefix, projects, owners, worker_id, retry_reasons, max_retries,
                          branch_holder=None):
     return restart_skip_reason(issue, state, prefix, projects, owners, worker_id, retry_reasons, max_retries,

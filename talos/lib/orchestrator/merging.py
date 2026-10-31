@@ -22,7 +22,7 @@ class MergeSweeper:
     """Merges as one orchestrator agent (kind orchestrator) for its worker (kind issues)."""
 
     def __init__(self, agent, worker, tracker, merger, my_id, owners, now=_now, dry_run=False,
-                 worker_state=sessions.get):
+                 worker_state=sessions.get, triage=None):
         self.agent, self.worker, self.tracker = agent, worker, tracker
         self.settings = agent.orchestration
         self.merger = merger            # merge.Merger: find PRs, run the merge gate, merge
@@ -31,6 +31,7 @@ class MergeSweeper:
         self.now, self.dry_run = now, dry_run
         self.worker_state = worker_state    # the worker's Talos state per issue (conflict_noted: the keeper gave up)
         self.projects = list(worker.projects)
+        self.triage = triage                # agamemnon.triage.Triage: looks before the owner does (None = off)
 
     def enabled(self):
         return bool(self.settings.auto_merge_milestones and self.merger and self.my_id)
@@ -65,7 +66,7 @@ class MergeSweeper:
         if pr["merged"]:                # merged on an earlier pass whose bookkeeping failed, or by someone else
             return self._finish(issue, repo, pr["number"], pr.get("merge_sha") or "", None)
         if paused:
-            return self._hand_back(issue, pr["number"], f"{self.agent.display_name} is paused")
+            return self._hand_back(issue, pr["number"], f"{self.agent.display_name} is paused", triage=False)
         record, waited = self._wait_record(number, repo, pr["number"])
         merged_today = len(store.merges_on(self.agent.name, self.now()[:10]))
         gate = self.merger.check(repo, pr["number"])
@@ -167,9 +168,15 @@ class MergeSweeper:
                       f"without a review; revert the merge commit if this needs another look.</p>")
         return f"merged PR {repo}#{pr}"
 
-    def _hand_back(self, issue, pr, detail, record=None):
-        """The owner reviews it as usual: in_review, assigned to them, with the reason."""
+    def _hand_back(self, issue, pr, detail, record=None, triage=True):
+        """The owner reviews it as usual: in_review, assigned to them, with the reason; first a triage session when
+        the incident is in Agamemnon's premise (the merge record stays open meanwhile)."""
         number = issue["number"]
+        if triage and self.triage and self.triage.enabled():
+            decision = self.triage.offer(number, "merge", None, detail, pr=pr)
+            if decision.taken:
+                return decision.note
+            detail += f" (no triage: {decision.note})" if decision.note else ""
         if self.dry_run:
             log(f"#{number} dry run, would hand to the owner: {detail}", self.agent.name)
             return "would hand to the owner (dry run)"

@@ -28,7 +28,7 @@ class Orchestrator:
 
     def __init__(self, agent, worker, tracker, worker_id, dry_run=False, branch_holder=_branch_holder, now=_now,
                  worker_state=sessions.get, merges=None, keeper=None, overlap=None,
-                 holds=None):
+                 holds=None, triage=None):
         self.agent, self.worker, self.tracker = agent, worker, tracker
         self.settings = agent.orchestration
         self.worker_id = str(worker_id)
@@ -36,6 +36,7 @@ class Orchestrator:
         self.keeper = keeper            # keeper.BranchKeeper: keeps agent PRs mergeable (None = off)
         self.overlap = overlap          # overlap.OverlapGate: holds issues whose files are in flight (None = off)
         self.holds = holds              # holds() -> note: gives back issues `aga` held whose time has come (None = off)
+        self.triage = triage            # agamemnon.triage.Triage: incidents in the premise get a session (None = off)
         self.owners = [str(o) for o in (self.settings.owners or [worker.handoff_to]) if o]
         self.max_in_flight = self.settings.max_in_flight or worker.max_parallel
         self.dry_run = dry_run
@@ -103,12 +104,16 @@ class Orchestrator:
         merged += f"branches: {kept}; " if kept else ""
         released = self.holds() if self.holds else ""
         merged += f"holds: {released}; " if released else ""
+        issues = None
+        if self.triage and self.triage.enabled():
+            issues = self._issues()
+            triaged = self._triage_handbacks(issues)
+            merged += f"triage: {triaged}; " if triaged else ""
         in_flight = self._in_flight()
         slots = policy.free_slots(self.max_in_flight, in_flight)
         if not slots:
             return f"{merged}no free slot ({in_flight} of {self.max_in_flight} in flight)", []
-        issues = [i for project in self.projects
-                  for i in self.tracker.issues_in(project, self.settings.milestone_prefix)]
+        issues = self._issues() if issues is None else issues
         restarts = policy.rank([i for i in issues if self._restart_skip(i) is None])
         news = policy.rank([i for i in issues if self._new_skip(i) is None])
         if self.overlap:
@@ -130,6 +135,39 @@ class Orchestrator:
         what += f"; held for overlapping files: {', '.join(f'#{n}' for n in held)}" if held else ""
         return (f"{merged}{len(done)} of {slots} free slot(s) filled: {what}" + (" (dry run)" if self.dry_run else ""),
                 done)
+
+    def _issues(self):
+        return [i for project in self.projects for i in self.tracker.issues_in(project, self.settings.milestone_prefix)]
+
+    def _triage_handbacks(self, issues):
+        """Handbacks the owner got for a mechanical reason: offered to triage, once per handback. Not taken, the
+        owner keeps the issue as before and is told why there was no triage."""
+        s, notes = self.settings, []
+        for issue in issues:
+            if not policy.in_scope(issue, s.milestone_prefix, self.projects) or \
+                    str(issue.get("status") or "").lower() not in policy.RESTART_STATUSES:
+                continue        # most issues: skip the state read
+            number = issue["number"]
+            st = self.worker_state(self.worker.name, number)
+            if policy.triage_skip_reason(issue, st, s.milestone_prefix, self.projects, self.owners, self.worker_id,
+                                         s.auto_retry_reasons, s.max_auto_retries):
+                continue
+            try:
+                decision = self.triage.offer(number, "handback", st.get("handoff_reason"), st.get("handoff_detail"),
+                                             since=st.get("handoff_at"))
+            except TalosError as e:
+                log(f"#{number} not triaged: {e}", self.agent.name)
+                continue
+            if decision.note is None:
+                continue
+            notes.append(f"#{number} {decision.note}")
+            if not decision.taken and decision.note and not self.dry_run:
+                try:
+                    self.tracker.comment(number, f"{self.agent.display_name}: left with the owner, no triage",
+                                         f"<p>{html.escape(decision.note)}.</p>")
+                except TalosError as e:
+                    log(f"#{number} comment failed: {e}", self.agent.name)
+        return ", ".join(notes)
 
     def _in_flight(self):
         """Issues assigned to the worker that it still has to work: finished ones (the worker's done statuses and
