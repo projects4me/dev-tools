@@ -1,6 +1,7 @@
 """How the orchestrator reaches GitHub to merge: find an issue's PR, and run `ai mergecheck` / `ai merge`."""
 
 import json
+import re
 
 from ..ai_cli import ai_json
 from ..config import TalosError
@@ -40,3 +41,28 @@ class Merger:
 
     def merge(self, repo, pr):
         return ai_json(self.env(), "merge", repo, str(pr))
+
+    def failed_jobs(self, repo, sha):
+        """The failed GitHub Actions jobs on the commit: [{"name", "url", "run"}] (run: the workflow run's id)."""
+        slug = github.known_repos().get(repo)
+        if not slug:
+            return []
+        out = self.gh("api", f"repos/{slug}/commits/{sha}/check-runs", "--jq",
+                      "[.check_runs[] | {name, status, conclusion, url: .details_url}]")
+        try:
+            runs = json.loads(out or "[]")
+        except ValueError:
+            raise TalosError(f"gh api check-runs for {repo}@{sha[:7]}: {out[-300:]}")
+        jobs = []
+        for run in runs:
+            if run.get("status") != "completed" or run.get("conclusion") in ("success", "neutral", "skipped"):
+                continue
+            found = re.search(r"/actions/runs/(\d+)", run.get("url") or "")
+            jobs.append({"name": run["name"], "url": run.get("url") or "", "run": found.group(1) if found else None})
+        return jobs
+
+    def rerun(self, repo, runs):
+        """Re-run the failed jobs of each workflow run id."""
+        slug = github.known_repos()[repo]
+        for run in sorted(set(runs)):
+            self.gh("run", "rerun", run, "--failed", "--repo", slug)

@@ -21,8 +21,9 @@ class MergeRoute:
     route(issue) -> (the orchestrator's Gaia user id, its name), or None for the reviewer (other milestones, the
     orchestrator paused, or its Gaia user not readable yet: that is retried on the next clean issue)."""
 
-    def __init__(self, agent, user_id, is_paused):
+    def __init__(self, agent, user_id, is_paused, find_pr=None):
         self.agent = agent
+        self.find_pr = find_pr          # find_pr(repo, issue) -> the issue's PR (merge.Merger.find_pr)
         self.user_id = user_id          # user_id() -> the orchestrator's Gaia user id (TalosError when unreadable)
         self.is_paused = is_paused      # is_paused() -> True while the orchestrator is paused
         self._id = None
@@ -42,7 +43,8 @@ class MergeRoute:
 
 def merge_routes(agents):
     """{worker name: MergeRoute} for the orchestrators that merge CodeRabbit-clean PRs themselves."""
-    return {a.orchestration.worker: MergeRoute(a, Tracker(a).user_id, lambda a=a: bool(store.get(a.name).get("paused")))
+    return {a.orchestration.worker: MergeRoute(a, Tracker(a).user_id, lambda a=a: bool(store.get(a.name).get("paused")),
+                                               Merger(Tracker(a).child_env, github.agamemnon_gh).find_pr)
             for a in agents if a.kind == "orchestrator" and a.orchestration.auto_merge_milestones}
 
 

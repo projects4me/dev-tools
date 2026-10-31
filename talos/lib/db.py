@@ -126,6 +126,9 @@ MIGRATIONS = (
     ("issues", "pending_assignee", "TEXT"),
     ("issues", "pending_tries", "INTEGER DEFAULT 0"),
     ("issues", "conflict_noted", "TEXT"),         # PR head the reviewer was told about once the attempts ran out
+    ("auto_merges", "ci_rerun_sha", "TEXT"),      # PR head whose failed CI job(s) were re-run once
+    ("auto_merges", "ci_rerun_at", "TEXT"),
+    ("auto_merges", "note", "TEXT"),              # steps taken before the end (daily-limit hold, CI re-run)
 )
 
 _init_lock = threading.Lock()

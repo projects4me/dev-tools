@@ -302,10 +302,17 @@ class FakeMerger:
     def __init__(self, *gates, pr=77, already_merged=False):
         self.gates, self.pr, self.merged = list(gates), pr, []
         self.already_merged = already_merged
+        self.reruns = []
 
     def find_pr(self, repo, issue):
         return {"number": self.pr, "merged": self.already_merged,
                 "merge_sha": "beadfeed" if self.already_merged else None}
+
+    def failed_jobs(self, repo, sha):
+        return [{"name": "Build-and-Test", "url": "https://github.com/x/actions/runs/99/job/1", "run": "99"}]
+
+    def rerun(self, repo, runs):
+        self.reruns.append((repo, list(runs)))
 
     def check(self, repo, pr):
         return self.gates.pop(0) if len(self.gates) > 1 else self.gates[0]
@@ -344,7 +351,14 @@ class AutoMergeTest(SweepTest):
         self.assertEqual(policy.merge_step("pending", 10, 60, 0, 5)[0], policy.WAIT)
         self.assertEqual(policy.merge_step("pending", 61, 60, 0, 5)[0], policy.HAND_BACK)
         self.assertEqual(policy.merge_step("fail", 0, 60, 0, 5)[0], policy.HAND_BACK)
-        self.assertEqual(policy.merge_step("ok", 0, 60, 5, 5)[0], policy.HAND_BACK)
+        self.assertEqual(policy.merge_step("ok", 0, 60, 5, 5)[0], policy.WAIT)       # over the limit: held
+        self.assertEqual(policy.merge_step("fail", 0, 60, 5, 5)[0], policy.HAND_BACK)
+        self.assertEqual(policy.ci_step(None, 0, "h1"), policy.RERUN)
+        self.assertEqual(policy.ci_step("h1", 1, "h1"), policy.WAIT)
+        self.assertEqual(policy.ci_step("h1", 3, "h1"), policy.HAND_BACK)
+        self.assertEqual(policy.ci_step("h1", 3, "h2"), policy.RERUN)            # a new push
+        self.assertTrue(policy.only_ci_fails(gate("fail", ("ci", "failed: build"))))
+        self.assertFalse(policy.only_ci_fails(gate("fail", ("ci", "x"), ("people", "y"))))
 
     def test_merges_a_clean_pr_and_sets_the_issue_done(self):
         tracker, merger = FakeTracker([self.clean()]), FakeMerger(gate("ok"))
@@ -374,12 +388,58 @@ class AutoMergeTest(SweepTest):
         self.assertEqual(tracker.issues[5]["assignee"], OWNER)
         self.assertIn("still pending after 31 min", tracker.comments[-1][2])
 
-    def test_daily_limit(self):
+    def test_daily_limit_holds_the_issue_for_the_next_day(self):
         tracker = FakeTracker([self.clean(5), self.clean(6)])
-        self.merging(tracker, FakeMerger(gate("ok")), max_auto_merges_per_day=1).sweep()
+        merger = FakeMerger(gate("ok"))
+        o = self.merging(tracker, merger, max_auto_merges_per_day=1)
+        o.sweep()
         self.assertEqual(tracker.issues[5]["status"], "done")
-        self.assertEqual((tracker.issues[6]["status"], tracker.issues[6]["assignee"]), ("in_review", OWNER))
-        self.assertIn("daily limit", tracker.comments[-1][2])
+        self.assertEqual((tracker.issues[6]["status"], tracker.issues[6]["assignee"]), ("in_review", MERGER_ID))
+        self.assertIn("held until tomorrow", tracker.comments[-1][1])
+        n = len(tracker.comments)
+        o.sweep()                                       # the same day again: held, not commented twice
+        self.assertEqual(len(tracker.comments), n)
+        self.assertIn("daily limit", store.find_open_merge("agamemnon", 6, 77)["note"])
+        self.clock[0] = "2026-11-01T09:00:00+05:00"
+        o.sweep()
+        self.assertEqual(tracker.issues[6]["status"], "done")
+
+    def test_failed_ci_is_rerun_once_then_goes_to_the_owner(self):
+        tracker = FakeTracker([self.clean()])
+        merger = FakeMerger(gate("fail", ("ci", "failed: Build-and-Test (failure)")))
+        o = self.merging(tracker, merger)
+        o.sweep()
+        self.assertEqual(merger.reruns, [("gaia", ["99"])])
+        self.assertEqual(tracker.issues[5]["assignee"], MERGER_ID)
+        self.assertIn("re-running failed CI", tracker.comments[-1][1])
+        self.assertIn("re-ran failed CI", store.find_open_merge("agamemnon", 5, 77)["note"])
+        self.clock[0] = "2026-10-31T10:01:00+05:00"
+        o.sweep()                                       # just re-run: GitHub may still show the old failure
+        self.assertEqual(len(merger.reruns), 1)
+        self.assertEqual(tracker.issues[5]["assignee"], MERGER_ID)
+        self.clock[0] = "2026-10-31T10:05:00+05:00"
+        o.sweep()
+        self.assertEqual(len(merger.reruns), 1)
+        self.assertEqual(tracker.issues[5]["assignee"], OWNER)
+        self.assertIn("failed again after one re-run", tracker.comments[-1][2])
+        self.assertIn("https://github.com/x/actions/runs/99/job/1", tracker.comments[-1][2])
+
+    def test_failed_ci_that_passes_on_the_rerun_merges(self):
+        tracker = FakeTracker([self.clean()])
+        merger = FakeMerger(gate("fail", ("ci", "failed: Build-and-Test (failure)")), gate("ok"))
+        o = self.merging(tracker, merger)
+        o.sweep()
+        self.assertEqual(merger.merged, [])
+        merger.gates = [gate("ok")]
+        o.sweep()
+        self.assertEqual(tracker.issues[5]["status"], "done")
+
+    def test_ci_failing_with_something_else_is_not_rerun(self):
+        tracker = FakeTracker([self.clean()])
+        merger = FakeMerger(gate("fail", ("ci", "failed: build"), ("people", "hammad requested changes")))
+        self.merging(tracker, merger).sweep()
+        self.assertEqual(merger.reruns, [])
+        self.assertEqual(tracker.issues[5]["assignee"], OWNER)
 
     def test_only_its_own_auto_merge_milestones(self):
         tracker = FakeTracker([self.clean(5, milestone="aga-v2"), self.clean(6, assignee=OWNER)])

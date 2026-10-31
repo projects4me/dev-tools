@@ -61,7 +61,8 @@ class Dispatcher:
         self._deps = DependencyGate(agent.dependency_done_statuses)   # issues waiting on "Depends on" issues
         self._releases = queue.Queue()      # changed issue numbers (None = unknown) for the release worker
         # the CodeRabbit loop; merge_route(issue) names an orchestrator that merges a clean PR itself (or None)
-        self.bot_review = bot_review.Watcher(agent, self.user_id, tracker, self.submit, route=merge_route)
+        self.bot_review = bot_review.Watcher(agent, self.user_id, tracker, self.submit, route=merge_route,
+                                             find_pr=getattr(merge_route, "find_pr", None))
 
     # -- queueing ----------------------------------------------------------------------------
 
@@ -398,6 +399,8 @@ class Dispatcher:
 
         if outcome == "done":
             self._check_handed_back(number, log_name)
+            if issue.get("status") == "in_review":      # a reviewer's changes were addressed
+                self._back_to_merge_loop(issue, repo)
         elif outcome in ("needs_input", "blocked"):
             title = "needs your input" if outcome == "needs_input" else "is blocked"
             self._hand_off(number, outcome, f"{self.agent.display_name} {title}", comment or summary,
@@ -553,6 +556,16 @@ class Dispatcher:
                 self.agent.name)
             done += 1
         return done
+
+    def _back_to_merge_loop(self, issue, repo):
+        """After an address-review run: an issue in an auto-merge milestone goes through the CodeRabbit loop again
+        (and on to the orchestrator when clean) instead of waiting for the reviewer."""
+        number = issue["number"]
+        try:
+            if self.tracker.issue(number)["assignee"] != self.user_id:
+                self.bot_review.reenter(issue, repo)
+        except TalosError as e:     # GitHub or Gaia failed: it stays with the reviewer, as before
+            log(f"#{number} not routed to the merge loop: {e}", self.agent.name)
 
     def _check_handed_back(self, number, log_name):
         """'done' must leave the issue with someone else; otherwise the baton is lost."""

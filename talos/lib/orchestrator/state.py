@@ -85,6 +85,20 @@ def find_open_merge(agent, issue, pr):
         conn.close()
 
 
+def note_merge(record_id, text, ci_rerun_sha=None, at=None):
+    """Add a step to the record's note (a CI re-run also stores its head and time, so it is only done once)."""
+    conn = db.connect()
+    try:
+        with conn:
+            conn.execute("UPDATE auto_merges SET note = CASE WHEN note IS NULL OR note = '' THEN ? ELSE note || '; ' "
+                         "|| ? END WHERE id = ?", (text, text, record_id))
+            if ci_rerun_sha:
+                conn.execute("UPDATE auto_merges SET ci_rerun_sha = ?, ci_rerun_at = ? WHERE id = ?",
+                             (ci_rerun_sha, at, record_id))
+    finally:
+        conn.close()
+
+
 def close_merge(record_id, at, outcome, merge_sha=None, detail=None):
     conn = db.connect()
     try:
