@@ -122,7 +122,7 @@ def ai_handoff(env, issue, to=None):
 class Watcher:
     """Polls the agent's waiting issues: hands off, queues a bot round, or keeps waiting."""
 
-    def __init__(self, agent, user_id, tracker, submit, rabbit=None, handoff=None, now=_now, route=None):
+    def __init__(self, agent, user_id, tracker, submit, rabbit=None, handoff=None, now=_now, route=None, find_pr=None):
         self.agent = agent
         self.user_id = user_id
         self.tracker = tracker
@@ -132,6 +132,9 @@ class Watcher:
         # route(issue) -> (Gaia user id, name) to hand a CodeRabbit-clean issue to instead of the reviewer, or None
         # (an orchestrator that merges clean PRs itself, see lib/orchestrator)
         self.route = route or (lambda issue: None)
+        # find_pr(repo, issue) -> {"number", "merged", ...} or None: the issue's PR, to put a clean re-review back
+        # into the loop (None: no orchestrator to route to)
+        self.find_pr = find_pr
         self.now = now
         self._stop = threading.Event()
 
@@ -139,6 +142,27 @@ class Watcher:
     def cap(self):
         """Bot rounds per issue; none without a bot-round prompt to run them with."""
         return self.agent.bot_review_rounds if self.agent.bot_round_prompt else 0
+
+    def reenter(self, issue, repo):
+        """A reviewer's changes were addressed on an issue that an orchestrator merges: take it back into this loop
+        (assigned to the agent, waiting for CodeRabbit on the PR's head) instead of leaving it with the reviewer, so a
+        clean head is merged. True when it did."""
+        number = issue["number"]
+        if not self.find_pr or not repo or not self.route(issue):
+            return False
+        pr = self.find_pr(repo, number)
+        if not pr or pr.get("merged"):
+            return False
+        status = issue["status"]
+        wait(self.agent.name, number, repo, pr["number"], status, self.deadline())   # before the assignment event
+        try:
+            self.tracker.hand_off(number, status, self.user_id)
+        except TalosError:
+            drop(self.agent.name, number)
+            raise
+        log(f"#{number} re-review addressed: waiting for CodeRabbit on {repo} PR {pr['number']} to merge it",
+            self.agent.name)
+        return True
 
     def deadline(self):
         return self.now() + timedelta(minutes=self.agent.bot_review_wait_minutes)

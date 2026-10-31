@@ -108,7 +108,7 @@ def breaker_tripped(streak, limit):
 
 # -- automatic merges -------------------------------------------------------------------------------
 
-MERGE, WAIT, HAND_BACK = "merge", "wait", "hand_back"
+MERGE, WAIT, HAND_BACK, RERUN = "merge", "wait", "hand_back", "rerun"
 REVIEW_STATUS = "in_review"     # where the CodeRabbit loop leaves an issue it hands off
 
 
@@ -130,16 +130,34 @@ def is_merge_candidate(issue, milestones, projects, merger_id):
 
 
 def merge_step(gate_state, waited_minutes, wait_limit, merged_today, daily_limit):
-    """(MERGE | WAIT | HAND_BACK, why) for one issue, from `ai mergecheck`'s state (ok / pending / fail)."""
-    if merged_today >= daily_limit:
-        return HAND_BACK, f"the daily limit of {daily_limit} automatic merge(s) is reached"
+    """(MERGE | WAIT | HAND_BACK, why) for one issue, from `ai mergecheck`'s state (ok / pending / fail). A passing
+    gate over the daily limit waits: the issue stays with the merger and is merged on the next day's allowance."""
     if gate_state == "ok":
+        if merged_today >= daily_limit:
+            return WAIT, f"the daily limit of {daily_limit} automatic merge(s) is reached"
         return MERGE, "the merge gate passed"
     if gate_state == "pending":
         if waited_minutes >= wait_limit:
             return HAND_BACK, f"the merge gate was still pending after {int(waited_minutes)} min"
         return WAIT, "the merge gate is pending"
     return HAND_BACK, "the merge gate failed"
+
+
+CI_RERUN_GRACE_MINUTES = 2      # GitHub may still report the old failure right after a re-run
+
+
+def only_ci_fails(gate):
+    """The merge gate failed only on CI (no conflict, finding or person in the way): a flaky job may pass again."""
+    failed = [c for c in gate.get("checks") or [] if c.get("state") == "fail"]
+    return gate.get("state") == "fail" and bool(failed) and all(c.get("name") == "ci" for c in failed)
+
+
+def ci_step(rerun_sha, rerun_minutes, head):
+    """RERUN (the first CI failure at this head), WAIT (re-run just now: let GitHub catch up) or HAND_BACK (it failed
+    again at the same head). A new push has a new head, so it gets its own re-run."""
+    if rerun_sha != head:
+        return RERUN
+    return WAIT if rerun_minutes < CI_RERUN_GRACE_MINUTES else HAND_BACK
 
 
 # -- keeping agent PRs mergeable --------------------------------------------------------------------

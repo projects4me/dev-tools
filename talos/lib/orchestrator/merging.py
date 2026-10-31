@@ -11,6 +11,9 @@ from . import policy
 from . import state as store
 
 
+HELD = "held for the daily limit"
+
+
 def _now():
     return datetime.now().astimezone().isoformat(timespec="seconds")
 
@@ -69,10 +72,14 @@ class MergeSweeper:
         # behind or conflicting only: the branch keeper brings it up to date or has it resolved, so wait for that,
         # unless it already gave up on a conflict at this head
         state = gate.get("state")
+        if policy.only_ci_fails(gate):
+            return self._ci_failed(issue, repo, pr["number"], gate, record)
         if policy.only_mergeability_fails(gate) and                 self.worker_state(self.worker.name, number).get("conflict_noted") != gate.get("sha"):
             state = "pending"
         step, why = policy.merge_step(state, waited, s.auto_merge_wait_minutes, merged_today,
                                       s.max_auto_merges_per_day)
+        if step == policy.WAIT and state == "ok":     # the gate passed but the daily limit holds it until tomorrow
+            return self._hold_for_limit(issue, pr["number"], why, record)
         if step == policy.WAIT:
             return "waiting (" + failing(gate, "pending" if state == gate.get("state") else "fail") + ")"
         if step == policy.HAND_BACK:
@@ -88,6 +95,48 @@ class MergeSweeper:
             return self._hand_back(issue, pr["number"], f"the merge gate failed at merge time: {failing(result)}",
                                    record)
         return self._finish(issue, repo, pr["number"], result["merged"], record, result.get("sha") or gate.get("sha"))
+
+    def _hold_for_limit(self, issue, pr, why, record):
+        """Over the day's allowance: the issue stays with the merger for the next day's sweep. Noted and commented
+        once per record."""
+        number = issue["number"]
+        if self.dry_run or not record or HELD in (record.get("note") or ""):
+            return f"held ({why})"
+        store.note_merge(record["id"], HELD)
+        log(f"#{number} PR {pr} held: {why}", self.agent.name)
+        self._comment(number, f"{self.agent.display_name}: merge held until tomorrow",
+                      f"<p>The merge gate passed, but {html.escape(why)}. {html.escape(self.agent.display_name)} "
+                      f"keeps the issue and merges PR #{pr} on the next day's allowance.</p>")
+        return f"held ({why})"
+
+    def _ci_failed(self, issue, repo, pr, gate, record):
+        """The gate failed only on CI: re-run the failed job(s) once per PR head and wait; a second failure at the
+        same head goes to the owner with the failing job and its log link."""
+        number, sha = issue["number"], gate.get("sha") or ""
+        minutes = 0
+        if record and record.get("ci_rerun_at"):
+            minutes = (datetime.fromisoformat(self.now()) - datetime.fromisoformat(record["ci_rerun_at"])
+                       ).total_seconds() / 60
+        step = policy.ci_step((record or {}).get("ci_rerun_sha"), minutes, sha)
+        if step == policy.WAIT:
+            return "waiting (CI re-run)"
+        jobs = self.merger.failed_jobs(repo, sha)
+        listed = ", ".join(f"{j['name']} ({j['url']})" if j["url"] else j["name"] for j in jobs) or failing(gate)
+        runs = [j["run"] for j in jobs if j["run"]]
+        if step == policy.HAND_BACK or not runs:
+            why = "CI failed again after one re-run" if step == policy.HAND_BACK else "CI failed and has no job to re-run"
+            return self._hand_back(issue, pr, f"{why}: {listed}", record)
+        if self.dry_run:
+            log(f"#{number} dry run, would re-run failed CI of PR {repo}#{pr}: {listed}", self.agent.name)
+            return "would re-run CI (dry run)"
+        self.merger.rerun(repo, runs)
+        store.note_merge(record["id"], f"re-ran failed CI on {sha[:7]}: {listed}", ci_rerun_sha=sha, at=self.now())
+        log(f"#{number} re-ran failed CI of PR {repo}#{pr}: {listed}", self.agent.name)
+        self._comment(number, f"{self.agent.display_name}: re-running failed CI",
+                      f"<p>The merge gate failed only on CI for <code>{html.escape(sha[:7])}</code>: "
+                      f"{html.escape(listed)}. Re-ran the failed job(s) once; if they fail again the issue goes "
+                      f"to the owner.</p>")
+        return "re-ran failed CI"
 
     def _wait_record(self, number, repo, pr):
         """(the open auto_merges record or None, minutes it has waited). A dry run reads it without creating one, so

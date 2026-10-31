@@ -130,6 +130,23 @@ class BotReviewTest(unittest.TestCase):
         self.assertEqual(sent, [(42, "60")])
         self.assertEqual(bot_review.get("odysseus", 42), {})
 
+    def test_an_addressed_re_review_goes_back_into_the_loop(self):
+        d = self.dispatcher(Rabbit("clean"), issue=make_issue(status="in_review", assignee=REVIEWER))
+        handed = []
+        self.tracker.hand_off = lambda number, status, assignee: handed.append((number, status, assignee))
+        w = d.bot_review
+        w.find_pr = lambda repo, number: {"number": 77, "merged": False}
+        w.route = lambda issue: None                       # not an auto-merge milestone
+        self.assertFalse(w.reenter({"number": 42, "status": "in_review"}, "gaia"))
+        w.route = lambda issue: ("60", "Agent Agamemnon")
+        self.assertTrue(w.reenter({"number": 42, "status": "in_review"}, "gaia"))
+        self.assertEqual(handed, [(42, "in_review", AGENT_ID)])
+        record = bot_review.get("odysseus", 42)
+        self.assertEqual((record["pr"], record["status"], record["phase"]), (77, "in_review", bot_review.WAITING))
+        w.find_pr = lambda repo, number: {"number": 77, "merged": True}
+        bot_review.drop("odysseus", 42)
+        self.assertFalse(w.reenter({"number": 42, "status": "in_review"}, "gaia"))
+
     def test_only_clean_is_routed_to_the_orchestrator(self):
         d = self.dispatcher(Rabbit("findings"), bot_review_rounds=0)   # cap reached at once: findings stay open
         sent = []
