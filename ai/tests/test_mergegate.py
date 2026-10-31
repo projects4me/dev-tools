@@ -87,6 +87,13 @@ class ChecksTest(unittest.TestCase):
         self.assertEqual(mergegate.check_labels(pr(labels=[{"name": "Do-Not-Merge"}]))["state"], "fail")
         self.assertEqual(mergegate.check_labels(pr(labels=[{"name": "enhancement"}]))["state"], "ok")
 
+    def test_self_blocks_changes_to_agamemnons_own_powers(self):
+        pats = ["talos/agents/agamemnon/**", "talos/lib/orchestrator/**", "ai/lib/mergegate.py"]
+        ok = mergegate.check_self(["ai/lib/review.py", "talos/lib/runner.py"], pats)
+        self.assertEqual(ok["state"], "ok")
+        for path in ("talos/agents/agamemnon/agent.json", "talos/lib/orchestrator/merge.py", "ai/lib/mergegate.py"):
+            self.assertEqual(mergegate.check_self(["README.md", path], pats)["state"], "fail", path)
+
     def test_verdict(self):
         ok, pending, fail = ({"state": s} for s in ("ok", "pending", "fail"))
         self.assertEqual(mergegate.verdict([ok, ok]), "ok")

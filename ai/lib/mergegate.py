@@ -4,6 +4,7 @@ Every check reads the PR's current head commit. A check is ok, pending (it may p
 running, GitHub still computing mergeability) or failed. The gate passes only when every check is ok.
 """
 
+import fnmatch
 import json
 
 from . import coderabbit
@@ -119,6 +120,20 @@ def check_labels(pr):
     return _check("labels", OK, f"no {DO_NOT_MERGE} label")
 
 
+def protected_paths(files, patterns):
+    """The changed files that match a protected pattern (`**` and `*` both match across folders)."""
+    return sorted(f for f in files if any(fnmatch.fnmatchcase(f, p.replace("**", "*")) for p in patterns))
+
+
+def check_self(files, patterns):
+    """Agamemnon never approves a PR that widens its own powers: its config, role, tools, orchestrator or this gate."""
+    hit = protected_paths(files, patterns)
+    if hit:
+        shown = ", ".join(hit[:5]) + (f" and {len(hit) - 5} more" if len(hit) > 5 else "")
+        return _check("self", FAIL, f"changes Agamemnon's own config, role or tools, so the owner reviews it: {shown}")
+    return _check("self", OK, "touches nothing of Agamemnon's own")
+
+
 def verdict(checks):
     """FAIL when any check failed, else PENDING when any is still pending, else OK."""
     states = {c["state"] for c in checks}
@@ -140,13 +155,14 @@ def gate(repo, pr_number):
     review_comments = _api(repo, f"repos/{full}/pulls/{pr_number}/comments")
     reviews = _api(repo, f"repos/{full}/pulls/{pr_number}/reviews")
     resolved = resolved_threads(repo, pr_number)
+    files = [f["filename"] for f in _api(repo, f"repos/{full}/pulls/{pr_number}/files")]
     enabled = coderabbit.enabled(repo)
     rabbit = coderabbit.classify(coderabbit.review_status(check_runs, statuses), issue_comments, review_comments,
                                  resolved, author) if enabled else None
     checks = [check_open(pr), check_coderabbit(enabled, rabbit), check_ci(check_runs, statuses),
               check_tests(pr.get("body")), check_mergeable(pr),
               check_humans(reviews, issue_comments, review_comments, resolved, head_date, (author, merger)),
-              check_labels(pr)]
+              check_labels(pr), check_self(files, cfg.get("agamemnonProtected", []))]
     return {"state": verdict(checks), "sha": sha, "checks": checks}
 
 
