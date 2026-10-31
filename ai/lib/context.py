@@ -6,6 +6,7 @@ tests, api-tester cases, recent commits and the state of the issues it depends o
 you then need with Read (offset/limit) or `sed -n a,bp`.
 """
 
+import json
 import re
 import subprocess
 from pathlib import Path
@@ -115,6 +116,9 @@ def cmd_context(args):
                                                                     for c in issue.get("comments") or [])
     paths, classes, endpoints = _candidates(issue.get("description", "") + text)
     found = resolve(repo, paths, classes, endpoints)
+    if args.json:       # only the predicted files (Talos' overlap hold); empty when the text names none
+        print(json.dumps({"issue": args.issue, "repo": repo, "files": sorted(found)}))
+        return
     say(f"#{issue['issueNumber']} [{issue['status']}] {issue['subject']}  (repo {repo})")
 
     deps = sorted({int(n) for n in re.findall(r"(?:depends on|blocked by|after)[^#\n]{0,40}#(\d{3,5})", text, re.I)}

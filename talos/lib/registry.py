@@ -35,6 +35,7 @@ class Action:
 
 
 AUTO_RETRY_REASONS = ("turn_budget", "cost_budget", "interrupted", "branch_checked_out", "talos_error")
+OVERLAP_IGNORE = ("docs/*",)       # generated files (Gaia's API docs): two issues regenerating them merge fine
 
 
 @dataclass
@@ -53,6 +54,7 @@ class Orchestration:
     max_auto_merges_per_day: int = 5    # automatic merges per day; past it, PRs go to the reviewer
     auto_merge_wait_minutes: float = 60  # how long a still-pending merge gate (CI, CodeRabbit) is waited for
     max_conflict_attempts: int = 1      # merge-conflict resolutions per issue handed to the worker (0 = none)
+    overlap_ignore: tuple = OVERLAP_IGNORE   # globs of files that never hold an issue (generated, additive registries)
 
 
 @dataclass
@@ -220,6 +222,9 @@ def _load_orchestrator(path, raw):
     reasons = raw.get("autoRetryReasons", list(AUTO_RETRY_REASONS))
     if not isinstance(reasons, list) or not all(isinstance(r, str) and r for r in reasons):
         raise TalosError(f"{path}: autoRetryReasons must be a list of reason codes")
+    overlap_ignore = raw.get("overlapIgnore", list(OVERLAP_IGNORE))
+    if not isinstance(overlap_ignore, list) or not all(isinstance(g, str) and g.strip() for g in overlap_ignore):
+        raise TalosError(f"{path}: overlapIgnore must be a list of file globs")
     merge_milestones = raw.get("autoMergeMilestones", [])
     if not isinstance(merge_milestones, list) or not all(isinstance(m, str) and m.strip() for m in merge_milestones):
         raise TalosError(f"{path}: autoMergeMilestones must be a list of milestone names")
@@ -254,6 +259,7 @@ def _load_orchestrator(path, raw):
         max_auto_merges_per_day=numbers["maxAutoMergesPerDay"],
         auto_merge_wait_minutes=merge_wait,
         max_conflict_attempts=numbers["maxConflictAttempts"],
+        overlap_ignore=tuple(g.strip() for g in overlap_ignore),
     )
     return Agent(
         name=raw["name"], display_name=raw.get("displayName", raw["name"]), role=raw.get("role", ""),

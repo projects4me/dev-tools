@@ -1,5 +1,6 @@
 """Orchestrator decisions as pure functions: which issues to feed the worker, in what order, and when to stop."""
 
+import fnmatch
 import re
 
 from ..dependency_gate import DONE_STATUSES, unmet_dependencies
@@ -79,6 +80,29 @@ def rank(issues):
         return (PRIORITIES.index(priority) if priority in PRIORITIES else len(PRIORITIES),
                 _lower(issue.get("milestone")), int(issue["number"]))
     return sorted(issues, key=key)
+
+
+def is_active(issue, done_statuses=DONE_STATUSES):
+    """Started and not finished: an issue whose files another issue should not edit at the same time."""
+    status = _lower(issue.get("status"))
+    return status not in NEW_STATUSES and status not in {_lower(s) for s in (*done_statuses, "wont_fix")}
+
+
+def ignored(path, patterns):
+    """The path matches one of the glob patterns (`*` crosses folders: `docs/*` is everything under docs/)."""
+    return any(fnmatch.fnmatchcase(path, p) for p in patterns)
+
+
+def overlapping(files, others, ignore=()):
+    """The first in-flight issue sharing a file with `files`, as (issue, [shared files]), or None. files None or
+    empty (nothing predicted) never overlaps; others is [(issue, files or None)]; paths matching `ignore` don't
+    count."""
+    mine = {f for f in files or () if not ignored(f, ignore)}
+    for number, theirs in others:
+        shared = sorted(mine & set(theirs or ()))
+        if shared:
+            return number, shared
+    return None
 
 
 def free_slots(max_in_flight, in_flight):

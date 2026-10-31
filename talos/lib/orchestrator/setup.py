@@ -13,6 +13,7 @@ from . import state as store
 from .keeper import BranchKeeper
 from .merge import Merger
 from .merging import MergeSweeper
+from .overlap import IssueFiles, OverlapGate
 from .worker import Orchestrator
 
 
@@ -66,7 +67,9 @@ def start(agent, cfg, dry_run):
                           dry_run=dry_run)
     keeper = BranchKeeper(agent, worker, tracker, github.agamemnon_gh, worker_id, me, owners,
                           lambda repo, issue: workspaces.branch_holder(WORKSPACE, repo, issue), dry_run=dry_run)
-    orchestrator = Orchestrator(agent, worker, tracker, worker_id, dry_run=dry_run, merges=merges, keeper=keeper)
+    overlap = OverlapGate(agent, worker, tracker, IssueFiles(tracker.child_env), dry_run=dry_run)
+    orchestrator = Orchestrator(agent, worker, tracker, worker_id, dry_run=dry_run, merges=merges, keeper=keeper,
+                                overlap=overlap)
     orchestrator.start()
     Listener(agent, tracker, [policy.ASSIGNEE_EVENT, policy.STATUS_EVENT], orchestrator.on_event,
              orchestrator.on_ready, cfg["hermesUrl"], cfg.get("nodeBin", "node"),

@@ -152,6 +152,10 @@ def cmd_status(args):
         for m in orchestrator_state.merges_on(name, datetime.now().astimezone().strftime("%Y-%m-%d")):
             print(f"  merged today  #{m['issue']}  {m['repo']}#{m['pr']}  as {(m.get('merge_sha') or '')[:7]}"
                   f"  at {(m.get('ended_at') or '')[11:16]}")
+        for n, h in orchestrator_state.holds(name).items():
+            files = h["files"]
+            print(f"  held  #{n}  waits for #{h['blocker']} ({h.get('repo') or '-'}): {', '.join(files[:3])}"
+                  + (f" +{len(files) - 3} more" if len(files) > 3 else "") + f"  since {h.get('held_at') or '?'}")
     for (agent, issue), entry in sorted(entries.items()):
         if entry.get("pending_status"):
             print(f"PENDING HANDBACK  {agent} #{issue}  status '{entry['pending_status']}', assign "

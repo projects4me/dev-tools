@@ -385,6 +385,15 @@ and is `enabled: false` until the engineer turns it on.
     `autoRetryReasons` and `auto_retries` is below `maxAutoRetries` (2). For `branch_checked_out` it waits until
     `workspaces.branch_holder()` finds the branch checked out in no other folder; that checkout is never touched.
   - *New*: status new, unassigned or assigned to an owner, not an epic, every "Depends on" issue done.
+  - *Overlap hold* (`lib/orchestrator/overlap.py`, new issues only): an issue whose predicted files overlap an issue
+    in flight in the same repo (started and not done or wont_fix, in the worker's milestones, or assigned earlier in
+    the sweep) waits for it. A candidate's files are what `ai context N --json` resolves from its text; an issue in
+    flight uses its branch's diff against `origin/<base>` once `claude-issue-N` has commits, else its prediction. No
+    prediction never holds. Paths matching `overlapIgnore` (globs, `*` crosses folders; default `["docs/*"]`, the
+    generated API docs; add additive registries here if they prove noisy) don't count. A held issue gets one comment
+    naming the issue and files it waits for; the hold (`overlap_holds` in talos.db) is released on the next sweep
+    that finds no overlap, once the blocker is done, or when the issue was assigned or changed by hand.
+    `talos status` lists the held issues and why.
   - *Assign*: re-read and re-check the issue, set only the assignee (the status stays, so the worker's own action
     for new, feedback or pending runs), comment why (a restart says which one, and that there is nothing new from
     the reviewer), and count the restart in `auto_retries` (`talos reset` clears it).

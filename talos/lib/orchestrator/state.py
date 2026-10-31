@@ -1,6 +1,8 @@
 """An orchestrator's state in state/talos.db: paused or not, its failure streak, the issues it fed and what the
 worker did with them since."""
 
+import json
+
 from .. import db
 from . import policy
 
@@ -140,3 +142,37 @@ def events_since(agent, since):
     events = [{**dict(r), "kind": policy.HANDBACK} for r in handbacks]
     events += [{**dict(r), "kind": policy.SUCCESS} for r in successes]
     return sorted(events, key=lambda e: e["at"])
+
+
+def hold(agent, issue, repo, blocker, files, at):
+    """Record that the issue waits for `blocker`; True when it was not held before (comment on it then)."""
+    conn = db.connect()
+    try:
+        with conn:
+            new = conn.execute("INSERT OR IGNORE INTO overlap_holds (agent, issue, held_at) VALUES (?, ?, ?)",
+                               (agent, issue, at)).rowcount == 1
+            conn.execute("UPDATE overlap_holds SET repo = ?, blocker = ?, files = ?, checked_at = ? "
+                         "WHERE agent = ? AND issue = ?", (repo, blocker, json.dumps(files), at, agent, issue))
+        return new
+    finally:
+        conn.close()
+
+
+def release(agent, issues):
+    """Drop the holds of these issues (the overlap cleared, or they are no longer waiting to be assigned)."""
+    conn = db.connect()
+    try:
+        with conn:
+            conn.executemany("DELETE FROM overlap_holds WHERE agent = ? AND issue = ?", [(agent, i) for i in issues])
+    finally:
+        conn.close()
+
+
+def holds(agent):
+    """{issue: hold} of the issues the orchestrator holds back, files decoded."""
+    conn = db.connect()
+    try:
+        rows = conn.execute("SELECT * FROM overlap_holds WHERE agent = ? ORDER BY issue", (agent,)).fetchall()
+    finally:
+        conn.close()
+    return {r["issue"]: {**dict(r), "files": json.loads(r["files"] or "[]")} for r in rows}
