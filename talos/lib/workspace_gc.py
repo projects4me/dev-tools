@@ -2,7 +2,9 @@
 
 An issue is finished when its status is done, closed or wont fix, or when its PR is merged. A workspace with a run
 in flight is never touched; one with uncommitted changes is kept unless the issue is closed (then it is forced and the changes are discarded).
-The container runner's leftovers (containers, Claude volumes and folders) go with it, under the same rules.
+The container runner's leftovers (containers, Claude volumes and folders) go with it, under the same rules, and so do
+the p4m test containers started for the workspace's checkouts (a warm Prometheus build holds about 3 GB), even when
+the workspace itself is kept or already gone.
 """
 
 import re
@@ -24,6 +26,21 @@ def issues_on_disk(root):
     if not runs.is_dir():
         return []
     return sorted(int(m.group(1)) for c in runs.iterdir() if (m := re.fullmatch(r"issue-(\d+)", c.name)))
+
+
+def test_containers(root, testenv):
+    """{issue: [container names]} of the p4m test containers started for checkouts under <root>/.runs/issue-N.
+    testenv is installer/testenv (injected); raises OSError when docker can't be asked."""
+    try:
+        found = testenv.containers(Path(root) / workspaces.RUNS_DIR)
+    except testenv.TestEnvError as e:
+        raise OSError(str(e)) from e
+    by_issue = {}
+    for name, checkout in found:
+        m = re.match(r"issue-(\d+)/", checkout)
+        if m:
+            by_issue.setdefault(int(m.group(1)), []).append(name)
+    return by_issue
 
 
 def pr_merged(root, issue):
@@ -112,12 +129,22 @@ def in_flight(entries):
     return {issue for (_, issue), v in entries.items() if v.get("running")}
 
 
-def collect_all(root, entries, agent_for, tracker_for, merged, dry_run=False, only=None, container=None):
+def _remove_test_containers(testenv, names):
+    try:
+        testenv.remove(names)
+    except testenv.TestEnvError as e:
+        raise OSError(str(e)) from e
+
+
+def collect_all(root, entries, agent_for, tracker_for, merged, dry_run=False, only=None, container=None,
+                testenv=None):
     """The gc over what is on this machine, with the lookups injected so it can be tested.
 
     entries: sessions entries {(agent, issue): state}; agent_for(name) -> Agent or None; tracker_for(agent) ->
     Tracker; merged: issue -> bool; only: collect just this issue; container: the container module (leftovers,
     remove_leftovers). Container leftovers are looked up for issues owned by an agent with a container runner.
+    testenv: installer/testenv (containers, remove), for the p4m test containers of the issues' checkouts; when
+    docker can't be asked they are left alone.
     """
     owner = {issue: name for (name, issue) in entries}
     runners = {}
@@ -125,7 +152,11 @@ def collect_all(root, entries, agent_for, tracker_for, merged, dry_run=False, on
         agent = agent_for(name)
         if agent is not None and agent.runner.get("type") == "container":
             runners[issue] = (name, agent)
-    issues = {*issues_on_disk(root), *runners}
+    try:
+        boxes = test_containers(root, testenv) if testenv is not None else {}
+    except OSError:
+        boxes = {}
+    issues = {*issues_on_disk(root), *runners, *boxes}
     if only is not None:
         issues &= {only}
     statuses = {}
@@ -134,12 +165,16 @@ def collect_all(root, entries, agent_for, tracker_for, merged, dry_run=False, on
         statuses[issue] = status_of(issue, tracker_for(agent)) if agent is not None else None
 
     def leftovers(issue):
-        if issue not in runners or container is None:
-            return [], None
-        name, agent = runners[issue]
-        found = container.leftovers(name, issue, agent.runner)
-        return [f"{kind} {what}" for kind, what in found], \
-            lambda: container.remove_leftovers(name, issue, agent.runner, found)
+        names, removers = [], []
+        if issue in runners and container is not None:
+            name, agent = runners[issue]
+            found = container.leftovers(name, issue, agent.runner)
+            names += [f"{kind} {what}" for kind, what in found]
+            removers.append(lambda: container.remove_leftovers(name, issue, agent.runner, found))
+        if boxes.get(issue):
+            names += [f"test container {n}" for n in boxes[issue]]
+            removers.append(lambda: _remove_test_containers(testenv, boxes[issue]))
+        return names, (lambda: [remove() for remove in removers]) if removers else None
 
     results = []
     for issue in sorted(issues):

@@ -6,6 +6,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -347,6 +348,28 @@ class GaiaSlotContainerTest(unittest.TestCase):
         with FakeDocker(lambda a: "p4m-test-gaia-slot1\n" if f"label={testenv.LABEL}" in a else "") as docker:
             self.assertEqual(testenv.clean(), ["p4m-test-gaia-slot1"])
         self.assertIn((("rm", "-f", "p4m-test-gaia-slot1"), None), docker.calls)
+
+    def test_containers_under_a_folder_by_their_checkout_label(self):
+        under = Path(tempfile.gettempdir()) / "ws" / ".runs"
+        base = testenv.norm(under)
+        listing = (f"p4m-test-prometheus-aa\t{base}/issue-7/prometheus\n"
+                   f"p4m-test-gaia-bb\t{base}/issue-8/gaia\n"
+                   f"p4m-test-prometheus-cc\t{testenv.norm(under.parent)}/prometheus\n"
+                   f"p4m-test-gaia-slot1\tslot1\n"
+                   f"p4m-test-other\t{base}-old/issue-9/gaia\n")
+        with FakeDocker(lambda a: listing if a[0] == "ps" else "") as docker:
+            found = testenv.containers(under)
+        self.assertEqual(found, [("p4m-test-prometheus-aa", "issue-7/prometheus"), ("p4m-test-gaia-bb", "issue-8/gaia")])
+        self.assertIn(f"label={testenv.LABEL}", docker.calls[0][0])
+
+    def test_remove_raises_when_a_container_cant_be_removed(self):
+        with FakeDocker() as docker:
+            testenv.remove(["a", "b"])
+        self.assertEqual([c[0] for c in docker.calls], [("rm", "-f", "a"), ("rm", "-f", "b")])
+        failing = subprocess.CompletedProcess([], 1, "", "no daemon")
+        with mock.patch.object(testenv.subprocess, "run", return_value=failing), \
+                self.assertRaises(testenv.TestEnvError):
+            testenv.remove(["a"])
 
 
 class BindContainerChoiceTest(unittest.TestCase):

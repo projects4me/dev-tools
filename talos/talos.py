@@ -27,6 +27,8 @@ from lib.registry import load_agents
 from lib.pool import LeaseFile
 from lib.tracker import Tracker
 
+import testenv  # noqa: E402  (installer/, put on the path by lib.registry: the p4m test containers the gc removes)
+
 
 def cmd_run(args):
     """Listen for every enabled agent until stopped."""
@@ -251,7 +253,7 @@ def gc_workspaces(dry_run=False, only=None):
 def _collect(agent_for, tracker_for, dry_run, only):
     results = workspace_gc.collect_all(
         WORKSPACE, sessions.all_entries(), agent_for, tracker_for,
-        lambda i: workspace_gc.pr_merged(WORKSPACE, i), dry_run, only, container)
+        lambda i: workspace_gc.pr_merged(WORKSPACE, i), dry_run, only, container, testenv)
     if not dry_run:
         workspaces.prune(WORKSPACE)
     return results
