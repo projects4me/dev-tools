@@ -3,19 +3,19 @@
 Worker, conversation and approval work on one shape of an idea (the sim's, see sim_client.py); this maps Gaia's
 onto it:
 - a message's `kind` plus its author become `role`: kind "message" by the agent is "agent", by anyone else "user";
-  "system" and "error" stay as they are
+  "system", "error" and "working" stay as they are
 - `ideaplanId` is `plan_id`, `costUsd` is `cost_usd`; `steps` and `screens` are JSON in Gaia
 - a plan's created issues are its Ideaplanissues; the idea's screens are the ones its messages carry (an upload
   each, the latest version of a key last)
 - the idea's owner is who created it; Gaia knows nothing about agents, so every idea in the agent's projects is
-  the agent's, and its working state is a "system" message rather than a field
+  the agent's, and its working state is a "working" message (never removed) rather than a field
 Ids are GUIDs (strings).
 """
 
 import base64
 import json
 
-AGENT_KINDS = {"agent": "message"}           # role -> kind; "system" and "error" are both
+AGENT_KINDS = {"agent": "message"}           # role -> kind; "system", "error" and "working" are all
 
 
 def _json(text, default):
@@ -61,9 +61,9 @@ class GaiaIdeasClient:
     # -- writes -------------------------------------------------------------------------------------------------
 
     def set_state(self, idea_id, agent_state):
-        """Gaia ideas have no agent state: "working" is a notice in the thread, the rest isn't shown."""
+        """Gaia ideas have no agent state: "working" is a `working`-kind message in the thread, the rest isn't shown."""
         if agent_state == "working":
-            self.post(idea_id, "system", f"{self.display_name} is working on it.")
+            self.post(idea_id, "working", f"{self.display_name} is working on it.")
 
     def mark_created(self, idea_id):
         """Nothing to do: the plan's status (created) is the record, the idea stays open for more."""
