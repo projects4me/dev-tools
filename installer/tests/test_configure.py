@@ -38,8 +38,8 @@ class AgamemnonStepTest(unittest.TestCase):
         p = mock.patch.object(configure, "gaia_client", return_value=(FakeServer, FakeGaia()))
         p.start()
         self.addCleanup(p.stop)
-        self.a = {"agamemnon": True, "agamemnonEmail": "agent.agamemnon@projects4.me", "agamemnonPassword": "pw",
-                  "gaiaUrl": "https://api.x", "appUrl": "https://app.x", "clientId": "c", "clientSecret": "s",
+        self.a = {"agamemnon": True, "agamemnonEmail": "agent.agamemnon@projects4.me", "agamemnonClientId": "cid", "agamemnonClientSecret": "sec",
+                  "gaiaUrl": "https://api.x", "appUrl": "https://app.x",
                   "name": "Eng", "timezoneLabel": "UTC", "hermesUrl": "https://h"}
 
     def accepted(self):
@@ -53,7 +53,9 @@ class AgamemnonStepTest(unittest.TestCase):
         self.assertEqual(self.accepted(), ["5", "9", "77"])
         env = configure.read_env(configure.AGAMEMNON_ENV)
         self.assertEqual(env["GAIA_EMAIL"], "agent.agamemnon@projects4.me")
-        self.assertEqual(env["GAIA_PASSWORD"], "pw")
+        self.assertEqual(env["GAIA_CLIENT_ID"], "cid")
+        self.assertEqual(env["GAIA_CLIENT_SECRET"], "sec")
+        self.assertNotIn("GAIA_PASSWORD", env)
 
     def test_twice_is_idempotent(self):
         configure.write_json(configure.AGENT_LOCAL, {"acceptAssignmentsFrom": ["5"]})

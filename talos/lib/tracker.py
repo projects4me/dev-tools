@@ -38,7 +38,6 @@ class Tracker:
         g = gaia_mcp.Gaia()
         g.base = self.env.get("GAIA_URL", g.base).rstrip("/")
         g.email = self.env.get("GAIA_EMAIL", "")
-        g.password = self.env.get("GAIA_PASSWORD", "")
         g.client_id = self.env.get("GAIA_CLIENT_ID", g.client_id)
         g.client_secret = self.env.get("GAIA_CLIENT_SECRET", "")
         if self.env.get("GAIA_CA_FILE"):
