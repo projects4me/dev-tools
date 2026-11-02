@@ -9,6 +9,8 @@ Pure Python standard library, like `p4m`: nothing to install.
 | Tool | What it does |
 |---|---|
 | `gaia_whoami` | Which user it signs in as, and which projects that user belongs to |
+| `gaia_list_agents` | The agents visible to the user: id, name, email, purpose and account status |
+| `gaia_get_agent_spec` | An agent's spec (role prompt, model config, limits, permission mode, tool grants, skills) by name, email or id; needs `agentspec.get`. Python callers (Talos) use `Gaia.agent_spec(name_or_id)` |
 | `gaia_list_projects` | Projects visible to the user, filterable by name or short code |
 | `gaia_project_options` | A project's issue types, statuses, priorities, milestones and members |
 | `gaia_list_issues` | A project's issues, newest first; filter by status, subject text, milestone (name or id) or assigned to me; `page` reads past the first 100 (`hasMore`) |

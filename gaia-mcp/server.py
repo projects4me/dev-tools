@@ -10,6 +10,7 @@ Settings come from the environment, or from gaia-mcp.env next to this file (see 
 """
 
 import base64
+import contextlib
 import json
 import mimetypes
 import os
@@ -75,7 +76,9 @@ def load_env_file(path):
 
 
 class GaiaError(Exception):
-    pass
+    def __init__(self, message, status=None):
+        super().__init__(message)
+        self.status = status
 
 
 # ---------------------------------------------------------------------------------------------
@@ -187,7 +190,7 @@ class Gaia:
         if not_json(payload):
             raise GaiaError(f"Gaia {method} {path} failed ({status}, no JSON reply): {page_text(payload[NOT_JSON])}")
         if status >= 400:
-            raise GaiaError(f"Gaia {method} {path} returned {status}: {json.dumps(payload)[:1500]}")
+            raise GaiaError(f"Gaia {method} {path} returned {status}: {json.dumps(payload)[:1500]}", status)
         return payload
 
     # -- Auth --------------------------------------------------------------------------------
@@ -345,6 +348,36 @@ class Gaia:
                 return m
         raise GaiaError(f"'{who}' is not a member of {project.get('name')}.")
 
+    def agents(self):
+        """The agents visible to the caller, each as id, name, email, purpose and account status (an agent's name,
+        email and status come from its user record when the agent row doesn't carry them)."""
+        rows = []
+        for a in self.find("agent", rels="user", limit=-1):
+            user = a.get("user") or {}
+            rows.append({"id": a.get("id"), "name": a.get("name") or user.get("name"),
+                         "email": a.get("email") or user.get("email"), "purpose": a.get("purpose"),
+                         "status": a.get("status") or user.get("status")})
+        return rows
+
+    def agent(self, name_or_id):
+        """The one agent whose name, email or id is `name_or_id` (ignoring case)."""
+        key = str(name_or_id or "").strip().lower()
+        if not key:
+            raise GaiaError("Give the agent's name, email or id.")
+        matches = [a for a in self.agents()
+                   if key in (str(a["name"] or "").lower(), str(a["email"] or "").lower(), str(a["id"] or "").lower())]
+        if not matches:
+            raise GaiaError(f"No agent named, e-mailed or with the id '{name_or_id}' is visible to {self.email}.")
+        if len(matches) > 1:
+            names = ", ".join(f"{a['name']} <{a['email']}> ({a['id']})" for a in matches)
+            raise GaiaError(f"'{name_or_id}' matches more than one agent: {names}. Use the email or id.")
+        return matches[0]
+
+    def agent_spec(self, name_or_id):
+        """The agentspec document (role prompt, model config, limits, permission mode, tool grants, skills) of the
+        agent with that name, email or id, as Gaia serves it."""
+        return self.request("GET", f"agentspec/{self.agent(name_or_id)['id']}")
+
     def issue_by_number(self, number, rels="issuestatus,issuetype,assignedTo,issuemilestone,project"):
         found = self.find("issue", f"(Issue.issueNumber : {int(number)})", rels=rels, limit=1)
         if not found:
@@ -439,6 +472,25 @@ class Tools:
             member_of = [f"(could not read memberships: {e})"]
         return {"gaia": self.g.base, "email": me.get("email"), "id": me.get("id"),
                 "name": me.get("name"), "memberOf": member_of}
+
+    def list_agents(self, args):
+        with self._needs("list agents", "agent.list"):
+            rows = self.g.agents()
+        return {"count": len(rows), "agents": rows}
+
+    def get_agent_spec(self, args):
+        with self._needs("read agent specs", "agentspec.get"):
+            return self.g.agent_spec(args.get("agent"))
+
+    @contextlib.contextmanager
+    def _needs(self, action, permission):
+        """Turn a Gaia 403 into an error naming the permission the agent account lacks."""
+        try:
+            yield
+        except GaiaError as e:
+            if e.status == 403:
+                raise GaiaError(f"{self.g.email} may not {action}: it lacks the {permission} permission.")
+            raise
 
     def list_projects(self, args):
         search = (args.get("search") or "").lower()
@@ -942,6 +994,14 @@ FIELD_ARGS = {
 TOOLS = [
     ("gaia_whoami", "whoami", "Show which Gaia user this server signs in as and which projects it belongs to.",
      {"type": "object", "properties": {}}),
+    ("gaia_list_agents", "list_agents",
+     "List the agents visible to the caller: id, name, email, purpose and account status.",
+     {"type": "object", "properties": {}}),
+    ("gaia_get_agent_spec", "get_agent_spec",
+     "Get an agent's spec (role prompt, model config, limits, permission mode, tool grants, skills) by the agent's "
+     "name, email or id. Needs the agentspec.get permission.",
+     {"type": "object", "properties": {"agent": {"type": "string", "description": "The agent's name, email or id."}},
+      "required": ["agent"]}),
     ("gaia_list_projects", "list_projects", "List projects visible to the Claude user, optionally filtered by name or short code.",
      {"type": "object", "properties": {"search": {"type": "string"}}}),
     ("gaia_project_options", "project_options",
