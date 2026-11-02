@@ -572,5 +572,84 @@ class MilestoneReadTest(unittest.TestCase):
             self.tools.list_issues({"project": "adt", "milestone": "nope"})
 
 
+
+class AgentGaia(server.Gaia):
+    """A real Gaia client with the HTTP calls stubbed: `find` answers from `agents`, `request` from `reply`."""
+
+    def __init__(self, agents, reply=None, error=None, status=None):
+        super().__init__()
+        self.email = "talos@example.com"
+        self._agents, self.reply, self.error, self.status, self.calls = agents, reply, error, status, []
+
+    def find(self, module, query=None, rels=None, **kw):
+        self.calls.append(("find", module))
+        return list(self._agents)
+
+    def request(self, method, path, params=None, body=None):
+        self.calls.append((method, path))
+        if self.error:
+            raise server.GaiaError(self.error, self.status)
+        return self.reply
+
+
+AGENTS = [
+    {"id": "a-1", "purpose": "Codes", "status": "active", "user": {"name": "Agent Odysseus", "email": "odysseus@example.com"}},
+    {"id": "a-2", "name": "Agent Nestor", "email": "nestor@example.com", "purpose": "Ideas", "status": "active"},
+]
+
+
+class AgentToolsTest(unittest.TestCase):
+    def tools(self, **kw):
+        return server.Tools(AgentGaia(AGENTS, **kw))
+
+    def test_list_agents_summarises_each_agent(self):
+        out = self.tools().list_agents({})
+        self.assertEqual(out["count"], 2)
+        self.assertEqual(out["agents"][0], {"id": "a-1", "name": "Agent Odysseus", "email": "odysseus@example.com",
+                                            "purpose": "Codes", "status": "active"})
+
+    def test_spec_by_name_email_or_id(self):
+        spec = {"role": "code"}
+        for who in ("agent odysseus", "ODYSSEUS@example.com", "a-1"):
+            t = self.tools(reply=spec)
+            self.assertEqual(t.get_agent_spec({"agent": who}), spec)
+            self.assertIn(("GET", "agentspec/a-1"), t.g.calls)
+
+    def test_unknown_agent(self):
+        with self.assertRaisesRegex(server.GaiaError, "No agent"):
+            self.tools().get_agent_spec({"agent": "Nobody"})
+
+    def test_several_matches(self):
+        t = server.Tools(AgentGaia(AGENTS + [dict(AGENTS[1], id="a-3", email="n2@example.com")]))
+        with self.assertRaisesRegex(server.GaiaError, "more than one agent"):
+            t.get_agent_spec({"agent": "Agent Nestor"})
+
+    def test_missing_agent_argument(self):
+        with self.assertRaisesRegex(server.GaiaError, "Give the agent"):
+            self.tools().get_agent_spec({})
+
+    def test_403_names_the_missing_permission(self):
+        t = self.tools(error="Gaia GET agentspec/a-1 returned 403: {}", status=403)
+        with self.assertRaisesRegex(server.GaiaError, "agentspec.get"):
+            t.get_agent_spec({"agent": "a-1"})
+
+    def test_403_on_the_agent_list_is_translated_too(self):
+        g = AgentGaia(AGENTS, error="Gaia GET agent returned 403: {}", status=403)
+        g.find = lambda *a, **k: g.request("GET", "agent")
+        with self.assertRaisesRegex(server.GaiaError, "agent.list"):
+            server.Tools(g).list_agents({})
+        with self.assertRaisesRegex(server.GaiaError, "agentspec.get"):
+            server.Tools(g).get_agent_spec({"agent": "a-1"})
+
+    def test_other_errors_pass_through(self):
+        t = self.tools(error="Gaia GET agentspec/a-1 returned 500: boom", status=500)
+        with self.assertRaisesRegex(server.GaiaError, "500"):
+            t.get_agent_spec({"agent": "a-1"})
+
+    def test_both_tools_are_listed(self):
+        names = {name for name, *_ in server.TOOLS}
+        self.assertLessEqual({"gaia_list_agents", "gaia_get_agent_spec"}, names)
+
+
 if __name__ == "__main__":
     unittest.main()
