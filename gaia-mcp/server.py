@@ -461,9 +461,48 @@ class Tools:
                         for m in p.get("members") or []],
         }
 
+    @staticmethod
+    def summarize_milestone(m):
+        out = {k: m.get(k) for k in ("name", "id", "status", "milestoneType", "startDate", "endDate")}
+        return {k: v for k, v in out.items() if v not in (None, "")}
+
+    def _milestone(self, p, value):
+        """The project's milestone named `value` or with that id (project read with its milestones)."""
+        return self.g.pick(p.get("milestones") or [], value, "milestone")
+
+    def list_milestones(self, args):
+        p = self.g.project(args["project"], rels="milestones")
+        want = str(args.get("status") or "").strip().lower().replace(" ", "_")
+        rows = [m for m in p.get("milestones") or []
+                if not want or str(m.get("status") or "").strip().lower().replace(" ", "_") == want]
+        rows.sort(key=lambda m: str(m.get("endDate") or ""), reverse=True)
+        return {"project": p.get("name"), "count": len(rows), "milestones": [self.summarize_milestone(m) for m in rows]}
+
+    def get_milestone(self, args):
+        value = args.get("id") or args.get("name")
+        if not value:
+            raise GaiaError("Give the milestone's name or id.")
+        p = self.g.project(args["project"], rels="milestones")
+        m = self._milestone(p, value)
+        issues = self.g.find("issue", f"((Issue.projectId : {p['id']}) AND (Issue.milestoneId : {m['id']}))",
+                             rels="issuestatus", limit=-1)
+        counts = {}
+        for i in issues:
+            status = (i.get("issuestatus") or {}).get("name") or i.get("status") or "unknown"
+            counts[status] = counts.get(status, 0) + 1
+        out = self.summarize_milestone(m)
+        out["description"] = m.get("description")
+        out["project"] = p.get("name")
+        out["issueCount"] = len(issues)
+        out["issuesByStatus"] = counts
+        return out
+
     def list_issues(self, args):
-        p, statuses = self.g.project_options(args["project"], ("issuestatuses",) if args.get("status") else ())
+        needs = (("issuestatuses",) if args.get("status") else ()) + (("milestones",) if args.get("milestone") else ())
+        p, statuses = self.g.project_options(args["project"], needs)
         clauses = [f"(Issue.projectId : {p['id']})"]
+        if args.get("milestone"):
+            clauses.append(f"(Issue.milestoneId : {self._milestone(p, args['milestone'])['id']})")
         if args.get("status"):
             s = self.g.pick(statuses, args["status"], "status")
             clauses.append(f"(Issue.statusId : {s['id']})")
@@ -476,9 +515,11 @@ class Tools:
                 clauses.append(f"(Issue.subject CONTAINS {term})")
         query = "(" + " AND ".join(clauses) + ")"
         limit = max(1, min(int(args.get("limit") or 25), 100))
+        page = max(1, int(args.get("page") or 1))
         rows = self.g.find("issue", query, rels="issuestatus,issuetype,assignedTo,issuemilestone",
-                           sort="Issue.issueNumber", order="DESC", limit=limit)
-        return {"project": p.get("name"), "count": len(rows),
+                           sort="Issue.issueNumber", order="DESC", limit=limit, page=page if page > 1 else None)
+        return {"project": p.get("name"), "page": page, "count": len(rows),
+                "hasMore": len(rows) == limit,
                 "issues": [summarize_issue(r, self.ui, self.g.type_labels()) for r in rows]}
 
     COMMENTS_DEFAULT, COMMENTS_MAX = 10, 100
@@ -912,7 +953,22 @@ TOOLS = [
          "status": {"type": "string"},
          "search": {"type": "string", "description": "Text the subject contains."},
          "assigned_to_me": {"type": "boolean"},
-         "limit": {"type": "integer", "minimum": 1, "maximum": 100}},
+         "milestone": {"type": "string", "description": "Milestone name or id, within the project."},
+         "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+         "page": {"type": "integer", "minimum": 1,
+                  "description": "Page of `limit` issues (default 1); keep going while hasMore is true."}},
+      "required": ["project"]}),
+    ("gaia_list_milestones", "list_milestones",
+     "List a project's milestones (latest end date first): name, id, status, type, start and end dates. "
+     "Optionally only those with a status, e.g. completed.",
+     {"type": "object", "properties": {"project": PROJECT_ARG, "status": {"type": "string"}},
+      "required": ["project"]}),
+    ("gaia_get_milestone", "get_milestone",
+     "Get one milestone by name or id: its dates, status, description and issue counts per status. "
+     "Read its issues with gaia_list_issues and the milestone argument.",
+     {"type": "object", "properties": {"project": PROJECT_ARG,
+                                       "name": {"type": "string"},
+                                       "id": {"type": "string", "description": "The milestone's id (instead of name)."}},
       "required": ["project"]}),
     ("gaia_add_comment", "add_comment",
      "Add a comment to an issue's thread (HTML). Use it to record what was done, findings, decisions and next steps.",

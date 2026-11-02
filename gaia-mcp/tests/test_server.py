@@ -509,5 +509,68 @@ class IdeaToolsTest(unittest.TestCase):
             self.assertTrue(callable(getattr(server.Tools, n)))
 
 
+class MilestoneReadGaia:
+    MILESTONES = [
+        {"id": "m-1", "name": "Alpha", "status": "completed", "milestoneType": "milestone",
+         "startDate": "2026-01-01", "endDate": "2026-02-01", "description": "First"},
+        {"id": "m-2", "name": "Beta", "status": "in_progress", "milestoneType": "milestone",
+         "startDate": "2026-02-01", "endDate": "2026-03-01"},
+    ]
+
+    def __init__(self):
+        self.queries = []
+
+    def project(self, name, rels=None):
+        return {"id": "p-1", "name": "A Dev Tool", "milestones": list(self.MILESTONES)}
+
+    def project_options(self, project, needs=server.PROJECT_RELS):
+        return self.project(project), []
+
+    pick = staticmethod(server.Gaia.pick)
+
+    def type_labels(self):
+        return {}
+
+    def find(self, module, query=None, rels=None, fields=None, sort=None, order=None, limit=None, page=None):
+        self.queries.append((query, limit, page))
+        done, new = {"name": "done"}, {"name": "new"}
+        return [{"issueNumber": n, "issuestatus": done if n % 2 else new} for n in range(5, 0, -1)][:limit if limit and limit > 0 else None]
+
+
+class MilestoneReadTest(unittest.TestCase):
+    def setUp(self):
+        self.g = MilestoneReadGaia()
+        self.tools = server.Tools(self.g)
+
+    def test_tools_are_listed(self):
+        names = {t[0] for t in server.TOOLS}
+        self.assertTrue({"gaia_list_milestones", "gaia_get_milestone"} <= names)
+
+    def test_list_milestones_by_status(self):
+        out = self.tools.list_milestones({"project": "adt", "status": "Completed"})
+        self.assertEqual([m["name"] for m in out["milestones"]], ["Alpha"])
+        self.assertEqual(len(self.tools.list_milestones({"project": "adt"})["milestones"]), 2)
+
+    def test_get_milestone_counts(self):
+        out = self.tools.get_milestone({"project": "adt", "name": "alpha"})
+        self.assertEqual(out["description"], "First")
+        self.assertEqual(out["issuesByStatus"], {"done": 3, "new": 2})
+        self.assertIn("(Issue.milestoneId : m-1)", self.g.queries[0][0])
+
+    def test_unknown_milestone(self):
+        with self.assertRaises(server.GaiaError):
+            self.tools.get_milestone({"project": "adt", "name": "nope"})
+
+    def test_list_issues_milestone_and_page(self):
+        out = self.tools.list_issues({"project": "adt", "milestone": "m-2", "limit": 2, "page": 3})
+        query, limit, page = self.g.queries[0]
+        self.assertIn("(Issue.milestoneId : m-2)", query)
+        self.assertEqual((limit, page, out["page"], out["hasMore"]), (2, 3, 3, True))
+
+    def test_list_issues_unknown_milestone(self):
+        with self.assertRaises(server.GaiaError):
+            self.tools.list_issues({"project": "adt", "milestone": "nope"})
+
+
 if __name__ == "__main__":
     unittest.main()
