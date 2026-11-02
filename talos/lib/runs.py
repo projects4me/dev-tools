@@ -7,6 +7,7 @@ STATS = ("turns", "input_tokens", "cache_read_tokens", "cache_write_tokens", "ou
 
 
 IDEA = "idea"   # status_at_start of an ideas agent's turn; its `issue` is the idea id (Gaia's are GUIDs)
+EVENT = "event"  # status_at_start of an events agent's run; its `issue` is the event's resource id
 
 
 def start(agent, issue, iteration, model, session_id, resumed, status_at_start, started_at, summary=None):

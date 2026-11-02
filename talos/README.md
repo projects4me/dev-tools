@@ -366,6 +366,43 @@ Prometheus ─▶ Gaia ─publish─▶ Hermes ─idea.message.created───�
 Config: `hermesUrl` (as for issue agents); on the sim, `sim.url` and `sim.secretFile` (or `sim.secret` in
 config.local.json); `kbMaxAgeMinutes`; `browserBin` and `prometheusUrl` for screens (empty: found automatically).
 
+## Events agents (kind `events`)
+
+An events agent runs Claude once when something happens in Gaia, e.g. a retrospective when a milestone is marked
+completed. It claims no issue and hands nothing off: it has no `actions`, `acceptAssignmentsFrom` or `handoffTo`.
+
+```json
+{
+  "name": "retro", "displayName": "Agent Mentor", "kind": "events",
+  "gaiaEnv": "talos/agents/retro/agent.env",
+  "projects": {"A Gaia": "gaia", "A Prometheus": "prometheus"},
+  "triggers": {
+    "milestone.completed": {"prompt": "Milestone {{name}} ({{resourceId}}) in {{projectName}} ({{projectShortcode}}) is completed. Write its retrospective."}
+  },
+  "model": {"default": "sonnet"}, "rolePrompt": "role.md",
+  "limitsByModel": {"sonnet": {"maxTurns": 60}}
+}
+```
+
+- **Events** (lib/hermes.py `Listener`, lib/events/policy.py `key_for`): every trigger's event name in every project
+  of the agent, as the agent's own Gaia user. An event whose name has no trigger, from another project or without a
+  resource id is ignored. Any actor counts (a milestone is completed by whoever completes it).
+- **Prompt** (`variables`, `render`): the trigger's prompt with `{{eventName}}`, `{{resourceId}}`, `{{projectId}}`,
+  `{{projectName}}`, `{{projectShortcode}}`, `{{actorId}}` and the event's changes (e.g. `{{name}}`, `{{status}}`)
+  filled in; the event's own fields win over a change of the same name. An unknown `{{key}}` is left as written, so
+  a misspelt placeholder shows in the run log.
+- **Once per (agent, event, resource)** (lib/events/store.py, table `event_runs`): an event is claimed as it arrives;
+  a re-sent one (reconnects, the same resource heard in several projects) is logged and dropped, whatever became of
+  the first. Runs go one at a time, `claude -p` in the workspace root with the role prompt, the outcome schema,
+  `limitsByModel`/`maxTurns`, the agent's MCP config and the runtime-copy hook, like issue runs; each is a row in
+  `runs` (`status_at_start` `event`, `issue` = the resource id).
+- **Endings**: outcome `done` is `done`; any other outcome (or a crash) is `failed`, with Claude's comment or the
+  error kept in `detail`, and is not retried. `talos status` lists the latest event runs and why the failed ones
+  failed. A Claude usage limit pauses the queue (the shared `UsagePause` backoff) and runs the event again after it.
+- **Restarts**: events still queued run when Talos starts again; one that was running is marked `interrupted` and not
+  re-run (it may have acted already). Hermes keeps no history, so an event sent while Talos was down is not seen.
+- `talos run --dry-run` logs the prompt an event would run with and claims nothing.
+
 ## Orchestrator agents (Agent Agamemnon)
 
 An orchestrator (`"kind": "orchestrator"`) feeds an issues agent instead of running Claude: Agent Agamemnon assigns
@@ -513,6 +550,9 @@ Readable by other tools while Talos runs (WAL mode), e.g. a future Projects4Me U
   reasoning, undo) and the issues `aga hold-until-tomorrow` holds.
 - `auto_merges`: one row per automatic merge attempt: issue, repo, PR, when it was first seen, and how it ended
   (merged with its merge commit, or handed back with the reason).
+- `event_runs`: one row per events agent, event name and resource id (its dedupe key): project, the envelope as
+  received, status (`queued`, `running`, `done`, `failed`, `interrupted`), when it was received, started and ended,
+  outcome, summary, `detail` (Claude's comment or the error) and the latest `runs` row.
 - `bot_reviews`: one row per issue in the CodeRabbit loop: repo, PR, the issue's status when the wait began,
   phase (`waiting` or `round`), bot rounds run, and the deadline of the current wait.
 
@@ -540,6 +580,7 @@ The pre-SQLite `state/sessions.json` is imported when `talos run`/`dispatch` sta
 | `lib/runs.py` | run records (`runs` table) and the per-run cost calculation |
 | `lib/simbus.py` | sim Hermes connection (SSE): the event source for ideas agents until Hermes carries idea events |
 | `lib/orchestrator/` | orchestrator agents: `policy` (pure: candidates, ranking, slots, the breaker), `worker` (the `Orchestrator`: triggers, sweep, assigning), `state` (its rows in talos.db), `setup` (wires one orchestrator: worker, Gaia user, Hermes listener) |
+| `lib/events/` | events agents: `policy` (pure: trigger match, dedupe key, prompt variables and rendering), `store` (`event_runs`: claim, update, recover), `worker` (queue, one run per event, usage-limit pause), `setup` (wires one agent: Gaia user, worker, Hermes listener) |
 | `lib/ideas/` | ideas agents: `setup` (wiring), `policy` (events, what waits), `worker` (queue, stop, reconcile), `conversation` (a turn), `approval` (plan → issues), `stream` (streamed run, command), `client` (Gaia idea resources) and `sim_client` (the sim's), `progress` (live progress on the sim), `plan`, `screens` (blocks) + `render` (= `styles` + `page` + `browser`) + `screen_kit/` (UI screens → PNG), `sanitize`, `steps`, `kb`, `state` |
 
 ## Parallel runs
