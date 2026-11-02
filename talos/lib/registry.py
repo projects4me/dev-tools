@@ -113,6 +113,8 @@ class Agent:
     max_parallel_by_model: dict = field(default_factory=lambda: {"opus": 1})   # model -> runs at once
     test_slots: int = 0                 # test slots to lease per run (0 = max_parallel; at most TEST_SLOTS in p4m.env)
     runner: dict = field(default_factory=dict)       # where runs execute: {} / {"type": "local"} or a container (container.py)
+    dispatch: str = "status"            # "status": works issues assigned to it by their status (actions);
+                                        # "workflow": runs the Run agent steps Gaia's workflows send it (workflow_steps.py)
     extra: dict = field(default_factory=dict)
     orchestration: Orchestration = None     # kind orchestrator only
 
@@ -128,6 +130,7 @@ REQUIRED_ORCHESTRATOR = ("name", "gaiaEnv", "worker")
 REQUIRED_EVENTS = ("name", "gaiaEnv", "projects", "triggers", "model", "rolePrompt")
 KINDS = ("issues", "ideas", "orchestrator", "events")
 RUNNERS = ("local", "container")
+DISPATCH = ("status", "workflow")
 
 
 def load_agent(folder):
@@ -167,6 +170,9 @@ def load_agent(folder):
     kind = raw.get("kind", "issues")
     if kind not in KINDS:
         raise TalosError(f"{path}: kind must be one of {', '.join(KINDS)}")
+    dispatch = raw.get("dispatch", "status")
+    if dispatch not in DISPATCH:
+        raise TalosError(f"{path}: dispatch must be one of {', '.join(DISPATCH)}")
     test_slots = int(raw.get("testSlots", 0))
     if test_slots > 0:
         try:
@@ -220,6 +226,7 @@ def load_agent(folder):
         max_parallel_by_model={str(k): int(v) for k, v in raw.get("maxParallelByModel", {"opus": 1}).items()},
         test_slots=test_slots,
         runner=dict(runner),
+        dispatch=dispatch,
         extra={k: raw[k] for k in ("knowledgeMap", "ideaSource") if k in raw},
     )
 

@@ -1,7 +1,7 @@
 """Keeps one agent's Hermes listener (listener/listen.js) running and feeds its events to the agent's handler.
 
-Each agent declares what it listens to: the event names (subscribed in every project of the agent), a handler for
-each envelope, and what to do once (re)connected (Hermes keeps no history, so the owner reconciles then).
+Each agent declares what it listens to: the event names (subscribed in every project of the agent) and any intents
+of its own (a user scope), a handler for each envelope, and what to do once (re)connected (Hermes keeps no history, so the owner reconciles then).
 """
 
 import json
@@ -17,7 +17,8 @@ class Listener:
     """Supervises the Node Socket.IO client: fresh token on every (re)connect, `on_ready(project_ids)` once ready,
     `on_event(envelope)` for each event."""
 
-    def __init__(self, agent, tracker, events, on_event, on_ready, hermes_url, node_bin="node", retry_seconds=10):
+    def __init__(self, agent, tracker, events, on_event, on_ready, hermes_url, node_bin="node", retry_seconds=10,
+                 extra_intents=()):
         self.agent = agent
         self.tracker = tracker
         self.on_event, self.on_ready = on_event, on_ready
@@ -25,7 +26,7 @@ class Listener:
         self.node_bin = node_bin
         self.retry_seconds = retry_seconds
         self.project_ids = tracker.project_ids()
-        self.intents = intents(self.project_ids, events)
+        self.intents = intents(self.project_ids, events) + list(extra_intents)
 
     def start(self):
         threading.Thread(target=self._loop, name=f"hermes-{self.agent.name}", daemon=True).start()

@@ -14,7 +14,7 @@ import time
 import urllib.request
 from datetime import datetime
 
-from lib import container, db, policy, runner, sessions, workspace_gc, workspaces
+from lib import container, db, policy, runner, sessions, workflow_steps, workspace_gc, workspaces
 from lib import runs as run_log
 from lib.agamemnon import journal as agamemnon_journal
 from lib.agamemnon import undo as agamemnon_undo
@@ -97,6 +97,14 @@ def _run(args):
         dispatcher.recover_interrupted()
         dispatcher.start()
         dispatchers.append(dispatcher)
+        if agent.dispatch == "workflow":    # Gaia's workflows say what to run: no assignments, only Run agent steps
+            steps = workflow_steps.StepRunner(agent, tracker, dispatcher, dry_run=args.dry_run)
+            steps.recover_interrupted()
+            steps.start()
+            Listener(agent, tracker, [policy.STATUS_EVENT], steps.on_event, steps.reconcile, cfg["hermesUrl"],
+                     cfg.get("nodeBin", "node"), cfg.get("reconnectSeconds", 10),
+                     extra_intents=workflow_steps.intents(dispatcher.user_id)).start()
+            continue
         Listener(agent, tracker, [policy.ASSIGNEE_EVENT, policy.STATUS_EVENT], dispatcher.on_event, dispatcher.reconcile,
                  cfg["hermesUrl"], cfg.get("nodeBin", "node"), cfg.get("reconnectSeconds", 10)).start()
     try:
@@ -382,7 +390,7 @@ def cmd_agents(args):
                 "models": {"default": agent.model_default, "byComplexity": agent.model_by_complexity,
                            "escalate": agent.model_escalate},
                 "maxIterations": agent.max_iterations,
-                "statuses": sorted(agent.actions), "permissionMode": agent.permission_mode}
+                "statuses": sorted(agent.actions), "permissionMode": agent.permission_mode, "dispatch": agent.dispatch}
         try:
             tracker = Tracker(agent)
             line["gaiaUser"] = tracker.user_id()
