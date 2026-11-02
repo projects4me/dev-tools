@@ -1,7 +1,7 @@
 # gaia-mcp — Projects4Me issues for Claude Code
 
 An MCP server that lets Claude Code find, create and update Projects4Me issues through Gaia's REST API.
-It signs in as a dedicated Claude user (OAuth2 password grant), so Gaia's ACL applies to everything it does.
+It signs in as a dedicated Claude user (OAuth2 client_credentials grant), so Gaia's ACL applies to everything it does.
 Pure Python standard library, like `p4m`: nothing to install.
 
 ## Tools
@@ -34,8 +34,8 @@ Updating the description keeps the existing marker unless the new text has one.
 
 `dev-tools/installer/p4m configure` does all of this. By hand:
 
-1. Copy `gaia-mcp.env.example` to `gaia-mcp.env` (git-ignored) and fill in `GAIA_EMAIL`, `GAIA_PASSWORD`
-   and `GAIA_CLIENT_SECRET` (the value in `prometheus/config/environment.js`). In the Pr4M workspace these are
+1. Copy `gaia-mcp.env.example` to `gaia-mcp.env` (git-ignored) and fill in `GAIA_EMAIL` (the agent's email, to find its user),
+   `GAIA_CLIENT_ID` and `GAIA_CLIENT_SECRET` (the agent's own OAuth credentials). In the Pr4M workspace these are
    the shared **Agent Odysseus** credentials.
 2. Register it with Claude Code once, at user scope so it works in the workspace and in every repo:
 
@@ -49,7 +49,7 @@ Updating the description keeps the existing marker unless the new text has one.
 
 `GAIA_URL` (API) and `GAIA_UI_URL` (Prometheus, for issue links) pick the environment; they default to the local
 p4m stack (`https://api.local-projects4.me`). To work against **live**, point them at the live API and app, and use
-the live OAuth client id/secret (the production Prometheus config) and the agent's **live** password.
+the agent's **live** client id and secret.
 
 To keep both, give each its own env file and register two servers; `GAIA_MCP_ENV` names the file to read
 (`dev-tools/ai` honours it too):
@@ -70,4 +70,4 @@ Live uses a public certificate and needs nothing.
 - The Claude user must be a member of a project to create issues in it (Gaia's project-scoped ACL).
 - Search text is limited to letters, digits, spaces and `.,:#/-`, because Gaia's query parser inserts
   values into PHQL without binding them.
-- The password and tokens never leave this process except in the request to Gaia's `/api/v1/token`.
+- The client secret and tokens never leave this process except in the request to Gaia's `/api/v1/token`.

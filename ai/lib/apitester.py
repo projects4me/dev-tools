@@ -89,22 +89,23 @@ def _credentials(target, profile):
                 k, _, v = line.partition("=")
                 env[k.strip()] = v.strip().strip('"').strip("'")
         base = env.get("GAIA_URL", "https://api.local-projects4.me")
-        return base, env["GAIA_CLIENT_ID"], env["GAIA_CLIENT_SECRET"], env["GAIA_EMAIL"], env["GAIA_PASSWORD"]
+        return base, {"grant_type": "client_credentials", "client_id": env["GAIA_CLIENT_ID"],
+                      "client_secret": env["GAIA_CLIENT_SECRET"]}
     fixtures = json.loads((_api_tester() / "fixtures" / "default.json").read_text(encoding="utf-8"))
     auth = dict(fixtures["auth"])
     if profile and profile != "default":
         if profile not in fixtures["authProfiles"]:
             raise AiError(f"unknown profile '{profile}' (one of: default, {', '.join(fixtures['authProfiles'])})")
         auth.update(fixtures["authProfiles"][profile])
-    return "https://api-test.local-projects4.me", auth["clientId"], auth["clientSecret"], auth["email"], auth["password"]
+    return "https://api-test.local-projects4.me", {"grant_type": "password", "client_id": auth["clientId"],
+                                                   "client_secret": auth["clientSecret"], "email": auth["email"],
+                                                   "password": auth["password"]}
 
 
 def cmd_call(args):
     """METHOD path [json] against the test API as an api-tester profile, or dev as Agent Odysseus."""
-    base, client_id, secret, email, password = _credentials(args.target, args.profile)
-    status, body = _post_form(base + "/api/v1/token", {"grant_type": "password", "client_id": client_id,
-                                                       "client_secret": secret, "email": email,
-                                                       "password": password})
+    base, form = _credentials(args.target, args.profile)
+    status, body = _post_form(base + "/api/v1/token", form)
     if status != 200:
         raise AiError(f"login failed ({status}): {body[:300]}")
     token = json.loads(body)["access_token"]

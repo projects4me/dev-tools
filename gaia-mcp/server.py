@@ -3,7 +3,7 @@
 gaia-mcp — MCP server that lets Claude Code work with Projects4Me issues through Gaia's REST API.
 
 Pure Python standard library (like p4m). Speaks MCP over stdio (newline-delimited JSON-RPC 2.0).
-It signs in to Gaia with OAuth2 password grant as a dedicated user and only calls /api/v1/*,
+It signs in to Gaia with OAuth2 client_credentials grant as a dedicated agent and only calls /api/v1/*,
 so Gaia's ACL applies to everything it does.
 
 Settings come from the environment, or from gaia-mcp.env next to this file (see gaia-mcp.env.example).
@@ -86,7 +86,6 @@ class Gaia:
     def __init__(self):
         self.base = os.environ.get("GAIA_URL", "https://api.local-projects4.me").rstrip("/")
         self.email = os.environ.get("GAIA_EMAIL", "")
-        self.password = os.environ.get("GAIA_PASSWORD", "")
         self.client_id = os.environ.get("GAIA_CLIENT_ID", "projects4me")
         self.client_secret = os.environ.get("GAIA_CLIENT_SECRET", "")
         self.timeout = float(os.environ.get("GAIA_TIMEOUT", "30"))
@@ -199,11 +198,10 @@ class Gaia:
         if self.refresh_token and self._grant({"grant_type": "refresh_token",
                                                "refresh_token": self.refresh_token}, quiet=True):
             return self.access_token
-        if not self.email or not self.password:
-            raise GaiaError("GAIA_EMAIL and GAIA_PASSWORD are not set. Put them in dev-tools/gaia-mcp/gaia-mcp.env.")
-        if not self.client_secret:
-            raise GaiaError("GAIA_CLIENT_SECRET is not set. Put it in dev-tools/gaia-mcp/gaia-mcp.env.")
-        self._grant({"grant_type": "password", "email": self.email, "password": self.password})
+        if not self.client_id or not self.client_secret:
+            raise GaiaError("GAIA_CLIENT_ID and GAIA_CLIENT_SECRET (the agent's) are not set. "
+                            "Put them in dev-tools/gaia-mcp/gaia-mcp.env.")
+        self._grant({"grant_type": "client_credentials"})
         return self.access_token
 
     def _grant(self, form, quiet=False):
@@ -213,7 +211,7 @@ class Gaia:
             self.refresh_token = None
             if quiet:
                 return False
-            # Never echo the request; it holds the password.
+            # Never echo the request; it holds the client secret.
             raise GaiaError(f"Gaia sign-in failed ({status}): {payload.get('error_description') or payload.get('error') or payload}")
         self.access_token = payload["access_token"]
         self.refresh_token = payload.get("refresh_token")
@@ -223,7 +221,8 @@ class Gaia:
     def me(self):
         if self.user is None:
             if not re.fullmatch(r"[\w.+-]+@[\w.-]+", self.email):
-                raise GaiaError(f"GAIA_EMAIL '{self.email}' does not look like an email address.")
+                raise GaiaError(f"GAIA_EMAIL '{self.email}' does not look like an email address "
+                                "(the agent's email, used to find its user record).")
             users =self.find("user", f"(User.email : {self.email})", fields=None, limit=1)
             if not users:
                 raise GaiaError(f"Signed in, but no user record was found for {self.email}.")

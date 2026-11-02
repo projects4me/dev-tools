@@ -107,18 +107,6 @@ def ask(label, default=None, kind=None, answers=None, key=None):
     return value or default
 
 
-def prometheus_client():
-    """The OAuth client id and secret Prometheus uses (the same in every environment), read from its config, so
-    nobody has to type them. (None, None) when the Prometheus checkout isn't there."""
-    config = ROOT / "prometheus" / "config" / "environment.js"
-    if not config.exists():
-        return None, None
-    text = config.read_text(encoding="utf-8")
-    cid = re.search(r"clientId:\s*['\"]([^'\"]+)['\"]", text)
-    secret = re.search(r"clientSecret:\s*['\"]([^'\"]+)['\"]", text)
-    return (cid.group(1) if cid else None), (secret.group(1) if secret else None)
-
-
 def local_domain():
     env = read_env(TOOLS_DIR / "p4m.env")
     return env.get("P4M_DOMAIN") or "local-projects4.me"
@@ -143,20 +131,14 @@ def collect(previous, answers):
     a["hermesUrl"] = ask("Hermes URL", previous.get("hermesUrl") or f"https://hermes.{dom}",
                          answers=answers, key="hermesUrl")
     a["aresUrl"] = ask("Ares URL", previous.get("aresUrl") or f"https://ares.{dom}", answers=answers, key="aresUrl")
-    client_id, client_secret = prometheus_client()
-    if client_id and client_secret and not (answers and ("clientId" in answers or "clientSecret" in answers)):
-        a["clientId"], a["clientSecret"] = client_id, client_secret
-        _say(f"  OAuth client: '{client_id}' from prometheus/config/environment.js")
-    else:   # no Prometheus checkout to read it from
-        a["clientId"] = ask("OAuth client id", gaia_env.get("GAIA_CLIENT_ID") or client_id or "projects4me",
-                            answers=answers, key="clientId")
-        a["clientSecret"] = ask("OAuth client secret (prometheus/config/environment.js)",
-                                gaia_env.get("GAIA_CLIENT_SECRET") or client_secret, SECRET, answers, "clientSecret")
 
     _say("\nAgent Odysseus (the team's shared agent identity; the team lead shares these)")
     a["agentEmail"] = ask("Agent Projects4Me email", gaia_env.get("GAIA_EMAIL") or "agent.odysseus@projects4.me",
                           answers=answers, key="agentEmail")
-    a["agentPassword"] = ask("Agent Projects4Me password", gaia_env.get("GAIA_PASSWORD"), SECRET, answers, "agentPassword")
+    a["agentClientId"] = ask("Agent OAuth client id (from its Projects4Me agent credentials)",
+                             gaia_env.get("GAIA_CLIENT_ID"), answers=answers, key="agentClientId")
+    a["agentClientSecret"] = ask("Agent OAuth client secret", gaia_env.get("GAIA_CLIENT_SECRET"), SECRET,
+                                 answers, "agentClientSecret")
     a["ghToken"] = ask("Agent GitHub token (fine-grained)", ody_env.get("GH_TOKEN"), SECRET, answers, "ghToken")
     have_key = AGENT_KEY.exists()
     a["sshKey"] = ask("Path to the agent's SSH private key" + (" (Enter keeps the installed one)" if have_key else ""),
@@ -168,8 +150,10 @@ def collect(previous, answers):
     if a["agamemnon"]:
         a["agamemnonEmail"] = ask("Agamemnon Projects4Me email", ag_env.get("GAIA_EMAIL") or "agent.agamemnon@projects4.me",
                                   answers=answers, key="agamemnonEmail")
-        a["agamemnonPassword"] = ask("Agamemnon Projects4Me password", ag_env.get("GAIA_PASSWORD"), SECRET,
-                                     answers, "agamemnonPassword")
+        a["agamemnonClientId"] = ask("Agamemnon OAuth client id", ag_env.get("GAIA_CLIENT_ID"),
+                                     answers=answers, key="agamemnonClientId")
+        a["agamemnonClientSecret"] = ask("Agamemnon OAuth client secret", ag_env.get("GAIA_CLIENT_SECRET"), SECRET,
+                                         answers, "agamemnonClientSecret")
     return a
 
 
@@ -179,8 +163,8 @@ def write_credentials(a):
     write_private(GAIA_ENV, "\n".join([
         "# Written by `dev-tools/installer/p4m configure` (shared Agent Odysseus credentials). Git-ignored.",
         f"GAIA_URL={a['gaiaUrl']}", f"GAIA_UI_URL={a['appUrl']}",
-        f"GAIA_EMAIL={a['agentEmail']}", f"GAIA_PASSWORD={a['agentPassword']}",
-        f"GAIA_CLIENT_ID={a['clientId']}", f"GAIA_CLIENT_SECRET={a['clientSecret']}", ""]))
+        f"GAIA_EMAIL={a['agentEmail']}",
+        f"GAIA_CLIENT_ID={a['agentClientId']}", f"GAIA_CLIENT_SECRET={a['agentClientSecret']}", ""]))
     _ok(f"gaia MCP credentials -> {GAIA_ENV.relative_to(TOOLS_DIR)}")
     keep = {k: v for k, v in read_env(ODYSSEUS_ENV).items() if k != "GH_TOKEN"}
     lines = ["# Written by `dev-tools/installer/p4m configure` (shared Agent Odysseus). Git-ignored.",
@@ -241,8 +225,8 @@ def gaia_client(a):
     sys.path.insert(0, str(TOOLS_DIR / "gaia-mcp"))
     import server  # noqa: E402  (dev-tools/gaia-mcp/server.py)
     g = server.Gaia()
-    g.base, g.email, g.password = a["gaiaUrl"].rstrip("/"), a["agentEmail"], a["agentPassword"]
-    g.client_id, g.client_secret = a["clientId"], a["clientSecret"]
+    g.base, g.email = a["gaiaUrl"].rstrip("/"), a["agentEmail"]
+    g.client_id, g.client_secret = a["agentClientId"], a["agentClientSecret"]
     return server, g
 
 
@@ -292,10 +276,11 @@ def setup_agamemnon(a, user_id):
     write_private(AGAMEMNON_ENV, "\n".join([
         "# Written by `dev-tools/installer/p4m configure` (Agent Agamemnon). Git-ignored.",
         f"GAIA_URL={a['gaiaUrl']}", f"GAIA_UI_URL={a['appUrl']}",
-        f"GAIA_EMAIL={a['agamemnonEmail']}", f"GAIA_PASSWORD={a['agamemnonPassword']}",
-        f"GAIA_CLIENT_ID={a['clientId']}", f"GAIA_CLIENT_SECRET={a['clientSecret']}", ""]))
+        f"GAIA_EMAIL={a['agamemnonEmail']}",
+        f"GAIA_CLIENT_ID={a['agamemnonClientId']}", f"GAIA_CLIENT_SECRET={a['agamemnonClientSecret']}", ""]))
     _ok(f"Agamemnon credentials -> {AGAMEMNON_ENV.relative_to(TOOLS_DIR)}")
-    sub = dict(a, agentEmail=a["agamemnonEmail"], agentPassword=a["agamemnonPassword"])
+    sub = dict(a, agentEmail=a["agamemnonEmail"], agentClientId=a["agamemnonClientId"],
+               agentClientSecret=a["agamemnonClientSecret"])
     server, g = gaia_client(sub)
     try:
         users = g.find("user", f"(User.email : {a['agamemnonEmail']})", limit=1)
@@ -409,7 +394,7 @@ def main(argv=None):
     import argparse
     p = argparse.ArgumentParser(prog="p4m configure", description=__doc__.splitlines()[0])
     p.add_argument("--answers", help="JSON file with answers (keys as in workspace.local.json plus "
-                                     "agentPassword, ghToken, sshKey; clientId/clientSecret only to override Prometheus' own) for a non-interactive run")
+                                     "agentClientId, agentClientSecret, ghToken, sshKey) for a non-interactive run")
     p.add_argument("--skip-checks", action="store_true", help="don't verify GitHub/SSH access at the end")
     args = p.parse_args(argv)
     answers = json.loads(Path(args.answers).read_text(encoding="utf-8")) if args.answers else None
@@ -427,7 +412,7 @@ def main(argv=None):
     register_mcp()
     install_talos_deps()
     write_json(ANSWERS, {k: v for k, v in a.items()
-                         if k not in ("clientSecret", "agentPassword", "ghToken", "sshKey", "agamemnonPassword")}
+                         if k not in ("agentClientSecret", "ghToken", "sshKey", "agamemnonClientSecret")}
                | {"gaiaUserId": user_id})
     if not args.skip_checks:
         verify(a)

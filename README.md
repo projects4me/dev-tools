@@ -36,11 +36,11 @@ Supported on Windows 10/11 (Git Bash + Docker Desktop), macOS and Ubuntu/Debian.
      logs;
    - **service URLs:** Gaia API, Prometheus app, Hermes and Ares. The defaults are the local stack; give the live
      URLs to work against live;
-   - **Agent Odysseus**, shared by the team lead over a secure channel: its Projects4Me password, its GitHub token
+   - **Agent Odysseus**, shared by the team lead over a secure channel: its Projects4Me client id and secret, its GitHub token
      and its SSH private key.
 
    - **Agent Agamemnon (optional):** answer `yes` to switch on the orchestrator that feeds issues to Odysseus, then
-     give its email and password. It writes `gaia-mcp/agamemnon.env`, checks the sign-in and reads its Gaia user id,
+     give its email, client id and client secret. It writes `gaia-mcp/agamemnon.env`, checks the sign-in and reads its Gaia user id,
      writes `talos/agents/agamemnon/agent.local.json` (`enabled: true`, owned by you) and adds its user id to
      `acceptAssignmentsFrom` in Odysseus' `agent.local.json`, keeping the ids already there. Skipping leaves
      Agamemnon disabled; re-running is safe.
