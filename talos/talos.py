@@ -4,6 +4,7 @@ Run `dev-tools/talos/talos -h`; see dev-tools/talos/README.md.
 """
 
 import argparse
+import contextlib
 import json
 import ssl
 import subprocess
@@ -30,11 +31,25 @@ from lib.registry import load_agents
 from lib.pool import LeaseFile
 from lib.tracker import Tracker
 
+import filelock  # noqa: E402
 import testenv  # noqa: E402  (installer/, put on the path by lib.registry: the p4m test containers the gc removes)
 
 
+RUN_LOCK = "talos-run.lock"
+
+
 def cmd_run(args):
-    """Listen for every enabled agent until stopped."""
+    """Listen for every enabled agent until stopped; one `talos run` per workspace, --dry-run included."""
+    lock = STATE_DIR / RUN_LOCK
+    with contextlib.ExitStack() as stack:
+        try:
+            stack.enter_context(filelock.held(lock, wait_seconds=0))
+        except filelock.LockTimeout:
+            raise TalosError(f"Talos is already running ({filelock.describe_holder(lock)}); stop it first")
+        return _run(args)
+
+
+def _run(args):
     cfg = settings()
     claude = claude_bin(cfg.get("claudeBin"))
     agents = load_agents(args.agent)

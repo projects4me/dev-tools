@@ -28,6 +28,8 @@ dev-tools/talos/talos gc [--dry-run]                       # remove finished iss
 python -m unittest discover -s dev-tools/talos/tests       # unit tests (from dev-tools/talos: -s tests)
 ```
 
+Only one `talos run` per workspace (`--dry-run` too): a second one exits with "Talos is already running (pid N ...); stop it first".
+
 `--dry-run` decides and logs everything but never starts Claude or writes to the tracker. First-time setup:
 `npm install` in this folder (the listener needs `socket.io-client`); `p4m runtime setup` does it for the runtime copy.
 
