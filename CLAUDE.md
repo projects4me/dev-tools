@@ -1,7 +1,61 @@
 # dev-tools: house rules for Claude Code
 
-The Projects4Me development tooling (see README.md for the folders). This file is the start of the rules
-adt-4046 fills in; the workspace `CLAUDE.md` and the Engineering Guide still apply.
+The Projects4Me development tooling (see README.md for the folders). The workspace `CLAUDE.md` and the Engineering
+Guide still apply. This file is a basic start and is expected to evolve: when you learn a rule the hard way, add it.
+
+## Tools
+
+| Folder | What it is |
+|---|---|
+| `installer/` | `p4m`: setup, the local stack, db, tests, runtime copy, `configure` |
+| `ai/` | `ai`: start/time/test/ship/review commands used by the skills and agents |
+| `talos/` | runs the agents headless (Odysseus on assigned issues, Nestor on ideas) |
+| `agamemnon/`, `nestor/`, `sim/` | the orchestrator agent, the idea-brainstorming UI, stand-ins for Gaia/Hermes ideas |
+| `odysseus/` | git and `gh` as Agent Odysseus |
+| `gaia-mcp/` | MCP server and client for the Projects4Me tracker |
+
+Each folder has its own README; read the one for the tool you change.
+
+## Run and test
+
+- Run a tool through its launcher (`<tool>` or `<tool>.cmd`), not `python x.py` by hand.
+- Tests are stdlib `unittest`, in `<tool>/tests/`. Check while working with `dev-tools/ai/ai test dev-tools --changed`
+  (or `--filter`); run the full suite once at the end with `dev-tools/ai/ai test dev-tools`.
+- Don't run tests through `docker exec`/`docker run` yourself. Never migrate the `pr4m` database.
+
+## Rules
+
+- **Standard library only.** No pip or npm dependencies in the Python tools (Talos' `package.json` is the one
+  existing exception); the tools must run on a fresh machine with just Python.
+- **Cross-platform:** see Platform below.
+- **Secrets** (passwords, tokens, keys) live only in git-ignored files (`*.env`, `*.local.json`), never in code,
+  tests, logs, issue comments or PR text. Commit only `*.example` files.
+- **The tracker is reached only through `gaia-mcp`** (its client or the MCP server): no hand-rolled HTTP calls to
+  Gaia from other tools.
+- **Never edit the runtime copy** (`.dev-tools-runtime`); see below.
+
+## House rules
+
+- Every piece of work has an issue in project **A Dev Tool** (`adt`), milestone **Claude-v1**; log time and comment
+  details on it.
+- Branch `claude-issue-NNNN` off an up-to-date **`main`** (dev-tools has no `dev` branch). Commit, push and open PRs
+  only as Agent Odysseus (`dev-tools/odysseus/odysseus git|gh …` or `dev-tools/ai/ai`), pushing to the `odysseus`
+  remote only. Your reviewer reviews and merges.
+
+## Design and quality
+
+- Follow the layering and separation of concerns of Fowler's *Patterns of Enterprise Application Architecture* and
+  SOLID, above all Single Responsibility: a CLI module parses arguments and prints; logic lives in `lib/` modules
+  with one job each; I/O (git, HTTP, files, processes) sits behind small functions so the logic can be unit tested.
+- Match the surrounding code's style, naming and comment density. No dead code, no speculative options.
+- A change comes with unit tests; a bug fix starts with the failing test. Fail with a clear message, not a stack trace,
+  for expected problems (missing config, tool not installed).
+- Update the tool's README (and `ai/README.md` command table) when behaviour changes.
+
+## PR description
+
+Say what changed and why, the decisions made and options turned down, how it was tested (and any known failures),
+and follow-ups. Keep it short and factual; `ai ship` adds the test result and the footer.
 
 ## Platform: every tool works on Windows and Linux
 
