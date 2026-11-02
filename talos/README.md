@@ -331,6 +331,7 @@ their events), and an env file with its `GAIA_*` credentials.
 | `permissionMode`, `allowedTools` | passed to `claude -p` |
 | `rolePrompt` | file appended to the system prompt: the agent's role and headless rules |
 | `runner` | where runs execute: this machine (default) or `{"type": "container", "image": ...}`, see "Container runs" |
+| `gaiaAgent` | a Gaia agent (name, email or id) whose agentspec sets the role prompt, model and limits; see "Agents defined in Gaia" |
 
 `config.json`: `hermesUrl`, `claudeBin` (empty = PATH, then the newest VS Code extension binary), `nodeBin`,
 `reconnectSeconds`. `config.local.json` (git-ignored) overrides any of them per engineer.
@@ -339,6 +340,28 @@ their events), and an env file with its `GAIA_*` credentials.
 act only on the issues *its* engineer assigns. `agents/<name>/agent.local.json` (git-ignored, written by
 `dev-tools/installer/p4m configure`) sets `acceptAssignmentsFrom` and `handoffTo` to that engineer's Gaia user id and
 `reviewerName` to their name (used in the prompts as `{reviewer}`). Talos refuses to start an agent without them.
+
+### Agents defined in Gaia (`gaiaAgent`)
+
+An issues agent can take its definition from Gaia instead of agent.json: set `gaiaAgent` to the Gaia agent's name,
+email or id and leave `rolePrompt` and `model` out (having both is refused). Talos reads the agent's spec
+(`GET agentspec/{id}`, gaia-mcp's `Gaia.agent_spec`) as the agent itself, with its `gaiaEnv` credentials, so that
+user needs `agentspec.get`. `lib/agent_spec.py` maps it:
+
+| Spec (`config`) | Talos setting |
+|---|---|
+| `rolePrompt` | the role prompt (required) |
+| `modelConfig.model` | the model (required); `modelConfig.escalate` and `modelConfig.byComplexity` work as `model.escalate` and `model.byComplexity` in agent.json |
+| `maxTurns` | the turn cap; null = agent.json's `maxTurns` |
+| `maxRunsPerIssue` | `maxIterations`; null = agent.json's |
+| `permissionMode` | `claude --permission-mode`, one of `default`, `acceptEdits`, `plan`, `auto`, `dontAsk`, `bypassPermissions` (anything else is refused); null = agent.json's |
+
+The spec is read when `talos run` (or `dispatch`) starts and again before each run, so an edit in Gaia applies from
+the next run without a restart. When a later read fails (Gaia unreachable, a spec Talos can't run), the run uses the
+last good spec and the log says so; with no usable spec at start the agent is not started and the log says why.
+Everything machine-local stays in agent.json: `gaiaEnv`, `projects`, `allowedTools`/`deniedTools`, `runner`,
+the parallelism settings, `limitsByModel` and the prompts. The spec's tool grants and skills are not applied yet
+(logged once). `talos agents` shows the models and limits as Gaia sets them.
 
 ## Ideas agents (Agent Nestor)
 

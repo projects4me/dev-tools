@@ -14,7 +14,7 @@ import time
 import urllib.request
 from datetime import datetime
 
-from lib import container, db, policy, runner, sessions, workflow_steps, workspace_gc, workspaces
+from lib import agent_spec, container, db, policy, runner, sessions, workflow_steps, workspace_gc, workspaces
 from lib import runs as run_log
 from lib.agamemnon import journal as agamemnon_journal
 from lib.agamemnon import undo as agamemnon_undo
@@ -90,10 +90,15 @@ def _run(args):
                 log(f"not started: {e}", agent.name)
             continue
         tracker = Tracker(agent)
+        try:
+            refresh_spec = agent_spec.follow(agent, tracker.agent_spec)
+        except TalosError as e:         # one agent's setup never keeps the others from running
+            log(f"not started: {e}", agent.name)
+            continue
         dispatcher = Dispatcher(agent, tracker, claude, dry_run=args.dry_run,
                                 mcp=mcp_config(STATE_DIR / agent.name / "mcp.json"),
                                 collector=lambda issue: gc_workspaces(only=issue),
-                                merge_route=merge_routes.get(agent.name))
+                                merge_route=merge_routes.get(agent.name), refresh_spec=refresh_spec)
         dispatcher.recover_interrupted()
         dispatcher.start()
         dispatchers.append(dispatcher)
@@ -154,7 +159,8 @@ def cmd_dispatch(args):
     db.import_legacy()
     tracker = Tracker(agent)
     dispatcher = Dispatcher(agent, tracker, claude_bin(cfg.get("claudeBin")), dry_run=args.dry_run,
-                            mcp=mcp_config(STATE_DIR / agent.name / "mcp.json"))
+                            mcp=mcp_config(STATE_DIR / agent.name / "mcp.json"),
+                            refresh_spec=agent_spec.follow(agent, tracker.agent_spec))
     outcome = dispatcher.handle(args.issue)
     print(outcome or "skipped")
     return 0
@@ -386,17 +392,20 @@ def cmd_gc(args):
 def cmd_agents(args):
     """List the registry, with each agent's Gaia identity and projects resolved."""
     for agent in load_agents(args.agent):
-        line = {"name": agent.name, "role": agent.role, "enabled": agent.enabled,
-                "models": {"default": agent.model_default, "byComplexity": agent.model_by_complexity,
-                           "escalate": agent.model_escalate},
-                "maxIterations": agent.max_iterations,
-                "statuses": sorted(agent.actions), "permissionMode": agent.permission_mode, "dispatch": agent.dispatch}
+        line = {"name": agent.name, "role": agent.role, "enabled": agent.enabled}
         try:
             tracker = Tracker(agent)
+            if agent.gaia_agent:        # its models and limits as Gaia sets them now
+                line["gaiaAgent"] = agent.gaia_agent
+                agent_spec.follow(agent, tracker.agent_spec)
             line["gaiaUser"] = tracker.user_id()
             line["projects"] = tracker.project_ids()
         except TalosError as e:
             line["error"] = str(e)
+        line.update(models={"default": agent.model_default, "byComplexity": agent.model_by_complexity,
+                            "escalate": agent.model_escalate},
+                    maxIterations=agent.max_iterations,
+                    statuses=sorted(agent.actions), permissionMode=agent.permission_mode, dispatch=agent.dispatch)
         print(json.dumps(line, indent=2))
     return 0
 
