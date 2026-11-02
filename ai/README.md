@@ -35,6 +35,8 @@ the `dev-tools/gaia-mcp` client (same credentials and code as the `gaia` MCP ser
 | `api-cases client\|acl <cases.json>` | append api-tester cases in the catalog's own style (no re-serialising), duplicate-id check |
 | `call METHOD <path> [json] [--target test\|dev] [--profile aclNoSetting] [--jq data.0]` | log in and call the API (test API as an api-tester profile, dev as Agent Odysseus), truncated output |
 
+CodeRabbit does not review agent PRs on its own. After `gh pr create` succeeds (`ai pr` and `ai ship` both go through it), `ai` comments `codeRabbitTrigger` (config.json, default `@coderabbitai full review`) on the PR as Agent Odysseus and prints `CodeRabbit: requested full review`. It does so only for repos in `codeRabbitRepos`; an empty or missing `codeRabbitTrigger` turns it off. A failed comment prints a warning and the hand-off carries on. `ai ship` resuming on a PR it opened earlier does not comment again.
+
 Config: `config.json` (co-author trailer, PR footer, never-commit files, known test failures), overlaid by your
 git-ignored `config.local.json` (`reviewer`, `timezoneLabel`), which `dev-tools/installer/p4m configure` writes.
 `ai cost [--repo R] [--issue N] [--since DATE] [--json]` reads the Claude Code transcripts of this workspace and
