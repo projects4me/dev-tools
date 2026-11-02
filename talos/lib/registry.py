@@ -95,8 +95,10 @@ class Agent:
     max_turns: int = 0                  # turns per run before Claude stops and the issue goes back (0 = no limit)
     limit_comment_hours: float = 1.0    # comment on the issue when a Claude usage-limit pause lasts longer than this
     kind: str = "issues"                # "issues": works assigned issues; "ideas": brainstorms ideas (Gaia, or the sim);
-                                        # "orchestrator": assigns issues to another agent (no Claude runs)
+                                        # "orchestrator": assigns issues to another agent (no Claude runs);
+                                        # "events": runs once per Hermes event (triggers)
     events: list = field(default_factory=list)       # event names to subscribe to (kind ideas)
+    triggers: dict = field(default_factory=dict)     # event name -> prompt template (kind events)
     builtin_tools: str = ""             # `claude --tools`: the built-in tools loaded at all (empty = all)
     denied_tools: list = field(default_factory=list)  # `--disallowedTools`
     limits_by_model: dict = field(default_factory=dict)  # model -> {"maxTurns", "maxBudgetUsd"} for that model's runs
@@ -123,7 +125,8 @@ class Agent:
 
 REQUIRED = ("name", "gaiaEnv", "projects", "acceptAssignmentsFrom", "handoffTo", "actions", "model", "rolePrompt")
 REQUIRED_ORCHESTRATOR = ("name", "gaiaEnv", "worker")
-KINDS = ("issues", "ideas", "orchestrator")
+REQUIRED_EVENTS = ("name", "gaiaEnv", "projects", "triggers", "model", "rolePrompt")
+KINDS = ("issues", "ideas", "orchestrator", "events")
 RUNNERS = ("local", "container")
 
 
@@ -139,6 +142,8 @@ def load_agent(folder):
             raw.update(json.load(f))
     if raw.get("kind") == "orchestrator":
         return _load_orchestrator(path, raw)
+    if raw.get("kind") == "events":
+        return _load_events(folder, path, raw)
     missing = [k for k in REQUIRED if k not in raw]
     if missing:
         raise TalosError(f"{path}: missing {', '.join(missing)}")
@@ -303,6 +308,47 @@ def _load_orchestrator(path, raw):
         statuses={}, model_default="", model_escalate="", model_by_complexity={}, permission_mode="",
         allowed_tools=[], max_iterations=0, role_prompt="", enabled=raw.get("enabled", True),
         kind="orchestrator", orchestration=orchestration)
+
+
+def _load_events(folder, path, raw):
+    """An events agent: a Gaia identity, its projects, and a prompt per trigger event; it claims no issues, so it
+    has no actions, acceptAssignmentsFrom or handoffTo."""
+    missing = [k for k in REQUIRED_EVENTS if k not in raw]
+    if missing:
+        raise TalosError(f"{path}: missing {', '.join(missing)}")
+    projects = raw["projects"]
+    if not isinstance(projects, dict) or not projects:
+        raise TalosError(f"{path}: projects must map at least one project name to its repo folder")
+    triggers = raw["triggers"]
+    if not isinstance(triggers, dict) or not triggers:
+        raise TalosError(f"{path}: triggers must map at least one event name to {{\"prompt\": ...}}")
+    prompts = {}
+    for name, trigger in triggers.items():
+        prompt = trigger.get("prompt") if isinstance(trigger, dict) else None
+        if not isinstance(prompt, str) or not prompt.strip():
+            raise TalosError(f"{path}: trigger {name} needs a prompt")
+        prompts[str(name)] = prompt
+    role_file = folder / raw["rolePrompt"]
+    if not role_file.exists():
+        raise TalosError(f"{path}: rolePrompt {role_file.name} not found")
+    env_file = LOCAL_DIR / raw["gaiaEnv"]
+    if not env_file.exists():
+        raise TalosError(f"{path}: gaiaEnv {env_file} not found")
+    reserved = [k for k in raw.get("env", {}) if str(k).upper().startswith("GAIA_")]
+    if reserved:
+        raise TalosError(f"{path}: env may not set {', '.join(reserved)} (the agent's credentials come from gaiaEnv)")
+    model = raw["model"]
+    return Agent(
+        name=raw["name"], display_name=raw.get("displayName", raw["name"]), role=raw.get("role", ""),
+        gaia_env=str(env_file), projects=projects, accept_from=[], handoff_to="", milestones=[], actions={},
+        statuses={}, model_default=model["default"], model_escalate=model.get("escalate", model["default"]),
+        model_by_complexity={}, permission_mode=raw.get("permissionMode", "dontAsk"),
+        allowed_tools=raw.get("allowedTools", []), max_iterations=0, role_prompt=role_file.read_text(encoding="utf-8"),
+        reviewer_name=raw.get("reviewerName") or "your reviewer", enabled=raw.get("enabled", True),
+        max_turns=int(raw.get("maxTurns", 0)), kind="events", triggers=prompts,
+        builtin_tools=raw.get("builtinTools", ""), denied_tools=list(raw.get("deniedTools", [])),
+        limits_by_model=dict(raw.get("limitsByModel", {})),
+        env={str(k): str(v) for k, v in raw.get("env", {}).items()})
 
 
 def load_agents(only=None):

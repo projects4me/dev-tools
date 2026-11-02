@@ -21,6 +21,8 @@ from lib.agamemnon import undo as agamemnon_undo
 from lib.agamemnon import wiring as agamemnon_wiring
 from lib.config import LISTENER, STATE_DIR, TALOS_DIR, WORKSPACE, TalosError, claude_bin, log, settings
 from lib.dispatcher import Dispatcher, lease_file
+from lib.events import setup as events_setup
+from lib.events import store as event_store
 from lib.ideas import setup as ideas_setup
 from lib.orchestrator import github as orchestrator_github
 from lib.orchestrator import setup as orchestrator_setup
@@ -63,7 +65,7 @@ def _run(args):
     except Exception as e:              # housekeeping never keeps Talos from starting
         log(f"gc failed: {e}")
     log(f"starting with {len(agents)} agent(s): {', '.join(a.name for a in agents)}; claude {claude}")
-    dispatchers, orchestrators = [], []
+    dispatchers, orchestrators, event_workers = [], [], []
     merge_routes = orchestrator_setup.merge_routes(agents)     # worker -> its orchestrator's automatic merges
     for agent in agents:
         if agent.kind == "ideas":
@@ -72,6 +74,12 @@ def _run(args):
                 continue
             try:
                 ideas_setup.start(agent, cfg, claude)
+            except Exception as e:      # one agent's setup never keeps the others from running
+                log(f"not started: {e}", agent.name)
+            continue
+        if agent.kind == "events":
+            try:
+                event_workers.append(events_setup.start(agent, cfg, claude, dry_run=args.dry_run))
             except Exception as e:      # one agent's setup never keeps the others from running
                 log(f"not started: {e}", agent.name)
             continue
@@ -99,6 +107,8 @@ def _run(args):
             dispatcher.stop()
         for orchestrator in orchestrators:
             orchestrator.stop()
+        for worker in event_workers:
+            worker.stop()
         log("stopped")
     return 0
 
@@ -175,6 +185,7 @@ def cmd_status(args):
             print(f"  held  #{n}  waits for #{h['blocker']} ({h.get('repo') or '-'}): {', '.join(files[:3])}"
                   + (f" +{len(files) - 3} more" if len(files) > 3 else "") + f"  since {h.get('held_at') or '?'}")
     _print_incidents()
+    _print_event_runs()
     for (agent, issue), entry in sorted(entries.items()):
         if entry.get("pending_status"):
             print(f"PENDING HANDBACK  {agent} #{issue}  status '{entry['pending_status']}', assign "
@@ -187,6 +198,22 @@ def cmd_status(args):
             print(f"  {agent} #{issue}  runs {entry.get('runs') or 0}  last model {entry.get('last_model') or '-'}"
                   f"  last ended {entry.get('last_ended_at') or '-'}" + ("  escalated" if entry.get("escalated") else ""))
     return 0
+
+
+def _print_event_runs(limit=10):
+    """Events agents' latest runs: queued, running, done or failed (with why), newest first."""
+    rows = event_store.recent(limit)
+    if not rows:
+        return
+    print("EVENT RUNS (latest first)")
+    for r in rows:
+        at = r.get("ended_at") or r.get("started_at") or r.get("received_at") or "?"
+        line = f"  {r['agent']}  {r['event']} {r['resource_id']}  {r['status']}  {at}"
+        if r.get("summary"):
+            line += f"  {r['summary'][:160]}"
+        print(line)
+        if r["status"] == event_store.FAILED and r.get("detail"):
+            print(f"    {r['detail'][:300]}")
 
 
 def _print_incidents():

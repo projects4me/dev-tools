@@ -152,6 +152,22 @@ CREATE TABLE IF NOT EXISTS aga_holds (
     assignee            TEXT,                   -- who had the issue before the hold
     released_at         TEXT
 );
+CREATE TABLE IF NOT EXISTS event_runs (     -- an events agent's runs: one per (agent, event, resource) at most
+    agent               TEXT    NOT NULL,
+    event               TEXT    NOT NULL,   -- Hermes event name, e.g. milestone.completed
+    resource_id         TEXT    NOT NULL,   -- the event's resource (e.g. the milestone's id)
+    project_id          TEXT,
+    envelope            TEXT,               -- the event as received (JSON), so a queued one survives a restart
+    status              TEXT    NOT NULL,   -- queued, running, done, failed, interrupted
+    received_at         TEXT,
+    started_at          TEXT,
+    ended_at            TEXT,
+    outcome             TEXT,               -- Claude's outcome, or failed / limited
+    summary             TEXT,
+    detail              TEXT,               -- Claude's comment, or the error
+    run_id              INTEGER,            -- the latest row in runs
+    PRIMARY KEY (agent, event, resource_id)
+);
 CREATE INDEX IF NOT EXISTS aga_actions_by_at ON aga_actions (at);
 CREATE INDEX IF NOT EXISTS auto_merges_by_issue ON auto_merges (agent, issue);
 CREATE INDEX IF NOT EXISTS runs_by_issue ON runs (agent, issue);
