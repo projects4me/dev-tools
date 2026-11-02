@@ -156,6 +156,23 @@ class Dispatcher:
         action = self.agent.action_for(issue["status"])
         return pool.order_key(bool(action and action.resume), issue.get("priority"))
 
+    def reserve(self, number):
+        """Mark an issue as running outside the queue (a workflow step); False when it is queued or running."""
+        with self._lock:
+            if number in self._pending:
+                return False
+            self._pending.add(number)
+            return True
+
+    def release(self, number):
+        with self._lock:
+            self._pending.discard(number)
+
+    def wait_for_usage(self):
+        """Block while a Claude usage-limit pause holds; False when Talos is stopping instead."""
+        self._pause.wait()
+        return not self._pause.stopped
+
     def stop(self):
         """Release workers waiting out a usage-limit pause, and stop polling CodeRabbit."""
         self._pause.stop()
@@ -248,23 +265,41 @@ class Dispatcher:
         else:
             prompt = policy.render_prompt(action, issue, decision.repo, catch_up=catch_up,
                                          reviewer=self.agent.reviewer_name)
+        return self._start(issue, decision.repo, prompt, model, session_id, why, bot_round=bot_round)
+
+    def run_step(self, issue, repo, prompt, resume, model, step):
+        """A workflow 'Run agent' step on the issue (workflow_steps.py): the step's prompt, session and model. The
+        workflow decides what happens next, so hand-offs are recorded on `step` instead of written to the tracker."""
+        state = sessions.get(self.agent.name, issue["number"])
+        session_id, why = policy.resume_session(Action(prompt, resume=resume), state, _now(),
+                                                self.agent.resume_max_idle_minutes)
+        if session_id and not self.runner.resumable:
+            session_id, why = None, "new session (the runner keeps no sessions)"
+        if resume and state.get("session_id") and not session_id:
+            prompt += policy.CATCH_UP.format(issue=issue["number"], repo=repo)
+        model = model or policy.choose_model(step.agent, issue, escalated=bool(state.get("escalated")))
+        return self._start(issue, repo, prompt, model, session_id, why, step=step)
+
+    def _start(self, issue, repo, prompt, model, session_id, why, bot_round=False, step=None):
+        """Prepare the issue's workspace, add the Gaia pack to a fresh session's prompt, and run."""
+        number = issue["number"]
         folder = workspace_error = None
         if not self.dry_run:                  # the workspace first: the pack is built from it
             try:
-                folder = self.runner.prepare(number, decision.repo)
+                folder = self.runner.prepare(number, repo)
             except workspaces.BranchCheckedOut as e:
                 if bot_round:
                     bot_review.drop(self.agent.name, number)    # handed to a person: out of the loop
-                return self._branch_checked_out(number, e, decision.repo)
+                return self._branch_checked_out(number, e, repo, step)
             except workspaces.WorkspaceError as e:     # the run itself reports it as a failed run
                 log(f"#{number} workspace not ready before the run: {e}", self.agent.name)
                 workspace_error = str(e)
-        if decision.repo == "gaia" and not session_id and not bot_round:     # a resumed session already has it
+        if repo == "gaia" and not session_id and not bot_round:     # a resumed session already has it
             prompt = policy.with_pack(prompt, runner.gaia_pack(number, folder))
-        return self._run(issue, prompt, model, session_id, why=why, repo=decision.repo,
-                         workspace_error=workspace_error)
+        return self._run(issue, prompt, model, session_id, why=why, repo=repo, workspace_error=workspace_error,
+                         step=step)
 
-    def _branch_checked_out(self, number, error, repo):
+    def _branch_checked_out(self, number, error, repo, step=None):
         """The issue's branch is checked out in another folder, so no worktree can be made. A person has to free it;
         no run started, so no iteration is counted."""
         log(f"#{number} not started: {error}", self.agent.name)
@@ -275,7 +310,7 @@ class Dispatcher:
                        f"<p>To free it, commit or stash what is there and switch that folder to another branch "
                        f"(<code>git -C {folder} switch {html.escape(workspaces.base_branch(repo))}</code>), then assign the issue back. "
                        f"This did not count as an iteration.</p>", escaped=True, reason="branch_checked_out",
-                       detail={"branch": error.branch, "folder": str(error.folder), "repo": repo})
+                       detail={"branch": error.branch, "folder": str(error.folder), "repo": repo}, step=step)
         return "needs_input"
 
     def _hold(self, number, decision, reconcile, dependencies):
@@ -295,17 +330,22 @@ class Dispatcher:
         return "held"
 
     def _run(self, issue, prompt, model, session_id, escalated=False, why=None, repo=None, shipping=False,
-             workspace_error=None):
+             workspace_error=None, step=None):
+        """One Claude run and what follows from its outcome. With a workflow `step` the run uses the step's agent
+        (its spec applied) and turn cap, and leaves the issue's status and assignee to the workflow."""
         number = issue["number"]
+        agent = step.agent if step else self.agent
         state = sessions.get(self.agent.name, number)
         done_runs = state.get("runs") or 0
-        left = policy.iterations_left(self.agent, done_runs)
+        left = policy.iterations_left(agent, done_runs)
         if left == 0:
-            return self._iteration_limit(number, done_runs)
+            return self._iteration_limit(number, done_runs, step)
         live_id = session_id or str(uuid.uuid4())
-        limits = policy.run_limits(self.agent, model)
+        limits = policy.run_limits(agent, model)
+        if step and step.max_turns:
+            limits = limits._replace(max_turns=step.max_turns)
         guard = self.runner.runtime_guard(_runtime_copy())   # the copy the hook and the post-run check guard
-        cmd = runner.build_command(self.runner.claude_bin(self.claude), self.agent, model, session_id,
+        cmd = runner.build_command(self.runner.claude_bin(self.claude), agent, model, session_id,
                                    new_session_id=None if session_id else live_id, limits=limits,
                                    mcp=self.runner.mcp_config(self.mcp),
                                    memory=self.runner.memory_dir(memory.folder(WORKSPACE)),
@@ -313,7 +353,7 @@ class Dispatcher:
         mode = why or (f"resume {session_id[:8]}" if session_id else "new session")
         if not session_id:
             mode += f", session {live_id[:8]}"
-        limit = f"{done_runs + 1}/{self.agent.max_iterations}" if left is not None else f"{done_runs + 1}"
+        limit = f"{done_runs + 1}/{agent.max_iterations}" if left is not None else f"{done_runs + 1}"
         log(f"#{number} iteration {limit} on {model} ({mode}; {limits.describe()}; status '{issue['status']}', "
             f"complexity {issue.get('complexity') or 'not set'})", self.agent.name)
         if self.dry_run:
@@ -327,7 +367,8 @@ class Dispatcher:
                                    issue["status"], _iso(started))
             sessions.update(self.agent.name, number, running=True, runs=done_runs + 1, last_model=model,
                             live_session_id=live_id, started_at=_iso(started))
-            self._mark_picked_up(issue)
+            if not step:                    # a workflow sets the status itself
+                self._mark_picked_up(issue)
             runtime_before = self._runtime_snapshot(number, guard)
             try:
                 env = {**self.tracker.child_env(), **self.agent.env}
@@ -349,6 +390,8 @@ class Dispatcher:
         outcome, summary, comment, handoff, reset_at, reason = policy.read_outcome(result, ended)
         if workspace_error and reason == "run_error":      # the run failed because no workspace was ready
             reason = "talos_error"
+        if step:
+            step.summary = summary
         if outcome != policy.LIMITED:
             self._pause.succeeded()
         log_name = log_path.name if log_path else "none"
@@ -361,7 +404,7 @@ class Dispatcher:
         if changed:
             if outcome == policy.LIMITED:
                 self._pause_for_limit(number, reset_at)   # the usage limit still holds for the other issues
-            return self._runtime_changed(number, changed, diff_log.name)
+            return self._runtime_changed(number, changed, diff_log.name, step)
 
         if outcome == policy.LIMITED:
             sessions.update(self.agent.name, number, runs=done_runs)   # a limited run is not an iteration
@@ -376,7 +419,8 @@ class Dispatcher:
                          f"escalated. Re-check where the work stands, then carry on. "
                          f"End with the same structured outcome.")
             return self._run(issue, follow_up, self.agent.model_escalate,
-                             (result or {}).get("session_id"), escalated=True, repo=repo, shipping=shipping)
+                             (result or {}).get("session_id"), escalated=True, repo=repo, shipping=shipping,
+                             step=step)
         if outcome == "escalate":
             outcome = "needs_input"
             comment = comment or f"<p>Escalation was requested on {model}, which is already the top model.</p>"
@@ -385,7 +429,7 @@ class Dispatcher:
             # Ship in a fresh session: the implementing session's context would be re-read on every ship call.
             log(f"#{number} ready to ship, starting a fresh ship session", self.agent.name)
             return self._run(issue, policy.render_ship_prompt(self.agent, issue, repo, handoff), model, None,
-                             escalated=escalated, why="fresh ship session", repo=repo, shipping=True)
+                             escalated=escalated, why="fresh ship session", repo=repo, shipping=True, step=step)
         if outcome == "ready_to_ship":
             outcome = "failed"
             summary = f"reported ready_to_ship where it can't be used: {summary}"
@@ -398,20 +442,21 @@ class Dispatcher:
         bot_review.drop(self.agent.name, number)       # any other end takes the issue out of the CodeRabbit loop
 
         if outcome == "done":
-            self._check_handed_back(number, log_name)
-            if issue.get("status") == "in_review":      # a reviewer's changes were addressed
+            self._check_handed_back(number, log_name, step)
+            if issue.get("status") == "in_review" and not step:      # a reviewer's changes were addressed
                 self._back_to_merge_loop(issue, repo)
         elif outcome in ("needs_input", "blocked"):
             title = "needs your input" if outcome == "needs_input" else "is blocked"
             self._hand_off(number, outcome, f"{self.agent.display_name} {title}", comment or summary,
-                           reason=reason or ("agent_needs_input" if outcome == "needs_input" else "agent_blocked"))
+                           reason=reason or ("agent_needs_input" if outcome == "needs_input" else "agent_blocked"),
+                           step=step)
         else:  # failed
             body = (f"<p>{html.escape(summary)}</p>"
                     f"<p>Talos log: <code>dev-tools/talos/state/logs/{html.escape(log_name)}</code></p>")
             if comment:
                 body += f"<pre>{html.escape(comment)}</pre>"
             self._hand_off(number, "failed", f"{self.agent.display_name}: run failed", body, escaped=True,
-                           reason=reason or "run_error")
+                           reason=reason or "run_error", step=step)
         return outcome
 
     # -- the runtime copy (runtime_check.py) -----------------------------------------------------
@@ -441,7 +486,7 @@ class Dispatcher:
                 + (f"not fully restored: {'; '.join(left)}" if left else "restored"), self.agent.name)
         return found, log_path
 
-    def _runtime_changed(self, number, found, log_name):
+    def _runtime_changed(self, number, found, log_name, step=None):
         """The run changed the tooling it ran on: whatever it reported, the issue goes to a person as blocked."""
         bot_review.drop(self.agent.name, number)
         items = "".join(f"<li><code>{html.escape(line)}</code></li>" for line in found)
@@ -452,7 +497,7 @@ class Dispatcher:
                        f"<code>dev-tools/talos/state/logs/{html.escape(log_name)}</code>. Tooling must not be edited "
                        f"or have branches checked out in place: it only changes through <code>p4m runtime "
                        f"update</code>, and a fault in dev-tools becomes a dev-tools issue. Runs in parallel share "
-                       f"the copy, so check the diff belongs to this issue.</p>", escaped=True)
+                       f"the copy, so check the diff belongs to this issue.</p>", escaped=True, step=step)
         return "blocked"
 
     def _await_bot_review(self, issue, repo, pr):
@@ -497,16 +542,17 @@ class Dispatcher:
         except TalosError as e:
             log(f"#{issue['number']} could not set status '{status}': {e}", self.agent.name)
 
-    def _iteration_limit(self, number, runs):
+    def _iteration_limit(self, number, runs, step=None):
         """Out of iterations: a human has to look before the agent spends more runs on it."""
-        log(f"#{number} iteration limit reached ({runs}/{self.agent.max_iterations})", self.agent.name)
+        cap = (step.agent if step else self.agent).max_iterations
+        log(f"#{number} iteration limit reached ({runs}/{cap})", self.agent.name)
         bot_review.drop(self.agent.name, number)
         self._hand_off(number, "limit", f"{self.agent.display_name}: needs manual intervention",
                        f"<p>{self.agent.display_name} has had {runs} runs on this issue, the limit is "
-                       f"{self.agent.max_iterations}. It needs a human look before more agent work. To give it "
-                       f"another {self.agent.max_iterations}, run <code>dev-tools/talos/talos reset "
+                       f"{cap}. It needs a human look before more agent work. To give it "
+                       f"another {cap}, run <code>dev-tools/talos/talos reset "
                        f"{html.escape(self.agent.name)} {number}</code> and assign the issue back.</p>",
-                       escaped=True, reason="iteration_limit")
+                       escaped=True, reason="iteration_limit", step=step)
         return "limit"
 
     # -- tracker side effects ------------------------------------------------------------------
@@ -515,8 +561,15 @@ class Dispatcher:
         self.tracker.comment(number, title, body if escaped or body.lstrip().startswith("<")
                              else f"<p>{html.escape(body)}</p>")
 
-    def _hand_off(self, number, outcome, title, body, escaped=False, reason=None, detail=None):
-        """Comment, set the status and assignee, and store the reason code (and its detail) of the handback."""
+    def _hand_off(self, number, outcome, title, body, escaped=False, reason=None, detail=None, step=None):
+        """Comment, set the status and assignee, and store the reason code (and its detail) of the handback. For a
+        workflow step only the outcome and the comment are kept, for its report: the workflow hands the issue on."""
+        if step:
+            step.outcome = outcome
+            step.comment = f"<p><strong>{html.escape(title)}</strong></p>" + (
+                body if escaped or body.lstrip().startswith("<") else f"<p>{html.escape(body)}</p>")
+            log(f"#{number} step {step.step_id} ends {outcome}: {title}", self.agent.name)
+            return
         status = self.agent.statuses[outcome]
         if self.dry_run:
             log(f"#{number} dry run, would hand off: status '{status}', assign {self.agent.handoff_to}",
@@ -567,8 +620,11 @@ class Dispatcher:
         except TalosError as e:     # GitHub or Gaia failed: it stays with the reviewer, as before
             log(f"#{number} not routed to the merge loop: {e}", self.agent.name)
 
-    def _check_handed_back(self, number, log_name):
-        """'done' must leave the issue with someone else; otherwise the baton is lost."""
+    def _check_handed_back(self, number, log_name, step=None):
+        """'done' must leave the issue with someone else; otherwise the baton is lost. A workflow step leaves that
+        to the workflow, which goes on by the outcome."""
+        if step:
+            return
         issue = self.tracker.issue(number)
         if issue["assignee"] == self.user_id:
             self._hand_off(number, "failed", f"{self.agent.display_name}: finished but did not hand back",
@@ -597,4 +653,8 @@ class Dispatcher:
         for name, pid in project_ids.items():
             for number in self.tracker.assigned_issue_numbers(pid, self.user_id):
                 self.submit(number, f"reconcile {name}", reconcile=True)
-        self._releases.put(None)        # status changes may have been missed while the listener was down
+        self.resync()
+
+    def resync(self):
+        """Status changes may have been missed while the listener was down: re-check held issues, hand-offs and gc."""
+        self._releases.put(None)

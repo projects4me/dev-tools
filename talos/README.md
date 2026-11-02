@@ -197,6 +197,37 @@ and the run pointed at it, as for a local run; `volume` and `none` homes (meant 
 machine's folders) keep the container's own, empty memory. On a Linux host the container runs as this machine's
 uid:gid with the `bind` home, so the memory files it writes are the engineer's.
 
+## Workflow steps: `dispatch: "workflow"`
+
+An agent with `"dispatch": "workflow"` in `agent.json` (or `agent.local.json`) no longer decides from an issue's
+status what to do: Gaia's workflows do (agaia-4048, e.g. the seeded "Agent coding loop"). A workflow's **Run agent**
+node records a step for the agent and publishes `workflow.agent.run.requested` to the agent's own user scope
+(`projectId: "user:<agentUserId>"`), so only a socket signed in as that agent receives it
+(`lib/workflow_steps.py`):
+
+1. **Listen.** Talos subscribes to that user-scoped event (no `issue.assignee.changed`; `issue.status.changed` still
+   drives gc and hand-off retries). On every (re)connect it queues the agent's `pending` steps; on start it reports
+   steps it had `claimed` before a restart as `failed`.
+2. **Claim.** It reads the step (`GET workflowactorstep/{id}`) and claims it (`PATCH status: claimed`); a step that
+   is not pending, or not the agent's, is skipped. A step not about an issue in one of the agent's `projects` is
+   claimed and reported `failed`.
+3. **Spec.** It reads the agent spec (`GET agentspec/{agentId}`). Where the spec sets them, its role prompt,
+   `maxTurns`, `maxRunsPerIssue` (the iteration cap) and `permissionMode` replace `agent.json`'s; its tool grants
+   are added to `allowedTools` (`mcp__<server>` or `mcp__<server>__<tool>` for MCP grants, the permission rule or
+   tool name for a runtime tool; OpenAPI grants add nothing). Skills are not loaded yet.
+4. **Run.** The issue's workspace and run are the dispatcher's, as for an assignment, with the step's prompt (as
+   Gaia resolved it), session (`resume` resumes the issue's last session while its cache is warm, as an action with
+   `resume`), model (else the complexity choice) and `maxTurns` (else the spec's). A run that waits for the issue
+   (a CodeRabbit round on it) waits after the claim. Inside the step, `escalate` still reruns on the stronger
+   model, `ready_to_ship` still ships in a fresh session, and a usage limit runs the step again after the pause.
+5. **Report.** `PATCH outcome, comment` with one of Gaia's outcomes: `done` (also `awaiting_bot_review`: the
+   CodeRabbit loop carries on and hands the issue to the reviewer itself), `needs_input`, `blocked`, `failed`,
+   `limit`. Talos sets no status and assignee and posts no hand-off comment: the comment goes on the report, and
+   the workflow goes on by the outcome's port. A report Gaia refuses is logged; the step then times out to
+   `failed`.
+
+The default, `"dispatch": "status"`, is the assignment flow below. `talos dispatch` always works by status.
+
 ## How an assignment is handled
 
 1. **Event**: `issue.assignee.changed` where the new assignee is the agent and the actor is in the agent's
@@ -276,6 +307,7 @@ their events), and an env file with its `GAIA_*` credentials.
 | `projects` | project name → repo folder (the `{repo}` placeholder). Odysseus: A Gaia, A Prometheus, A Hermes, A Ares and A Dev Tool. Talos runs from the runtime copy, so a merged dev-tools PR takes effect after `p4m runtime update` and a restart of `talos run` |
 | `milestones` | only work issues in these (empty = any; Odysseus: any, so an issue from any milestone assigned to it is worked. Issues the agents *create* still go in Claude-v1 by default) |
 | `acceptAssignmentsFrom`, `handoffTo` | Gaia user ids that may hand it work / that get questions and failures |
+| `dispatch` | `status` (default): work assigned issues by their status (`actions`); `workflow`: run the Run agent steps Gaia's workflows send (see [Workflow steps](#workflow-steps-dispatch-workflow)) |
 | `pickupStatus` | status set when Talos starts a run (e.g. `in_progress`); empty leaves it alone |
 | `handoffStatuses` | status for `needs_input`, `blocked`, `failed`, `limit` (defaults `feedback`, `pending`, `pending`, `pending`) |
 | `actions` | status → `{prompt, resume}`; placeholders `{issue}`, `{repo}`, `{project}`, `{status}` (never issue text) |
@@ -568,6 +600,7 @@ The pre-SQLite `state/sessions.json` is imported when `talos run`/`dispatch` sta
 | `lib/hermes.py` + `listener/listen.js` | Hermes connection: Node Socket.IO client, supervised and restarted with a fresh token |
 | `lib/policy.py` | pure decisions: which events count, whether to run, prompt filling, outcome parsing |
 | `lib/dispatcher.py` | per-agent queue; runs a job and applies the outcome to the tracker |
+| `lib/workflow_steps.py` | workflow Run agent steps: the user-scoped event, claim, the agent spec applied, run through the dispatcher, report |
 | `lib/bot_review.py` | the CodeRabbit loop: waits kept in `bot_reviews`, the watcher that polls `ai rabbit` and runs `ai handoff` |
 | `lib/runner.py` | builds and runs the `claude -p` command, keeps its output; the `Runner` interface and `LocalRunner` |
 | `lib/container.py` + `container/` | `ContainerRunner`: the run in a container (`docker run` with the credentials by name); the image and its entrypoint |

@@ -30,6 +30,10 @@ class UsagePause:
         with self._lock:
             return self._until
 
+    @property
+    def stopped(self):
+        return self._stopped.is_set()
+
     def hit(self, reset_at):
         """A run hit the limit. The new deadline (a datetime) when this call started the pause, None when one is
         already running (another worker reported the same limit)."""

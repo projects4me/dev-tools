@@ -193,6 +193,51 @@ class GaiaReplyTest(unittest.TestCase):
         self.assertEqual(self.gaia((200, {"raw": 1, "data": []})).request("GET", "x"), {"raw": 1, "data": []})
 
 
+
+class ActorStepTest(unittest.TestCase):
+    """The calls an agent's runtime makes for a workflow 'Run agent' step: read, claim or report, and the agent spec."""
+
+    def gaia(self, reply):
+        g = server.Gaia()
+        g.calls = []
+
+        def http(method, path, params=None, body=None, **kw):
+            g.calls.append((method, path, params, body))
+            return 200, reply
+        g._http = http
+        return g
+
+    def test_a_step_is_read_by_id(self):
+        g = self.gaia({"data": {"type": "workflowactorstep", "id": "s-1", "attributes": {"status": "pending"}}})
+        self.assertEqual(g.actor_step("s-1"), {"id": "s-1", "status": "pending"})
+        self.assertEqual(g.calls[0][:2], ("GET", "workflowactorstep/s-1"))
+
+    def test_a_missing_step_is_an_error(self):
+        with self.assertRaises(server.GaiaError):
+            self.gaia({"data": None}).actor_step("s-1")
+
+    def test_steps_are_listed_by_actor_and_status(self):
+        g = self.gaia({"data": []})
+        g.actor_steps("u-1", "pending")
+        self.assertEqual(g.calls[0][2]["query"],
+                         "((Workflowactorstep.actorUserId : u-1) AND (Workflowactorstep.status : pending))")
+
+    def test_an_update_patches_only_the_given_attributes(self):
+        g = self.gaia({"data": {"type": "workflowactorstep", "id": "s-1", "attributes": {}}})
+        g.update_actor_step("s-1", {"outcome": "done", "comment": "c"})
+        method, path, _, body = g.calls[0]
+        self.assertEqual((method, path), ("PATCH", "workflowactorstep/s-1"))
+        self.assertEqual(body["data"]["attributes"], {"outcome": "done", "comment": "c"})
+
+    def test_the_agent_spec_is_read_plain_or_wrapped(self):
+        spec = {"specVersion": 1, "agent": {"id": "a-1"}}
+        self.assertEqual(self.gaia(spec).agent_spec_by_id("a-1"), spec)
+        self.assertEqual(self.gaia({"data": {"id": "a-1", "attributes": spec}}).agent_spec_by_id("a-1"), spec)
+
+    def test_an_unknown_spec_version_is_an_error(self):
+        with self.assertRaises(server.GaiaError):
+            self.gaia({"specVersion": 2}).agent_spec_by_id("a-1")
+
 class IssueGaia:
     """A fake Gaia for get_issue: comments and time logs come only from their own queries, newest first."""
 

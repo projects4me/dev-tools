@@ -48,6 +48,22 @@ class RegistryTest(unittest.TestCase):
         prompt = policy.render_prompt(agent.actions["feedback"], issue, "gaia", reviewer=agent.reviewer_name)
         self.assertTrue(prompt.startswith("Ayesha answered on Projects4Me issue #5"))
 
+    def overlay(self, **fields):
+        (self.local / "agent.local.json").write_text(json.dumps(
+            {"acceptAssignmentsFrom": ["7"], "handoffTo": "7", **fields}), encoding="utf-8")
+
+    def test_dispatch_is_by_status_unless_workflows_are_chosen(self):
+        self.overlay()
+        self.assertEqual(registry.load_agent(self.folder).dispatch, "status")
+        self.overlay(dispatch="workflow")
+        self.assertEqual(registry.load_agent(self.folder).dispatch, "workflow")
+
+    def test_an_unknown_dispatch_fails_at_load(self):
+        self.overlay(dispatch="events")
+        with self.assertRaises(TalosError) as e:
+            registry.load_agent(self.folder)
+        self.assertIn("dispatch must be one of status, workflow", str(e.exception))
+
     def test_odysseus_run_policy(self):
         (self.local / "agent.local.json").write_text(json.dumps(
             {"acceptAssignmentsFrom": ["7"], "handoffTo": "7"}), encoding="utf-8")

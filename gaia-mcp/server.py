@@ -384,6 +384,40 @@ class Gaia:
             raise GaiaError(f"Issue #{number} was not found or is not visible to {self.email}.")
         return found[0]
 
+    def issue_by_id(self, issue_id, rels="issuestatus,issuetype,assignedTo,issuemilestone,project"):
+        found = self.find("issue", f"(Issue.id : {issue_id})", rels=rels, limit=1)
+        if not found:
+            raise GaiaError(f"Issue {issue_id} was not found or is not visible to {self.email}.")
+        return found[0]
+
+    # -- Workflow 'Run agent' steps (the agent's runtime claims them and reports their outcome) ----
+
+    def actor_step(self, step_id):
+        found = self.flatten(self.request("GET", f"workflowactorstep/{step_id}"))
+        if not found:
+            raise GaiaError(f"Workflow step {step_id} was not found or is not visible to {self.email}.")
+        return found[0]
+
+    def actor_steps(self, user_id, status):
+        return self.find("workflowactorstep", f"((Workflowactorstep.actorUserId : {user_id}) AND "
+                                              f"(Workflowactorstep.status : {status}))", limit=-1)
+
+    def update_actor_step(self, step_id, attrs):
+        """Claim the step (status claimed) or report it (outcome, comment); Gaia checks the state change."""
+        return self.request("PATCH", f"workflowactorstep/{step_id}",
+                            body={"data": {"type": "workflowactorstep", "id": step_id, "attributes": attrs}})
+
+    def agent_spec_by_id(self, agent_id):
+        """The spec of the agent with that id (a workflow step names it; no lookup by name), unwrapped from JSON:API
+        if wrapped and checked to be specVersion 1 (Gaia docs/schemas/agent-spec.schema.json)."""
+        payload = self.request("GET", f"agentspec/{agent_id}")
+        data = payload.get("data") if isinstance(payload, dict) else None
+        if isinstance(data, dict) and "specVersion" not in payload:
+            payload = data.get("attributes") or data
+        if not isinstance(payload, dict) or payload.get("specVersion") != 1:
+            raise GaiaError(f"Agent spec {agent_id}: expected specVersion 1, got {json.dumps(payload)[:300]}")
+        return payload
+
 
 # ---------------------------------------------------------------------------------------------
 # Tool implementations
