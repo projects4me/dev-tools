@@ -89,6 +89,7 @@ class Gaia:
     def __init__(self):
         self.base = os.environ.get("GAIA_URL", "https://api.local-projects4.me").rstrip("/")
         self.email = os.environ.get("GAIA_EMAIL", "")
+        self.password = os.environ.get("GAIA_PASSWORD", "")     # set: password grant; empty: client_credentials
         self.client_id = os.environ.get("GAIA_CLIENT_ID", "projects4me")
         self.client_secret = os.environ.get("GAIA_CLIENT_SECRET", "")
         self.timeout = float(os.environ.get("GAIA_TIMEOUT", "30"))
@@ -202,10 +203,19 @@ class Gaia:
                                                "refresh_token": self.refresh_token}, quiet=True):
             return self.access_token
         if not self.client_id or not self.client_secret:
-            raise GaiaError("GAIA_CLIENT_ID and GAIA_CLIENT_SECRET (the agent's) are not set. "
+            raise GaiaError("GAIA_CLIENT_ID and GAIA_CLIENT_SECRET are not set. "
                             "Put them in dev-tools/gaia-mcp/gaia-mcp.env.")
-        self._grant({"grant_type": "client_credentials"})
+        self._grant(self.sign_in_form())
         return self.access_token
+
+    def sign_in_form(self):
+        """A user agent (GAIA_EMAIL + GAIA_PASSWORD, with the shared app client) signs in with the password grant;
+        an agent with its own OAuth client (no GAIA_PASSWORD) with client_credentials."""
+        if not self.password:
+            return {"grant_type": "client_credentials"}
+        if not self.email:
+            raise GaiaError("GAIA_PASSWORD is set but GAIA_EMAIL is not. Put both in dev-tools/gaia-mcp/gaia-mcp.env.")
+        return {"grant_type": "password", "email": self.email, "password": self.password}
 
     def _grant(self, form, quiet=False):
         form = dict(form, client_id=self.client_id, client_secret=self.client_secret)
@@ -214,7 +224,7 @@ class Gaia:
             self.refresh_token = None
             if quiet:
                 return False
-            # Never echo the request; it holds the client secret.
+            # Never echo the request; it holds the client secret (and the password).
             raise GaiaError(f"Gaia sign-in failed ({status}): {payload.get('error_description') or payload.get('error') or payload}")
         self.access_token = payload["access_token"]
         self.refresh_token = payload.get("refresh_token")

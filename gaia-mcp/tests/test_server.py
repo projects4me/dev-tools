@@ -154,6 +154,41 @@ class ProjectRelationsTest(unittest.TestCase):
         self.assertEqual(g.needs, ("issuestatuses", "members"))
 
 
+class SignInTest(unittest.TestCase):
+    """A user agent (email + password) and an agent with its own OAuth client sign in side by side."""
+
+    def gaia(self, email="", password="", client_id="cid", client_secret="secret"):
+        g = server.Gaia()
+        g.email, g.password, g.client_id, g.client_secret = email, password, client_id, client_secret
+        g.forms = []
+
+        def http(method, path, form=None, auth=True, **kw):
+            g.forms.append(form)
+            return 200, {"access_token": "t", "expires_in": 3600}
+        g._http = http
+        return g
+
+    def test_no_password_uses_client_credentials(self):
+        g = self.gaia(email="agent@projects4.me")
+        g.token()
+        self.assertEqual({"grant_type": "client_credentials", "client_id": "cid", "client_secret": "secret"},
+                         g.forms[0])
+
+    def test_a_password_uses_the_password_grant(self):
+        g = self.gaia(email="agent@projects4.me", password="pw", client_id="projects4me")
+        g.token()
+        self.assertEqual({"grant_type": "password", "email": "agent@projects4.me", "password": "pw",
+                          "client_id": "projects4me", "client_secret": "secret"}, g.forms[0])
+
+    def test_a_password_without_an_email_is_an_error(self):
+        with self.assertRaisesRegex(server.GaiaError, "GAIA_EMAIL"):
+            self.gaia(password="pw").token()
+
+    def test_no_client_secret_is_an_error(self):
+        with self.assertRaisesRegex(server.GaiaError, "GAIA_CLIENT_SECRET"):
+            self.gaia(client_secret="").token()
+
+
 class GaiaReplyTest(unittest.TestCase):
     """A Gaia that crashes returns a PHP error page, not JSON: that is an error, and a read is tried once more."""
 

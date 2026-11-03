@@ -89,8 +89,11 @@ def _credentials(target, profile):
                 k, _, v = line.partition("=")
                 env[k.strip()] = v.strip().strip('"').strip("'")
         base = env.get("GAIA_URL", "https://api.local-projects4.me")
-        return base, {"grant_type": "client_credentials", "client_id": env["GAIA_CLIENT_ID"],
-                      "client_secret": env["GAIA_CLIENT_SECRET"]}
+        form = {"grant_type": "client_credentials", "client_id": env["GAIA_CLIENT_ID"],
+                "client_secret": env["GAIA_CLIENT_SECRET"]}
+        if env.get("GAIA_PASSWORD"):
+            form.update(grant_type="password", email=env["GAIA_EMAIL"], password=env["GAIA_PASSWORD"])
+        return base, form
     fixtures = json.loads((_api_tester() / "fixtures" / "default.json").read_text(encoding="utf-8"))
     auth = dict(fixtures["auth"])
     if profile and profile != "default":
