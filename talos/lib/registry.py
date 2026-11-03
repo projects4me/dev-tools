@@ -117,6 +117,8 @@ class Agent:
                                         # "workflow": runs the Run agent steps Gaia's workflows send it (workflow_steps.py)
     extra: dict = field(default_factory=dict)
     orchestration: Orchestration = None     # kind orchestrator only
+    gaia_agent: str = ""                # the Gaia agent (name, email or id) whose spec sets the role prompt, model
+                                        # and limits (agent_spec.py); "" = they come from agent.json
 
     def action_for(self, status):
         return self.actions.get(status)
@@ -126,6 +128,7 @@ class Agent:
 
 
 REQUIRED = ("name", "gaiaEnv", "projects", "acceptAssignmentsFrom", "handoffTo", "actions", "model", "rolePrompt")
+FROM_GAIA = ("model", "rolePrompt")     # set by the Gaia agentspec when gaiaAgent is given
 REQUIRED_ORCHESTRATOR = ("name", "gaiaEnv", "worker")
 REQUIRED_EVENTS = ("name", "gaiaEnv", "projects", "triggers", "model", "rolePrompt")
 KINDS = ("issues", "ideas", "orchestrator", "events")
@@ -143,19 +146,29 @@ def load_agent(folder):
     if local.exists():
         with open(local, encoding="utf-8") as f:
             raw.update(json.load(f))
+    gaia_agent = str(raw.get("gaiaAgent") or "").strip()
+    if gaia_agent and raw.get("kind", "issues") != "issues":
+        raise TalosError(f"{path}: gaiaAgent is supported for issues agents only")
     if raw.get("kind") == "orchestrator":
         return _load_orchestrator(path, raw)
     if raw.get("kind") == "events":
         return _load_events(folder, path, raw)
-    missing = [k for k in REQUIRED if k not in raw]
+    missing = [k for k in REQUIRED if k not in raw and not (gaia_agent and k in FROM_GAIA)]
     if missing:
         raise TalosError(f"{path}: missing {', '.join(missing)}")
     if not raw["acceptAssignmentsFrom"] or not raw["handoffTo"]:
         raise TalosError(f"{folder.name}: no reviewer configured (acceptAssignmentsFrom/handoffTo); "
                          f"run `dev-tools/installer/p4m configure`, which writes {local.name}")
-    role_file = folder / raw["rolePrompt"]
-    if not role_file.exists():
-        raise TalosError(f"{path}: rolePrompt {role_file.name} not found")
+    if gaia_agent:
+        both = [k for k in FROM_GAIA if k in raw]
+        if both:
+            raise TalosError(f"{path}: gaiaAgent takes {', '.join(both)} from Gaia; remove them from agent.json")
+        role_prompt, model = "", {"default": ""}     # filled from the spec before the agent starts
+    else:
+        role_file = folder / raw["rolePrompt"]
+        if not role_file.exists():
+            raise TalosError(f"{path}: rolePrompt {role_file.name} not found")
+        role_prompt, model = role_file.read_text(encoding="utf-8"), raw["model"]
     env_file = LOCAL_DIR / raw["gaiaEnv"]
     if not env_file.exists():
         raise TalosError(f"{path}: gaiaEnv {env_file} not found")
@@ -196,13 +209,13 @@ def load_agent(folder):
         actions=actions,
         statuses={"needs_input": "feedback", "blocked": "pending", "failed": "pending", "limit": "pending",
                   **raw.get("handoffStatuses", {})},
-        model_default=raw["model"]["default"],
-        model_escalate=raw["model"].get("escalate", raw["model"]["default"]),
-        model_by_complexity=raw["model"].get("byComplexity", {}),
+        model_default=model["default"],
+        model_escalate=model.get("escalate", model["default"]),
+        model_by_complexity=model.get("byComplexity", {}),
         permission_mode=raw.get("permissionMode", "dontAsk"),
         allowed_tools=raw.get("allowedTools", []),
         max_iterations=int(raw.get("maxIterations", 10)),
-        role_prompt=role_file.read_text(encoding="utf-8"),
+        role_prompt=role_prompt,
         reviewer_name=raw.get("reviewerName") or "your reviewer",
         enabled=raw.get("enabled", True),
         pickup_status=raw.get("pickupStatus"),
@@ -228,6 +241,7 @@ def load_agent(folder):
         runner=dict(runner),
         dispatch=dispatch,
         extra={k: raw[k] for k in ("knowledgeMap", "ideaSource") if k in raw},
+        gaia_agent=gaia_agent,
     )
 
 

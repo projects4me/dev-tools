@@ -62,6 +62,10 @@ class Tracker:
     def user_id(self):
         return str(self._call(self.gaia.me)["id"])
 
+    def agent_spec(self, name_or_id):
+        """A Gaia agent's spec (role prompt, model config, limits), read as this agent."""
+        return self._call(self.gaia.agent_spec, name_or_id)
+
     def project_ids(self):
         """Project name -> id for the agent's configured projects."""
         return {name: str(self._call(self.gaia.project, name)["id"]) for name in self.agent.projects}

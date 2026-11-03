@@ -40,13 +40,15 @@ class Dispatcher:
     """Worker pool for one agent: `maxParallel` threads, each issue in its own workspace (or container) and test
     slot."""
 
-    def __init__(self, agent, tracker, claude, dry_run=False, mcp=None, collector=None, merge_route=None):
+    def __init__(self, agent, tracker, claude, dry_run=False, mcp=None, collector=None, merge_route=None,
+                 refresh_spec=None):
         self.agent = agent
         self.tracker = tracker
         self.claude = claude
         self.dry_run = dry_run
         self.mcp = mcp          # the agent's MCP config file (mcp.mcp_config)
         self.collector = collector      # collector(issue or None): gc of finished issues, run by the release worker
+        self.refresh_spec = refresh_spec    # re-reads the agent's Gaia spec before each run (agent_spec.follow)
         self.runner = runner.for_agent(agent)
         self.user_id = tracker.user_id()
         self._queue = pool.RunQueue()
@@ -253,6 +255,8 @@ class Dispatcher:
     def _work(self, number, issue, decision, action, review=None):
         """Prepare the workspace and run the action, or a bot round when `review` is the record it runs for."""
         bot_round = bool(review)
+        if self.refresh_spec:               # Gaia edits to the role prompt, model and limits apply from this run
+            self.refresh_spec()
         state = sessions.get(self.agent.name, number)
         session_id, why = policy.resume_session(action, state, _now(), self.agent.resume_max_idle_minutes)
         if session_id and not self.runner.resumable:
