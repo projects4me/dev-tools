@@ -11,6 +11,8 @@ from . import bot_review, memory, policy, pool, record_runs, runner, runtime_che
 from .dependency_gate import DependencyGate
 from .registry import Action
 from .usage_pause import UsagePause
+from .docker_pause import DockerPause
+from . import docker_engine
 from . import runs as run_log
 from .config import DEV_TOOLS, STATE_DIR, WORKSPACE, TalosError, log
 
@@ -21,6 +23,11 @@ def _now():
 
 def _iso(moment):
     return moment.isoformat(timespec="seconds")
+
+
+def docker_hold_file(agent_name):
+    """Where an agent's Docker hold is written, for `talos status`."""
+    return STATE_DIR / agent_name / "docker_hold.json"
 
 
 def lease_file(agent_name):
@@ -60,6 +67,11 @@ class Dispatcher:
         self._pending = set()
         self._lock = threading.Lock()
         self._pause = UsagePause()  # no dispatching while a Claude usage limit holds
+        self._docker = DockerPause(     # no dispatching while Docker is down or full
+            high=agent.docker_memory_high_percent, low=agent.docker_memory_ok_percent,
+            check_seconds=agent.docker_check_seconds, auto_start=agent.docker_auto_start,
+            start=lambda: log(docker_engine.describe(docker_engine.for_agent(agent, "start")), agent.name),
+            on_change=self._write_docker_hold, log=lambda text: log(text, agent.name))
         self._deps = DependencyGate(agent.dependency_done_statuses)   # issues waiting on "Depends on" issues
         self._releases = queue.Queue()      # changed issue numbers (None = unknown) for the release worker
         # the CodeRabbit loop; merge_route(issue) names an orchestrator that merges a clean PR itself (or None)
@@ -175,9 +187,19 @@ class Dispatcher:
         self._pause.wait()
         return not self._pause.stopped
 
+    def _write_docker_hold(self, verdict, since):
+        """Record the hold for `talos status`, a separate process; no file means no hold."""
+        path = docker_hold_file(self.agent.name)
+        if since is None:
+            path.unlink(missing_ok=True)
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"verdict": verdict, "since": since}), encoding="utf-8")
+
     def stop(self):
-        """Release workers waiting out a usage-limit pause, and stop polling CodeRabbit."""
+        """Release workers waiting out a usage-limit or Docker hold, and stop polling CodeRabbit."""
         self._pause.stop()
+        self._docker.stop()
         self.bot_review.stop()
 
     def start(self):
@@ -195,6 +217,9 @@ class Dispatcher:
             try:
                 if self._pause.wait():
                     log("usage-limit pause over, dispatching resumes", self.agent.name)
+                self._docker.wait()     # a run already in flight is not touched
+                if self._docker.stopped:
+                    return
                 requeue = self.handle(number, reconcile) == policy.LIMITED
             except Exception as e:  # never let one issue stop the worker
                 log(f"#{number} failed in Talos: {e}", self.agent.name)

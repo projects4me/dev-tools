@@ -123,6 +123,8 @@ class Agent:
     docker_memory_ok_percent: float = 70     # once pressured, Docker is ok again only below this (%)
     docker_start_command: list = None        # argv that starts the Docker engine (docker_engine.py); None = default
     docker_restart_command: list = None      # argv that restarts it; None = default
+    docker_auto_start: bool = True           # the dispatcher starts a stopped engine once per hold (docker_pause.py)
+    docker_check_seconds: float = 30         # the dispatcher re-reads Docker at most this often
     docker_start_timeout_seconds: float = 180   # how long a start/restart waits for the daemon to answer
 
     def action_for(self, status):
@@ -154,12 +156,14 @@ def _argv(docker, key):
 
 def docker_settings(raw):
     """agent.json `docker: {"memoryHighPercent": 85, "memoryOkPercent": 70, "startCommand": [...],
-    "restartCommand": [...], "startTimeoutSeconds": 180}` -> the Agent fields."""
+    "restartCommand": [...], "startTimeoutSeconds": 180, "autoStart": true, "checkSeconds": 30}` -> the Agent fields."""
     docker = raw.get("docker") or {}
     return {"docker_memory_high_percent": float(docker.get("memoryHighPercent", 85)),
             "docker_memory_ok_percent": float(docker.get("memoryOkPercent", 70)),
             "docker_start_command": _argv(docker, "startCommand"),
             "docker_restart_command": _argv(docker, "restartCommand"),
+            "docker_auto_start": bool(docker.get("autoStart", True)),
+            "docker_check_seconds": float(docker.get("checkSeconds", 30)),
             "docker_start_timeout_seconds": float(docker.get("startTimeoutSeconds", 180))}
 
 
