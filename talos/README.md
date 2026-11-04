@@ -621,6 +621,40 @@ Thresholds are set in the agent's `agent.json`; these are the defaults:
 
 `talos status` prints one line: `DOCKER  ok  memory 2.0GiB / 8.0GiB (25%)  test containers 3` (or `down (…)`).
 
+### Starting and restarting the engine
+
+`lib/docker_engine.py` `start()` and `restart()` start or restart the Docker engine, then `wait_ready(timeout)` polls
+`docker_state.read()` until the daemon answers. `start()` does nothing when it already answers. Both return
+`{action, ok, seconds, method, error, stackMissing}` and never raise. `stackMissing` lists the p4m stack containers
+(`gaia-dev`, `postgres-dev`, `p4m-proxy`) that aren't running once the engine is up; Talos doesn't start them.
+When to start or restart is the caller's decision. `for_agent(agent, action)` applies the agent's settings.
+
+The method, in this order:
+
+| Where | Method (`method`) |
+|---|---|
+| a command set in agent.json | `command`: `docker.startCommand` / `docker.restartCommand` |
+| Docker Desktop 4.37+ (any OS) | `docker-desktop-cli`: `docker desktop start` / `docker desktop restart` |
+| Windows, older Docker Desktop | `desktop-exe`: launches `Docker Desktop.exe`, found next to the docker CLI or under Program Files; a restart first stops the `Docker Desktop.exe` and `com.docker.backend.exe` process trees (`taskkill /F /T`) |
+| Linux, Docker Desktop | `systemd-user`: `systemctl --user start\|restart docker-desktop` |
+| Linux, system `docker.service` | refused: set the command (below) |
+
+The commands are argument lists, run without a shell, with no stdin and no controlling terminal, so a password prompt
+fails instead of waiting. The wait is `startTimeoutSeconds` (default 180):
+
+```json
+"docker": {"startCommand": ["sudo", "-n", "systemctl", "start", "docker"],
+           "restartCommand": ["sudo", "-n", "systemctl", "restart", "docker"],
+           "startTimeoutSeconds": 180}
+```
+
+On a server where Docker is the system `docker.service`, let the Talos user run just these two commands without a
+password (`sudo visudo -f /etc/sudoers.d/talos`, with your user and `systemctl` path):
+
+```
+talos ALL=(root) NOPASSWD: /usr/bin/systemctl start docker, /usr/bin/systemctl restart docker
+```
+
 ## State: `state/talos.db` (SQLite)
 
 Readable by other tools while Talos runs (WAL mode), e.g. a future Projects4Me UI panel.
