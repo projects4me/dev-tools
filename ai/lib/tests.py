@@ -21,7 +21,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import baseline, results, testmap
-from .common import STATE_DIR, WORKSPACE, base_branch, checkout_state_file, config, git, p4m, repo_dir, say
+from .common import (STATE_DIR, WORKSPACE, base_branch, checkout_state_file, config, git, kill_tree, p4m, repo_dir,
+                     say)
 
 PHPUNIT_FOLDERS = ("tests/libraries/security", "tests/libraries/utils", "tests/services", "tests/tools")
 
@@ -56,17 +57,6 @@ def _run_logged(name, cmd, cwd=WORKSPACE):
             kill_tree(proc.pid)
             raise
     return proc.returncode, "".join(chunks), log
-
-
-def kill_tree(pid):
-    """Terminate a process and all its children (killing only the parent leaves the p4m child running)."""
-    if sys.platform == "win32":
-        subprocess.run(["taskkill", "/T", "/F", "/PID", str(pid)], capture_output=True)
-    else:
-        try:
-            os.killpg(os.getpgid(pid), signal.SIGTERM)
-        except (ProcessLookupError, PermissionError):
-            pass
 
 
 @contextmanager

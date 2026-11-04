@@ -1,13 +1,14 @@
 """`ai mergecheck` / `ai merge`: the fixed gate an agent PR passes before Agent Agamemnon approves and merges it.
 
 Every check reads the PR's current head commit. A check is ok, pending (it may pass later: CI or CodeRabbit still
-running, GitHub still computing mergeability) or failed. The gate passes only when every check is ok.
+running, GitHub still computing mergeability) or failed. A repo in `mergeReviewers` gets the `review` check (a clean
+design review recorded by `ai ship`) instead of the `coderabbit` one. The gate passes only when every check is ok.
 """
 
 import fnmatch
 import json
 
-from . import coderabbit
+from . import coderabbit, mergereviewer, reviewrecord
 from .common import REPOS, AiError, agamemnon, config, say
 from .review import _api, _is_bot, open_threads, resolved_threads
 
@@ -44,6 +45,13 @@ def check_coderabbit(enabled, verdict):
     if state == "findings":
         return _check("coderabbit", FAIL, f"{verdict['open']} open CodeRabbit thread(s)")
     return _check("coderabbit", FAIL, f"{state}" + (f": {verdict['detail']}" if verdict.get("detail") else ""))
+
+
+def check_review(body):
+    """For a repo in mergeReviewers: `ai ship` writes the design-review line only for a clean review of the tree."""
+    if reviewrecord.REVIEW_LINE in (body or ""):
+        return _check("review", OK, "the PR records a clean design review of its tree")
+    return _check("review", FAIL, "the PR body records no clean design review (ai design-review, then ai ship)")
 
 
 def check_ci(check_runs, statuses):
@@ -156,10 +164,14 @@ def gate(repo, pr_number):
     reviews = _api(repo, f"repos/{full}/pulls/{pr_number}/reviews")
     resolved = resolved_threads(repo, pr_number)
     files = [f["filename"] for f in _api(repo, f"repos/{full}/pulls/{pr_number}/files")]
-    enabled = coderabbit.enabled(repo)
-    rabbit = coderabbit.classify(coderabbit.review_status(check_runs, statuses), issue_comments, review_comments,
-                                 resolved, author) if enabled else None
-    checks = [check_open(pr), check_coderabbit(enabled, rabbit), check_ci(check_runs, statuses),
+    if mergereviewer.merge_reviewer(repo) == mergereviewer.DESIGN_REVIEW:
+        review = check_review(pr.get("body"))
+    else:
+        enabled = coderabbit.enabled(repo)
+        review = check_coderabbit(enabled, coderabbit.classify(coderabbit.review_status(check_runs, statuses),
+                                                               issue_comments, review_comments, resolved, author)
+                                  if enabled else None)
+    checks = [check_open(pr), review, check_ci(check_runs, statuses),
               check_tests(pr.get("body")), check_mergeable(pr),
               check_humans(reviews, issue_comments, review_comments, resolved, head_date, (author, merger)),
               check_labels(pr), check_self(files, cfg.get("agamemnonProtected", []))]

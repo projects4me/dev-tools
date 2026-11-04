@@ -28,7 +28,7 @@ import html
 import json
 from pathlib import Path
 
-from . import coderabbit, cost, gaiapack, results, sizecheck, workflow
+from . import coderabbit, cost, gaiapack, mergereviewer, results, reviewrecord, sizecheck, workflow
 from .common import (AiError, PROJECT_FOR_REPO, REPOS, STATE_DIR, base_branch, config, git, ody, say, tracker_call)
 
 SHORTCODE = {"A Gaia": "agaia", "A Prometheus": "aprom", "A Hermes": "ah", "A Ares": "aa", "A Dev Tool": "adt"}
@@ -77,6 +77,16 @@ def test_gate(repo):
     return last["lines"]
 
 
+def review_line(repo):
+    """The design-review line for the PR body of a repo in mergeReviewers, or None. A missing, stale or unclean
+    review doesn't stop the ship: the PR opens without the line and the merge gate sends it to the owner."""
+    if mergereviewer.merge_reviewer(repo) != mergereviewer.DESIGN_REVIEW:
+        return None
+    line, why = reviewrecord.ship_line(repo)
+    say(f"design review: {why}" + ("" if line else "; the PR opens without the design-review line"))
+    return line
+
+
 def commit_message(spec, ref):
     parts = [spec["title"].strip()]
     if spec.get("body"):
@@ -85,9 +95,9 @@ def commit_message(spec, ref):
     return "\n\n".join(parts)
 
 
-def pr_body(spec, ref, test_lines):
+def pr_body(spec, ref, test_lines, review=None):
     sections = [("What", spec["what"]), ("Why", spec["why"]),
-                ("How tested", "```\n" + "\n".join(test_lines) + "\n```"
+                ("How tested", "```\n" + "\n".join(test_lines + ([review] if review else [])) + "\n```"
                  + (f"\n\n{spec['howTested'].strip()}" if spec.get("howTested") else "")),
                 ("Contract impact", spec.get("contract") or "None"),
                 ("Migration impact", spec.get("migration") or "None")]
@@ -165,12 +175,14 @@ def cmd_ship(args):
     committed = progress.get("commit") == head
 
     if committed:
-        test_lines = progress["testLines"]
+        test_lines, review = progress["testLines"], progress.get("reviewLine")
         say(f"resuming: {head[:8]} already committed and pushed")
     else:
         test_lines = (["(tests not applicable: " + args.no_tests + ")"] if args.no_tests else test_gate(repo))
+        review = review_line(repo)            # before the commit, which changes the tree fingerprint
     warning = cost_warning(repo, issue)
-    message, body, notes = commit_message(spec, ref), pr_body(spec, ref, test_lines), notes_html(spec, test_lines)
+    message, notes = commit_message(spec, ref), notes_html(spec, test_lines)
+    body = pr_body(spec, ref, test_lines, review)
     if warning:
         body += "\n\n" + warning
 
@@ -187,7 +199,7 @@ def cmd_ship(args):
 
     if not committed:
         workflow.commit_files(repo, issue, message, spec["files"], push=True)
-        progress = {"commit": git(repo, "rev-parse", "HEAD"), "testLines": test_lines}
+        progress = {"commit": git(repo, "rev-parse", "HEAD"), "testLines": test_lines, "reviewLine": review}
         save_progress(repo, issue, progress)
     elif not progress.get("pr"):
         ody(repo, "git", "push", "-q", "-u", "odysseus", workflow.branch_name(issue))   # in case the push failed
