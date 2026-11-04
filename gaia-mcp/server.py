@@ -408,6 +408,12 @@ class Gaia:
             raise GaiaError(f"Workflow step {step_id} was not found or is not visible to {self.email}.")
         return found[0]
 
+    def milestone_by_id(self, milestone_id):
+        found = self.flatten(self.request("GET", f"milestone/{milestone_id}"))
+        if not found:
+            raise GaiaError(f"Milestone {milestone_id} was not found or is not visible to {self.email}.")
+        return found[0]
+
     def actor_steps(self, user_id, status):
         return self.find("workflowactorstep", f"((Workflowactorstep.actorUserId : {user_id}) AND "
                                               f"(Workflowactorstep.status : {status}))", limit=-1)

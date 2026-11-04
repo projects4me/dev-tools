@@ -251,6 +251,15 @@ class ActorStepTest(unittest.TestCase):
         with self.assertRaises(server.GaiaError):
             self.gaia({"data": None}).actor_step("s-1")
 
+    def test_a_milestone_is_read_by_id(self):
+        g = self.gaia({"data": {"type": "milestone", "id": "m-1", "attributes": {"projectId": "p-1"}}})
+        self.assertEqual(g.milestone_by_id("m-1"), {"id": "m-1", "projectId": "p-1"})
+        self.assertEqual(g.calls[0][:2], ("GET", "milestone/m-1"))
+
+    def test_a_missing_milestone_is_an_error(self):
+        with self.assertRaises(server.GaiaError):
+            self.gaia({"data": None}).milestone_by_id("m-1")
+
     def test_steps_are_listed_by_actor_and_status(self):
         g = self.gaia({"data": []})
         g.actor_steps("u-1", "pending")

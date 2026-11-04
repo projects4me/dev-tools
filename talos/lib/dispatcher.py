@@ -7,7 +7,7 @@ import threading
 import uuid
 from datetime import datetime
 
-from . import bot_review, memory, policy, pool, runner, runtime_check, sessions, workspaces
+from . import bot_review, memory, policy, pool, record_runs, runner, runtime_check, sessions, workspaces
 from .dependency_gate import DependencyGate
 from .registry import Action
 from .usage_pause import UsagePause
@@ -283,6 +283,67 @@ class Dispatcher:
             prompt += policy.CATCH_UP.format(issue=issue["number"], repo=repo)
         model = model or policy.choose_model(step.agent, issue, escalated=bool(state.get("escalated")))
         return self._start(issue, repo, prompt, model, session_id, why, step=step)
+
+    def run_record(self, record, prompt, resume, model, step):
+        """A workflow 'Run agent' step on a record that isn't an issue (record_runs.py): Claude in the record's
+        scratch folder on this machine, the context block on a fresh session, no repo, branch, PR or test slot. The
+        report is recorded on `step`; returns Claude's outcome (policy.LIMITED: run the step again after the pause)."""
+        agent = step.agent
+        state = record_runs.session(self.agent.name, record)
+        session_id, why = policy.resume_session(Action(prompt, resume=resume), state, _now(),
+                                                self.agent.resume_max_idle_minutes)
+        if not session_id:                  # a resumed session has the context already
+            prompt = record_runs.with_context(prompt, record)
+        model = model or agent.model_default
+        live_id = session_id or str(uuid.uuid4())
+        limits = policy.run_limits(agent, model)
+        if step.max_turns:
+            limits = limits._replace(max_turns=step.max_turns)
+        cmd = runner.build_command(self.claude, agent, model, session_id,
+                                   new_session_id=None if session_id else live_id, limits=limits, mcp=self.mcp,
+                                   guard=_runtime_copy())
+        log(f"{record.key} on {model} ({why}; {limits.describe()})", self.agent.name)
+        if self.dry_run:
+            log(f"{record.key} dry run, not starting Claude: {prompt}", self.agent.name)
+            return "dry_run"
+
+        lease = self._gate.acquire(record.key, None, model)     # the agent's caps; no repo, so no test slot
+        try:
+            started = _now()
+            run_id = run_log.start(self.agent.name, record.key, 1, model, live_id, bool(session_id), run_log.RECORD,
+                                   _iso(started))
+            try:
+                result, log_path = runner.run(cmd, {**self.tracker.child_env(), **self.agent.env}, self.agent.name,
+                                              record.slug, prompt, cwd=record_runs.folder(self.agent.name, record))
+            except Exception as e:  # e.g. the Claude binary vanished: close the run and report it failed
+                result, log_path = {"is_error": True, "subtype": "talos error", "result": str(e)}, None
+        finally:
+            self._gate.release(lease)
+        result = result or {}
+        ended = _now()
+        try:                                # a failure in the bookkeeping still closes the run row
+            outcome, summary, comment, _, reset_at, _ = policy.read_outcome(result, ended)
+            new_session = result.get("session_id") or live_id
+            reported = result.get("total_cost_usd")
+            previous = state.get("session_cost_usd") if session_id and state.get("session_id") == session_id else 0
+            cost = run_log.incremental_cost(reported, previous, bool(session_id))
+            stats = runner.usage_since(runner.transcript(new_session), started)
+            record_runs.save_session(self.agent.name, record, new_session, reported, _iso(ended))
+            run_log.finish(run_id, _iso(ended), round((ended - started).total_seconds(), 1), outcome, summary,
+                           cost, reported, stats, log_path.name if log_path else None)
+        except Exception:
+            run_log.close_unfinished(self.agent.name, record.key, _iso(ended), "talos error")
+            raise
+        cost_text = f"${cost:.2f}" if cost is not None else "cost unknown"
+        log(f"{record.key} {outcome}: {summary} ({cost_text}, {stats['turns']} turns, "
+            f"log {log_path.name if log_path else 'none'})", self.agent.name)
+        if outcome == policy.LIMITED:
+            self._pause.hit(reset_at)
+            return outcome
+        self._pause.succeeded()
+        step.summary = summary
+        step.outcome, step.comment = record_runs.report(outcome, summary, comment)
+        return outcome
 
     def _start(self, issue, repo, prompt, model, session_id, why, bot_round=False, step=None):
         """Prepare the issue's workspace, add the Gaia pack to a fresh session's prompt, and run."""

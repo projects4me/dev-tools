@@ -63,6 +63,11 @@ class StepTracker(StubTracker):
     def report_step(self, sid, outcome, comment):
         self.reports.append((sid, outcome, comment))
 
+    def milestone(self, milestone_id):
+        if milestone_id == "gone":
+            raise TalosError(f"no milestone {milestone_id}")
+        return {"name": "v1", "id": milestone_id, "project": "A Gaia", "status": "completed"}
+
     def agent_spec(self, agent_id):
         if self.spec is None:
             raise TalosError("agentspec returned 404")
@@ -135,7 +140,7 @@ class FakeDispatcher:
         self.outcomes = list(outcomes)
         self.stopping = stopping
         self.busy = busy            # reserve() refusals before it succeeds
-        self.runs, self.released, self.events, self.waits, self.resyncs = [], [], [], 0, 0
+        self.runs, self.records, self.released, self.events, self.waits, self.resyncs = [], [], [], [], 0, 0
 
     def reserve(self, number):
         if self.busy:
@@ -148,6 +153,10 @@ class FakeDispatcher:
 
     def run_step(self, issue, repo, prompt, resume, model, run):
         self.runs.append((issue["number"], repo, prompt, resume, model, run))
+        return self.outcomes.pop(0)
+
+    def run_record(self, record, prompt, resume, model, run):
+        self.records.append((record, prompt, resume, model, run))
         return self.outcomes.pop(0)
 
     def wait_for_usage(self):
@@ -205,12 +214,44 @@ class StepRunnerTest(unittest.TestCase):
         self.assertIsNone(self.runner(tracker=tracker).handle("s-1"))
         self.assertEqual((self.dispatcher.runs, tracker.reports), ([], []))
 
-    def test_a_step_not_about_an_issue_is_claimed_and_failed(self):
-        tracker = StepTracker(make_issue(), [step(entityType="wikipage")])
+    def test_a_step_naming_no_record_is_claimed_and_failed(self):
+        tracker = StepTracker(make_issue(), [step(entityType=None)])
         self.assertEqual(self.runner(tracker=tracker).handle("s-1"), "failed")
         self.assertEqual(tracker.claims, ["s-1"])
-        self.assertIn("issues only", tracker.reports[0][2])
+        self.assertIn("names no record", tracker.reports[0][2])
         self.assertEqual(self.dispatcher.runs, [])
+
+    def test_a_step_on_another_record_is_a_record_run(self):
+        tracker = StepTracker(make_issue(), [step(entityType="milestone", entityId="m-1", session="resume")])
+        self.assertEqual(self.runner(tracker=tracker).handle("s-1"), "done")
+        self.assertEqual(tracker.claims, ["s-1"])
+        record, prompt, resume, model, run = self.dispatcher.records[0]
+        self.assertEqual((record.key, record.project, record.details["name"]), ("milestone:m-1", "A Gaia", "v1"))
+        self.assertEqual((prompt, resume, run.agent.role_prompt), ("Work {not a placeholder} #42", True, "spec role"))
+        self.assertEqual((self.dispatcher.runs, self.dispatcher.released), ([], ["milestone:m-1"]))
+        self.assertEqual(tracker.reports, [("s-1", "done", "")])
+
+    def test_an_unreadable_record_is_failed(self):
+        tracker = StepTracker(make_issue(), [step(entityType="milestone", entityId="gone")])
+        self.assertEqual(self.runner(tracker=tracker).handle("s-1"), "failed")
+        self.assertIn("could not read the step's milestone: no milestone gone", tracker.reports[0][2])
+        self.assertEqual(self.dispatcher.records, [])
+
+    def test_a_record_run_reports_what_it_recorded(self):
+        class Recording(FakeDispatcher):
+            def run_record(self, record, prompt, resume, model, run):
+                run.outcome, run.comment = "needs_input", "<p>which issue?</p>"
+                return "needs_input"
+        r = self.runner(tracker=StepTracker(make_issue(), [step(entityType="wikipage", entityId="w-1")]))
+        r.dispatcher = Recording([])
+        self.assertEqual(r.handle("s-1"), "needs_input")
+        self.assertEqual(self.tracker.reports, [("s-1", "needs_input", "<p>which issue?</p>")])
+
+    def test_a_record_run_waits_out_a_usage_limit_like_an_issue_step(self):
+        tracker = StepTracker(make_issue(), [step(entityType="wikipage", entityId="w-1")])
+        r = self.runner(outcomes=[policy.LIMITED, "done"], tracker=tracker)
+        self.assertEqual(r.handle("s-1"), "done")
+        self.assertEqual((len(self.dispatcher.records), self.dispatcher.waits), (2, 1))
 
     def test_an_issue_outside_the_agents_projects_is_failed(self):
         tracker = StepTracker(make_issue(project="Someone else's"))

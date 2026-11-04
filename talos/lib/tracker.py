@@ -172,6 +172,17 @@ class Tracker:
         """issue() by the issue's record id, as a workflow step names it."""
         return self._fields(self._call(self.gaia.issue_by_id, issue_id, rels=self.ISSUE_RELS))
 
+    def milestone(self, milestone_id):
+        """A milestone by its record id, as gaia-mcp's get_milestone gives it (name, status, dates, project, issue
+        counts by status)."""
+        m = self._call(self.gaia.milestone_by_id, milestone_id)
+        project = next((p for p in self._call(self.gaia.projects) if str(p.get("id")) == str(m.get("projectId"))),
+                       None)
+        if not project:
+            raise TalosError(f"Milestone {milestone_id} is in a project {self.agent.display_name} can't see.")
+        return self._call(self.tools.get_milestone, {"project": project.get("shortCode") or project.get("name"),
+                                                     "id": milestone_id})
+
     def actor_step(self, step_id):
         return self._call(self.gaia.actor_step, step_id)
 
