@@ -3,13 +3,14 @@
 gaia-mcp — MCP server that lets Claude Code work with Projects4Me issues through Gaia's REST API.
 
 Pure Python standard library (like p4m). Speaks MCP over stdio (newline-delimited JSON-RPC 2.0).
-It signs in to Gaia with OAuth2 password grant as a dedicated user and only calls /api/v1/*,
+It signs in to Gaia with OAuth2 client_credentials grant as a dedicated agent and only calls /api/v1/*,
 so Gaia's ACL applies to everything it does.
 
 Settings come from the environment, or from gaia-mcp.env next to this file (see gaia-mcp.env.example).
 """
 
 import base64
+import contextlib
 import json
 import mimetypes
 import os
@@ -75,7 +76,9 @@ def load_env_file(path):
 
 
 class GaiaError(Exception):
-    pass
+    def __init__(self, message, status=None):
+        super().__init__(message)
+        self.status = status
 
 
 # ---------------------------------------------------------------------------------------------
@@ -86,7 +89,7 @@ class Gaia:
     def __init__(self):
         self.base = os.environ.get("GAIA_URL", "https://api.local-projects4.me").rstrip("/")
         self.email = os.environ.get("GAIA_EMAIL", "")
-        self.password = os.environ.get("GAIA_PASSWORD", "")
+        self.password = os.environ.get("GAIA_PASSWORD", "")     # set: password grant; empty: client_credentials
         self.client_id = os.environ.get("GAIA_CLIENT_ID", "projects4me")
         self.client_secret = os.environ.get("GAIA_CLIENT_SECRET", "")
         self.timeout = float(os.environ.get("GAIA_TIMEOUT", "30"))
@@ -188,7 +191,7 @@ class Gaia:
         if not_json(payload):
             raise GaiaError(f"Gaia {method} {path} failed ({status}, no JSON reply): {page_text(payload[NOT_JSON])}")
         if status >= 400:
-            raise GaiaError(f"Gaia {method} {path} returned {status}: {json.dumps(payload)[:1500]}")
+            raise GaiaError(f"Gaia {method} {path} returned {status}: {json.dumps(payload)[:1500]}", status)
         return payload
 
     # -- Auth --------------------------------------------------------------------------------
@@ -199,12 +202,20 @@ class Gaia:
         if self.refresh_token and self._grant({"grant_type": "refresh_token",
                                                "refresh_token": self.refresh_token}, quiet=True):
             return self.access_token
-        if not self.email or not self.password:
-            raise GaiaError("GAIA_EMAIL and GAIA_PASSWORD are not set. Put them in dev-tools/gaia-mcp/gaia-mcp.env.")
-        if not self.client_secret:
-            raise GaiaError("GAIA_CLIENT_SECRET is not set. Put it in dev-tools/gaia-mcp/gaia-mcp.env.")
-        self._grant({"grant_type": "password", "email": self.email, "password": self.password})
+        if not self.client_id or not self.client_secret:
+            raise GaiaError("GAIA_CLIENT_ID and GAIA_CLIENT_SECRET are not set. "
+                            "Put them in dev-tools/gaia-mcp/gaia-mcp.env.")
+        self._grant(self.sign_in_form())
         return self.access_token
+
+    def sign_in_form(self):
+        """A user agent (GAIA_EMAIL + GAIA_PASSWORD, with the shared app client) signs in with the password grant;
+        an agent with its own OAuth client (no GAIA_PASSWORD) with client_credentials."""
+        if not self.password:
+            return {"grant_type": "client_credentials"}
+        if not self.email:
+            raise GaiaError("GAIA_PASSWORD is set but GAIA_EMAIL is not. Put both in dev-tools/gaia-mcp/gaia-mcp.env.")
+        return {"grant_type": "password", "email": self.email, "password": self.password}
 
     def _grant(self, form, quiet=False):
         form = dict(form, client_id=self.client_id, client_secret=self.client_secret)
@@ -213,7 +224,7 @@ class Gaia:
             self.refresh_token = None
             if quiet:
                 return False
-            # Never echo the request; it holds the password.
+            # Never echo the request; it holds the client secret (and the password).
             raise GaiaError(f"Gaia sign-in failed ({status}): {payload.get('error_description') or payload.get('error') or payload}")
         self.access_token = payload["access_token"]
         self.refresh_token = payload.get("refresh_token")
@@ -223,7 +234,8 @@ class Gaia:
     def me(self):
         if self.user is None:
             if not re.fullmatch(r"[\w.+-]+@[\w.-]+", self.email):
-                raise GaiaError(f"GAIA_EMAIL '{self.email}' does not look like an email address.")
+                raise GaiaError(f"GAIA_EMAIL '{self.email}' does not look like an email address "
+                                "(the agent's email, used to find its user record).")
             users =self.find("user", f"(User.email : {self.email})", fields=None, limit=1)
             if not users:
                 raise GaiaError(f"Signed in, but no user record was found for {self.email}.")
@@ -346,11 +358,81 @@ class Gaia:
                 return m
         raise GaiaError(f"'{who}' is not a member of {project.get('name')}.")
 
+    def agents(self):
+        """The agents visible to the caller, each as id, name, email, purpose and account status (an agent's name,
+        email and status come from its user record when the agent row doesn't carry them)."""
+        rows = []
+        for a in self.find("agent", rels="user", limit=-1):
+            user = a.get("user") or {}
+            rows.append({"id": a.get("id"), "name": a.get("name") or user.get("name"),
+                         "email": a.get("email") or user.get("email"), "purpose": a.get("purpose"),
+                         "status": a.get("status") or user.get("status")})
+        return rows
+
+    def agent(self, name_or_id):
+        """The one agent whose name, email or id is `name_or_id` (ignoring case)."""
+        key = str(name_or_id or "").strip().lower()
+        if not key:
+            raise GaiaError("Give the agent's name, email or id.")
+        matches = [a for a in self.agents()
+                   if key in (str(a["name"] or "").lower(), str(a["email"] or "").lower(), str(a["id"] or "").lower())]
+        if not matches:
+            raise GaiaError(f"No agent named, e-mailed or with the id '{name_or_id}' is visible to {self.email}.")
+        if len(matches) > 1:
+            names = ", ".join(f"{a['name']} <{a['email']}> ({a['id']})" for a in matches)
+            raise GaiaError(f"'{name_or_id}' matches more than one agent: {names}. Use the email or id.")
+        return matches[0]
+
+    def agent_spec(self, name_or_id):
+        """The agentspec document (role prompt, model config, limits, permission mode, tool grants, skills) of the
+        agent with that name, email or id, as Gaia serves it."""
+        return self.request("GET", f"agentspec/{self.agent(name_or_id)['id']}")
+
     def issue_by_number(self, number, rels="issuestatus,issuetype,assignedTo,issuemilestone,project"):
         found = self.find("issue", f"(Issue.issueNumber : {int(number)})", rels=rels, limit=1)
         if not found:
             raise GaiaError(f"Issue #{number} was not found or is not visible to {self.email}.")
         return found[0]
+
+    def issue_by_id(self, issue_id, rels="issuestatus,issuetype,assignedTo,issuemilestone,project"):
+        found = self.find("issue", f"(Issue.id : {issue_id})", rels=rels, limit=1)
+        if not found:
+            raise GaiaError(f"Issue {issue_id} was not found or is not visible to {self.email}.")
+        return found[0]
+
+    # -- Workflow 'Run agent' steps (the agent's runtime claims them and reports their outcome) ----
+
+    def actor_step(self, step_id):
+        found = self.flatten(self.request("GET", f"workflowactorstep/{step_id}"))
+        if not found:
+            raise GaiaError(f"Workflow step {step_id} was not found or is not visible to {self.email}.")
+        return found[0]
+
+    def milestone_by_id(self, milestone_id):
+        found = self.flatten(self.request("GET", f"milestone/{milestone_id}"))
+        if not found:
+            raise GaiaError(f"Milestone {milestone_id} was not found or is not visible to {self.email}.")
+        return found[0]
+
+    def actor_steps(self, user_id, status):
+        return self.find("workflowactorstep", f"((Workflowactorstep.actorUserId : {user_id}) AND "
+                                              f"(Workflowactorstep.status : {status}))", limit=-1)
+
+    def update_actor_step(self, step_id, attrs):
+        """Claim the step (status claimed) or report it (outcome, comment); Gaia checks the state change."""
+        return self.request("PATCH", f"workflowactorstep/{step_id}",
+                            body={"data": {"type": "workflowactorstep", "id": step_id, "attributes": attrs}})
+
+    def agent_spec_by_id(self, agent_id):
+        """The spec of the agent with that id (a workflow step names it; no lookup by name), unwrapped from JSON:API
+        if wrapped and checked to be specVersion 1 (Gaia docs/schemas/agent-spec.schema.json)."""
+        payload = self.request("GET", f"agentspec/{agent_id}")
+        data = payload.get("data") if isinstance(payload, dict) else None
+        if isinstance(data, dict) and "specVersion" not in payload:
+            payload = data.get("attributes") or data
+        if not isinstance(payload, dict) or payload.get("specVersion") != 1:
+            raise GaiaError(f"Agent spec {agent_id}: expected specVersion 1, got {json.dumps(payload)[:300]}")
+        return payload
 
 
 # ---------------------------------------------------------------------------------------------
@@ -441,6 +523,25 @@ class Tools:
         return {"gaia": self.g.base, "email": me.get("email"), "id": me.get("id"),
                 "name": me.get("name"), "memberOf": member_of}
 
+    def list_agents(self, args):
+        with self._needs("list agents", "agent.list"):
+            rows = self.g.agents()
+        return {"count": len(rows), "agents": rows}
+
+    def get_agent_spec(self, args):
+        with self._needs("read agent specs", "agentspec.get"):
+            return self.g.agent_spec(args.get("agent"))
+
+    @contextlib.contextmanager
+    def _needs(self, action, permission):
+        """Turn a Gaia 403 into an error naming the permission the agent account lacks."""
+        try:
+            yield
+        except GaiaError as e:
+            if e.status == 403:
+                raise GaiaError(f"{self.g.email} may not {action}: it lacks the {permission} permission.")
+            raise
+
     def list_projects(self, args):
         search = (args.get("search") or "").lower()
         rows = [{"name": p.get("name"), "shortCode": p.get("shortCode"), "id": p.get("id")}
@@ -462,9 +563,48 @@ class Tools:
                         for m in p.get("members") or []],
         }
 
+    @staticmethod
+    def summarize_milestone(m):
+        out = {k: m.get(k) for k in ("name", "id", "status", "milestoneType", "startDate", "endDate")}
+        return {k: v for k, v in out.items() if v not in (None, "")}
+
+    def _milestone(self, p, value):
+        """The project's milestone named `value` or with that id (project read with its milestones)."""
+        return self.g.pick(p.get("milestones") or [], value, "milestone")
+
+    def list_milestones(self, args):
+        p = self.g.project(args["project"], rels="milestones")
+        want = str(args.get("status") or "").strip().lower().replace(" ", "_")
+        rows = [m for m in p.get("milestones") or []
+                if not want or str(m.get("status") or "").strip().lower().replace(" ", "_") == want]
+        rows.sort(key=lambda m: str(m.get("endDate") or ""), reverse=True)
+        return {"project": p.get("name"), "count": len(rows), "milestones": [self.summarize_milestone(m) for m in rows]}
+
+    def get_milestone(self, args):
+        value = args.get("id") or args.get("name")
+        if not value:
+            raise GaiaError("Give the milestone's name or id.")
+        p = self.g.project(args["project"], rels="milestones")
+        m = self._milestone(p, value)
+        issues = self.g.find("issue", f"((Issue.projectId : {p['id']}) AND (Issue.milestoneId : {m['id']}))",
+                             rels="issuestatus", limit=-1)
+        counts = {}
+        for i in issues:
+            status = (i.get("issuestatus") or {}).get("name") or i.get("status") or "unknown"
+            counts[status] = counts.get(status, 0) + 1
+        out = self.summarize_milestone(m)
+        out["description"] = m.get("description")
+        out["project"] = p.get("name")
+        out["issueCount"] = len(issues)
+        out["issuesByStatus"] = counts
+        return out
+
     def list_issues(self, args):
-        p, statuses = self.g.project_options(args["project"], ("issuestatuses",) if args.get("status") else ())
+        needs = (("issuestatuses",) if args.get("status") else ()) + (("milestones",) if args.get("milestone") else ())
+        p, statuses = self.g.project_options(args["project"], needs)
         clauses = [f"(Issue.projectId : {p['id']})"]
+        if args.get("milestone"):
+            clauses.append(f"(Issue.milestoneId : {self._milestone(p, args['milestone'])['id']})")
         if args.get("status"):
             s = self.g.pick(statuses, args["status"], "status")
             clauses.append(f"(Issue.statusId : {s['id']})")
@@ -477,9 +617,11 @@ class Tools:
                 clauses.append(f"(Issue.subject CONTAINS {term})")
         query = "(" + " AND ".join(clauses) + ")"
         limit = max(1, min(int(args.get("limit") or 25), 100))
+        page = max(1, int(args.get("page") or 1))
         rows = self.g.find("issue", query, rels="issuestatus,issuetype,assignedTo,issuemilestone",
-                           sort="Issue.issueNumber", order="DESC", limit=limit)
-        return {"project": p.get("name"), "count": len(rows),
+                           sort="Issue.issueNumber", order="DESC", limit=limit, page=page if page > 1 else None)
+        return {"project": p.get("name"), "page": page, "count": len(rows),
+                "hasMore": len(rows) == limit,
                 "issues": [summarize_issue(r, self.ui, self.g.type_labels()) for r in rows]}
 
     COMMENTS_DEFAULT, COMMENTS_MAX = 10, 100
@@ -902,6 +1044,14 @@ FIELD_ARGS = {
 TOOLS = [
     ("gaia_whoami", "whoami", "Show which Gaia user this server signs in as and which projects it belongs to.",
      {"type": "object", "properties": {}}),
+    ("gaia_list_agents", "list_agents",
+     "List the agents visible to the caller: id, name, email, purpose and account status.",
+     {"type": "object", "properties": {}}),
+    ("gaia_get_agent_spec", "get_agent_spec",
+     "Get an agent's spec (role prompt, model config, limits, permission mode, tool grants, skills) by the agent's "
+     "name, email or id. Needs the agentspec.get permission.",
+     {"type": "object", "properties": {"agent": {"type": "string", "description": "The agent's name, email or id."}},
+      "required": ["agent"]}),
     ("gaia_list_projects", "list_projects", "List projects visible to the Claude user, optionally filtered by name or short code.",
      {"type": "object", "properties": {"search": {"type": "string"}}}),
     ("gaia_project_options", "project_options",
@@ -913,7 +1063,22 @@ TOOLS = [
          "status": {"type": "string"},
          "search": {"type": "string", "description": "Text the subject contains."},
          "assigned_to_me": {"type": "boolean"},
-         "limit": {"type": "integer", "minimum": 1, "maximum": 100}},
+         "milestone": {"type": "string", "description": "Milestone name or id, within the project."},
+         "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+         "page": {"type": "integer", "minimum": 1,
+                  "description": "Page of `limit` issues (default 1); keep going while hasMore is true."}},
+      "required": ["project"]}),
+    ("gaia_list_milestones", "list_milestones",
+     "List a project's milestones (latest end date first): name, id, status, type, start and end dates. "
+     "Optionally only those with a status, e.g. completed.",
+     {"type": "object", "properties": {"project": PROJECT_ARG, "status": {"type": "string"}},
+      "required": ["project"]}),
+    ("gaia_get_milestone", "get_milestone",
+     "Get one milestone by name or id: its dates, status, description and issue counts per status. "
+     "Read its issues with gaia_list_issues and the milestone argument.",
+     {"type": "object", "properties": {"project": PROJECT_ARG,
+                                       "name": {"type": "string"},
+                                       "id": {"type": "string", "description": "The milestone's id (instead of name)."}},
       "required": ["project"]}),
     ("gaia_add_comment", "add_comment",
      "Add a comment to an issue's thread (HTML). Use it to record what was done, findings, decisions and next steps.",

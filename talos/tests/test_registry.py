@@ -48,6 +48,22 @@ class RegistryTest(unittest.TestCase):
         prompt = policy.render_prompt(agent.actions["feedback"], issue, "gaia", reviewer=agent.reviewer_name)
         self.assertTrue(prompt.startswith("Ayesha answered on Projects4Me issue #5"))
 
+    def overlay(self, **fields):
+        (self.local / "agent.local.json").write_text(json.dumps(
+            {"acceptAssignmentsFrom": ["7"], "handoffTo": "7", **fields}), encoding="utf-8")
+
+    def test_dispatch_is_by_status_unless_workflows_are_chosen(self):
+        self.overlay()
+        self.assertEqual(registry.load_agent(self.folder).dispatch, "status")
+        self.overlay(dispatch="workflow")
+        self.assertEqual(registry.load_agent(self.folder).dispatch, "workflow")
+
+    def test_an_unknown_dispatch_fails_at_load(self):
+        self.overlay(dispatch="events")
+        with self.assertRaises(TalosError) as e:
+            registry.load_agent(self.folder)
+        self.assertIn("dispatch must be one of status, workflow", str(e.exception))
+
     def test_odysseus_run_policy(self):
         (self.local / "agent.local.json").write_text(json.dumps(
             {"acceptAssignmentsFrom": ["7"], "handoffTo": "7"}), encoding="utf-8")
@@ -88,6 +104,44 @@ class RegistryTest(unittest.TestCase):
         with self.assertRaises(TalosError) as e:
             registry.load_agent(self.folder)
         self.assertIn("GAIA_EMAIL", str(e.exception))
+
+    def gaia_agent_json(self, **changes):
+        raw = json.loads((self.folder / "agent.json").read_text(encoding="utf-8"))
+        raw.pop("model", None), raw.pop("rolePrompt", None)
+        raw.update(gaiaAgent="Agent Achilles", **changes)
+        (self.folder / "agent.json").write_text(json.dumps(raw), encoding="utf-8")
+        (self.local / "agent.local.json").write_text(json.dumps(
+            {"acceptAssignmentsFrom": ["7"], "handoffTo": "7"}), encoding="utf-8")
+
+    def test_agent_without_gaia_agent_takes_role_prompt_and_model_from_agent_json(self):
+        (self.local / "agent.local.json").write_text(json.dumps(
+            {"acceptAssignmentsFrom": ["7"], "handoffTo": "7"}), encoding="utf-8")
+        agent = registry.load_agent(self.folder)
+        self.assertEqual(agent.gaia_agent, "")
+        self.assertEqual(agent.role_prompt, (ODYSSEUS / "role.md").read_text(encoding="utf-8"))
+        self.assertTrue(agent.model_default)
+
+    def test_gaia_agent_needs_no_role_prompt_or_model_and_keeps_local_settings(self):
+        self.gaia_agent_json()
+        agent = registry.load_agent(self.folder)
+        self.assertEqual((agent.gaia_agent, agent.role_prompt, agent.model_default), ("Agent Achilles", "", ""))
+        self.assertTrue(agent.allowed_tools)
+        self.assertTrue(agent.projects)
+
+    def test_gaia_agent_with_role_prompt_or_model_in_agent_json_is_refused(self):
+        self.gaia_agent_json(model={"default": "sonnet"})
+        with self.assertRaisesRegex(TalosError, "gaiaAgent takes model from Gaia"):
+            registry.load_agent(self.folder)
+
+    def test_gaia_agent_is_for_issues_agents_only(self):
+        for kind in ("ideas", "events", "orchestrator"):
+            self.gaia_agent_json(kind=kind)
+            with self.assertRaisesRegex(TalosError, "issues agents only"):
+                registry.load_agent(self.folder)
+
+    def test_shipped_agents_are_configured_in_agent_json(self):
+        for path in (ODYSSEUS.parent).glob("*/agent.json"):
+            self.assertNotIn("gaiaAgent", json.loads(path.read_text(encoding="utf-8")), path.parent.name)
 
     def test_runner_is_local_unless_a_container_is_configured(self):
         local = {"acceptAssignmentsFrom": ["7"], "handoffTo": "7"}

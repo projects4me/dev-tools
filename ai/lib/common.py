@@ -5,6 +5,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 from contextlib import ExitStack, contextmanager
@@ -97,6 +98,17 @@ def run(cmd, cwd=None, check=True, capture=True, env=None):
         detail = (result.stderr or result.stdout or "").strip()
         raise AiError(f"command failed ({result.returncode}): {' '.join(map(str, cmd))}\n{detail[-2000:]}")
     return (result.stdout or "").strip() if capture else ""
+
+
+def kill_tree(pid):
+    """Terminate a process and all its children (killing only the parent leaves the p4m child running)."""
+    if sys.platform == "win32":
+        subprocess.run(["taskkill", "/T", "/F", "/PID", str(pid)], capture_output=True)
+    else:
+        try:
+            os.killpg(os.getpgid(pid), signal.SIGTERM)
+        except (ProcessLookupError, PermissionError):
+            pass
 
 
 def succeeds(cmd, cwd=None):

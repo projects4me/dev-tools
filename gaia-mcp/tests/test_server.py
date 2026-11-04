@@ -154,6 +154,41 @@ class ProjectRelationsTest(unittest.TestCase):
         self.assertEqual(g.needs, ("issuestatuses", "members"))
 
 
+class SignInTest(unittest.TestCase):
+    """A user agent (email + password) and an agent with its own OAuth client sign in side by side."""
+
+    def gaia(self, email="", password="", client_id="cid", client_secret="secret"):
+        g = server.Gaia()
+        g.email, g.password, g.client_id, g.client_secret = email, password, client_id, client_secret
+        g.forms = []
+
+        def http(method, path, form=None, auth=True, **kw):
+            g.forms.append(form)
+            return 200, {"access_token": "t", "expires_in": 3600}
+        g._http = http
+        return g
+
+    def test_no_password_uses_client_credentials(self):
+        g = self.gaia(email="agent@projects4.me")
+        g.token()
+        self.assertEqual({"grant_type": "client_credentials", "client_id": "cid", "client_secret": "secret"},
+                         g.forms[0])
+
+    def test_a_password_uses_the_password_grant(self):
+        g = self.gaia(email="agent@projects4.me", password="pw", client_id="projects4me")
+        g.token()
+        self.assertEqual({"grant_type": "password", "email": "agent@projects4.me", "password": "pw",
+                          "client_id": "projects4me", "client_secret": "secret"}, g.forms[0])
+
+    def test_a_password_without_an_email_is_an_error(self):
+        with self.assertRaisesRegex(server.GaiaError, "GAIA_EMAIL"):
+            self.gaia(password="pw").token()
+
+    def test_no_client_secret_is_an_error(self):
+        with self.assertRaisesRegex(server.GaiaError, "GAIA_CLIENT_SECRET"):
+            self.gaia(client_secret="").token()
+
+
 class GaiaReplyTest(unittest.TestCase):
     """A Gaia that crashes returns a PHP error page, not JSON: that is an error, and a read is tried once more."""
 
@@ -192,6 +227,60 @@ class GaiaReplyTest(unittest.TestCase):
     def test_json_replies_pass_through(self):
         self.assertEqual(self.gaia((200, {"raw": 1, "data": []})).request("GET", "x"), {"raw": 1, "data": []})
 
+
+
+class ActorStepTest(unittest.TestCase):
+    """The calls an agent's runtime makes for a workflow 'Run agent' step: read, claim or report, and the agent spec."""
+
+    def gaia(self, reply):
+        g = server.Gaia()
+        g.calls = []
+
+        def http(method, path, params=None, body=None, **kw):
+            g.calls.append((method, path, params, body))
+            return 200, reply
+        g._http = http
+        return g
+
+    def test_a_step_is_read_by_id(self):
+        g = self.gaia({"data": {"type": "workflowactorstep", "id": "s-1", "attributes": {"status": "pending"}}})
+        self.assertEqual(g.actor_step("s-1"), {"id": "s-1", "status": "pending"})
+        self.assertEqual(g.calls[0][:2], ("GET", "workflowactorstep/s-1"))
+
+    def test_a_missing_step_is_an_error(self):
+        with self.assertRaises(server.GaiaError):
+            self.gaia({"data": None}).actor_step("s-1")
+
+    def test_a_milestone_is_read_by_id(self):
+        g = self.gaia({"data": {"type": "milestone", "id": "m-1", "attributes": {"projectId": "p-1"}}})
+        self.assertEqual(g.milestone_by_id("m-1"), {"id": "m-1", "projectId": "p-1"})
+        self.assertEqual(g.calls[0][:2], ("GET", "milestone/m-1"))
+
+    def test_a_missing_milestone_is_an_error(self):
+        with self.assertRaises(server.GaiaError):
+            self.gaia({"data": None}).milestone_by_id("m-1")
+
+    def test_steps_are_listed_by_actor_and_status(self):
+        g = self.gaia({"data": []})
+        g.actor_steps("u-1", "pending")
+        self.assertEqual(g.calls[0][2]["query"],
+                         "((Workflowactorstep.actorUserId : u-1) AND (Workflowactorstep.status : pending))")
+
+    def test_an_update_patches_only_the_given_attributes(self):
+        g = self.gaia({"data": {"type": "workflowactorstep", "id": "s-1", "attributes": {}}})
+        g.update_actor_step("s-1", {"outcome": "done", "comment": "c"})
+        method, path, _, body = g.calls[0]
+        self.assertEqual((method, path), ("PATCH", "workflowactorstep/s-1"))
+        self.assertEqual(body["data"]["attributes"], {"outcome": "done", "comment": "c"})
+
+    def test_the_agent_spec_is_read_plain_or_wrapped(self):
+        spec = {"specVersion": 1, "agent": {"id": "a-1"}}
+        self.assertEqual(self.gaia(spec).agent_spec_by_id("a-1"), spec)
+        self.assertEqual(self.gaia({"data": {"id": "a-1", "attributes": spec}}).agent_spec_by_id("a-1"), spec)
+
+    def test_an_unknown_spec_version_is_an_error(self):
+        with self.assertRaises(server.GaiaError):
+            self.gaia({"specVersion": 2}).agent_spec_by_id("a-1")
 
 class IssueGaia:
     """A fake Gaia for get_issue: comments and time logs come only from their own queries, newest first."""
@@ -507,6 +596,148 @@ class IdeaToolsTest(unittest.TestCase):
                   "add_idea_plan_issue", "upload_idea_screen"):
             self.assertIn(f"gaia_{n}", names)
             self.assertTrue(callable(getattr(server.Tools, n)))
+
+
+class MilestoneReadGaia:
+    MILESTONES = [
+        {"id": "m-1", "name": "Alpha", "status": "completed", "milestoneType": "milestone",
+         "startDate": "2026-01-01", "endDate": "2026-02-01", "description": "First"},
+        {"id": "m-2", "name": "Beta", "status": "in_progress", "milestoneType": "milestone",
+         "startDate": "2026-02-01", "endDate": "2026-03-01"},
+    ]
+
+    def __init__(self):
+        self.queries = []
+
+    def project(self, name, rels=None):
+        return {"id": "p-1", "name": "A Dev Tool", "milestones": list(self.MILESTONES)}
+
+    def project_options(self, project, needs=server.PROJECT_RELS):
+        return self.project(project), []
+
+    pick = staticmethod(server.Gaia.pick)
+
+    def type_labels(self):
+        return {}
+
+    def find(self, module, query=None, rels=None, fields=None, sort=None, order=None, limit=None, page=None):
+        self.queries.append((query, limit, page))
+        done, new = {"name": "done"}, {"name": "new"}
+        return [{"issueNumber": n, "issuestatus": done if n % 2 else new} for n in range(5, 0, -1)][:limit if limit and limit > 0 else None]
+
+
+class MilestoneReadTest(unittest.TestCase):
+    def setUp(self):
+        self.g = MilestoneReadGaia()
+        self.tools = server.Tools(self.g)
+
+    def test_tools_are_listed(self):
+        names = {t[0] for t in server.TOOLS}
+        self.assertTrue({"gaia_list_milestones", "gaia_get_milestone"} <= names)
+
+    def test_list_milestones_by_status(self):
+        out = self.tools.list_milestones({"project": "adt", "status": "Completed"})
+        self.assertEqual([m["name"] for m in out["milestones"]], ["Alpha"])
+        self.assertEqual(len(self.tools.list_milestones({"project": "adt"})["milestones"]), 2)
+
+    def test_get_milestone_counts(self):
+        out = self.tools.get_milestone({"project": "adt", "name": "alpha"})
+        self.assertEqual(out["description"], "First")
+        self.assertEqual(out["issuesByStatus"], {"done": 3, "new": 2})
+        self.assertIn("(Issue.milestoneId : m-1)", self.g.queries[0][0])
+
+    def test_unknown_milestone(self):
+        with self.assertRaises(server.GaiaError):
+            self.tools.get_milestone({"project": "adt", "name": "nope"})
+
+    def test_list_issues_milestone_and_page(self):
+        out = self.tools.list_issues({"project": "adt", "milestone": "m-2", "limit": 2, "page": 3})
+        query, limit, page = self.g.queries[0]
+        self.assertIn("(Issue.milestoneId : m-2)", query)
+        self.assertEqual((limit, page, out["page"], out["hasMore"]), (2, 3, 3, True))
+
+    def test_list_issues_unknown_milestone(self):
+        with self.assertRaises(server.GaiaError):
+            self.tools.list_issues({"project": "adt", "milestone": "nope"})
+
+
+
+class AgentGaia(server.Gaia):
+    """A real Gaia client with the HTTP calls stubbed: `find` answers from `agents`, `request` from `reply`."""
+
+    def __init__(self, agents, reply=None, error=None, status=None):
+        super().__init__()
+        self.email = "talos@example.com"
+        self._agents, self.reply, self.error, self.status, self.calls = agents, reply, error, status, []
+
+    def find(self, module, query=None, rels=None, **kw):
+        self.calls.append(("find", module))
+        return list(self._agents)
+
+    def request(self, method, path, params=None, body=None):
+        self.calls.append((method, path))
+        if self.error:
+            raise server.GaiaError(self.error, self.status)
+        return self.reply
+
+
+AGENTS = [
+    {"id": "a-1", "purpose": "Codes", "status": "active", "user": {"name": "Agent Odysseus", "email": "odysseus@example.com"}},
+    {"id": "a-2", "name": "Agent Nestor", "email": "nestor@example.com", "purpose": "Ideas", "status": "active"},
+]
+
+
+class AgentToolsTest(unittest.TestCase):
+    def tools(self, **kw):
+        return server.Tools(AgentGaia(AGENTS, **kw))
+
+    def test_list_agents_summarises_each_agent(self):
+        out = self.tools().list_agents({})
+        self.assertEqual(out["count"], 2)
+        self.assertEqual(out["agents"][0], {"id": "a-1", "name": "Agent Odysseus", "email": "odysseus@example.com",
+                                            "purpose": "Codes", "status": "active"})
+
+    def test_spec_by_name_email_or_id(self):
+        spec = {"role": "code"}
+        for who in ("agent odysseus", "ODYSSEUS@example.com", "a-1"):
+            t = self.tools(reply=spec)
+            self.assertEqual(t.get_agent_spec({"agent": who}), spec)
+            self.assertIn(("GET", "agentspec/a-1"), t.g.calls)
+
+    def test_unknown_agent(self):
+        with self.assertRaisesRegex(server.GaiaError, "No agent"):
+            self.tools().get_agent_spec({"agent": "Nobody"})
+
+    def test_several_matches(self):
+        t = server.Tools(AgentGaia(AGENTS + [dict(AGENTS[1], id="a-3", email="n2@example.com")]))
+        with self.assertRaisesRegex(server.GaiaError, "more than one agent"):
+            t.get_agent_spec({"agent": "Agent Nestor"})
+
+    def test_missing_agent_argument(self):
+        with self.assertRaisesRegex(server.GaiaError, "Give the agent"):
+            self.tools().get_agent_spec({})
+
+    def test_403_names_the_missing_permission(self):
+        t = self.tools(error="Gaia GET agentspec/a-1 returned 403: {}", status=403)
+        with self.assertRaisesRegex(server.GaiaError, "agentspec.get"):
+            t.get_agent_spec({"agent": "a-1"})
+
+    def test_403_on_the_agent_list_is_translated_too(self):
+        g = AgentGaia(AGENTS, error="Gaia GET agent returned 403: {}", status=403)
+        g.find = lambda *a, **k: g.request("GET", "agent")
+        with self.assertRaisesRegex(server.GaiaError, "agent.list"):
+            server.Tools(g).list_agents({})
+        with self.assertRaisesRegex(server.GaiaError, "agentspec.get"):
+            server.Tools(g).get_agent_spec({"agent": "a-1"})
+
+    def test_other_errors_pass_through(self):
+        t = self.tools(error="Gaia GET agentspec/a-1 returned 500: boom", status=500)
+        with self.assertRaisesRegex(server.GaiaError, "500"):
+            t.get_agent_spec({"agent": "a-1"})
+
+    def test_both_tools_are_listed(self):
+        names = {name for name, *_ in server.TOOLS}
+        self.assertLessEqual({"gaia_list_agents", "gaia_get_agent_spec"}, names)
 
 
 if __name__ == "__main__":

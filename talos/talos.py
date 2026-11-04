@@ -4,6 +4,7 @@ Run `dev-tools/talos/talos -h`; see dev-tools/talos/README.md.
 """
 
 import argparse
+import contextlib
 import json
 import ssl
 import subprocess
@@ -13,13 +14,15 @@ import time
 import urllib.request
 from datetime import datetime
 
-from lib import container, db, policy, runner, sessions, workspace_gc, workspaces
+from lib import agent_spec, container, db, docker_state, policy, runner, sessions, workflow_steps, workspace_gc, workspaces
 from lib import runs as run_log
 from lib.agamemnon import journal as agamemnon_journal
 from lib.agamemnon import undo as agamemnon_undo
 from lib.agamemnon import wiring as agamemnon_wiring
 from lib.config import LISTENER, STATE_DIR, TALOS_DIR, WORKSPACE, TalosError, claude_bin, log, settings
 from lib.dispatcher import Dispatcher, lease_file
+from lib.events import setup as events_setup
+from lib.events import store as event_store
 from lib.ideas import setup as ideas_setup
 from lib.orchestrator import github as orchestrator_github
 from lib.orchestrator import setup as orchestrator_setup
@@ -30,11 +33,25 @@ from lib.registry import load_agents
 from lib.pool import LeaseFile
 from lib.tracker import Tracker
 
+import filelock  # noqa: E402
 import testenv  # noqa: E402  (installer/, put on the path by lib.registry: the p4m test containers the gc removes)
 
 
+RUN_LOCK = "talos-run.lock"
+
+
 def cmd_run(args):
-    """Listen for every enabled agent until stopped."""
+    """Listen for every enabled agent until stopped; one `talos run` per workspace, --dry-run included."""
+    lock = STATE_DIR / RUN_LOCK
+    with contextlib.ExitStack() as stack:
+        try:
+            stack.enter_context(filelock.held(lock, wait_seconds=0))
+        except filelock.LockTimeout:
+            raise TalosError(f"Talos is already running ({filelock.describe_holder(lock)}); stop it first")
+        return _run(args)
+
+
+def _run(args):
     cfg = settings()
     claude = claude_bin(cfg.get("claudeBin"))
     agents = load_agents(args.agent)
@@ -48,7 +65,7 @@ def cmd_run(args):
     except Exception as e:              # housekeeping never keeps Talos from starting
         log(f"gc failed: {e}")
     log(f"starting with {len(agents)} agent(s): {', '.join(a.name for a in agents)}; claude {claude}")
-    dispatchers, orchestrators = [], []
+    dispatchers, orchestrators, event_workers = [], [], []
     merge_routes = orchestrator_setup.merge_routes(agents)     # worker -> its orchestrator's automatic merges
     for agent in agents:
         if agent.kind == "ideas":
@@ -60,6 +77,12 @@ def cmd_run(args):
             except Exception as e:      # one agent's setup never keeps the others from running
                 log(f"not started: {e}", agent.name)
             continue
+        if agent.kind == "events":
+            try:
+                event_workers.append(events_setup.start(agent, cfg, claude, dry_run=args.dry_run))
+            except Exception as e:      # one agent's setup never keeps the others from running
+                log(f"not started: {e}", agent.name)
+            continue
         if agent.kind == "orchestrator":
             try:
                 orchestrators.append(orchestrator_setup.start(agent, cfg, args.dry_run, claude))
@@ -67,13 +90,26 @@ def cmd_run(args):
                 log(f"not started: {e}", agent.name)
             continue
         tracker = Tracker(agent)
+        try:
+            refresh_spec = agent_spec.follow(agent, tracker.agent_spec)
+        except TalosError as e:         # one agent's setup never keeps the others from running
+            log(f"not started: {e}", agent.name)
+            continue
         dispatcher = Dispatcher(agent, tracker, claude, dry_run=args.dry_run,
                                 mcp=mcp_config(STATE_DIR / agent.name / "mcp.json"),
                                 collector=lambda issue: gc_workspaces(only=issue),
-                                merge_route=merge_routes.get(agent.name))
+                                merge_route=merge_routes.get(agent.name), refresh_spec=refresh_spec)
         dispatcher.recover_interrupted()
         dispatcher.start()
         dispatchers.append(dispatcher)
+        if agent.dispatch == "workflow":    # Gaia's workflows say what to run: no assignments, only Run agent steps
+            steps = workflow_steps.StepRunner(agent, tracker, dispatcher, dry_run=args.dry_run)
+            steps.recover_interrupted()
+            steps.start()
+            Listener(agent, tracker, [policy.STATUS_EVENT], steps.on_event, steps.reconcile, cfg["hermesUrl"],
+                     cfg.get("nodeBin", "node"), cfg.get("reconnectSeconds", 10),
+                     extra_intents=workflow_steps.intents(dispatcher.user_id)).start()
+            continue
         Listener(agent, tracker, [policy.ASSIGNEE_EVENT, policy.STATUS_EVENT], dispatcher.on_event, dispatcher.reconcile,
                  cfg["hermesUrl"], cfg.get("nodeBin", "node"), cfg.get("reconnectSeconds", 10)).start()
     try:
@@ -84,6 +120,8 @@ def cmd_run(args):
             dispatcher.stop()
         for orchestrator in orchestrators:
             orchestrator.stop()
+        for worker in event_workers:
+            worker.stop()
         log("stopped")
     return 0
 
@@ -121,10 +159,25 @@ def cmd_dispatch(args):
     db.import_legacy()
     tracker = Tracker(agent)
     dispatcher = Dispatcher(agent, tracker, claude_bin(cfg.get("claudeBin")), dry_run=args.dry_run,
-                            mcp=mcp_config(STATE_DIR / agent.name / "mcp.json"))
+                            mcp=mcp_config(STATE_DIR / agent.name / "mcp.json"),
+                            refresh_spec=agent_spec.follow(agent, tracker.agent_spec))
     outcome = dispatcher.handle(args.issue)
     print(outcome or "skipped")
     return 0
+
+
+def _print_docker():
+    """One line: Docker's verdict, memory used/total and the p4m test containers. Thresholds come from the first
+    agent that loads (agent.json `docker`), else the defaults."""
+    high, low = docker_state.DEFAULT_HIGH, docker_state.DEFAULT_OK
+    try:
+        agent = next(iter(load_agents()), None)
+    except (TalosError, OSError):
+        agent = None
+    if agent:
+        high, low = agent.docker_memory_high_percent, agent.docker_memory_ok_percent
+    state = docker_state.read()
+    print(docker_state.status_line(state, docker_state.verdict(state, high, low)))
 
 
 def cmd_status(args):
@@ -138,6 +191,7 @@ def cmd_status(args):
         print(f"RUNNING  {r['agent']} idea {r['issue']} \"{r.get('summary') or ''}\"  on {r.get('model')}"
               f"  since {r.get('started_at') or '?'}")
         _print_live(runner.transcript(r.get("session_id")), args.steps)
+    _print_docker()
     print_in_flight = len(running)
     if print_in_flight > 1:
         print(f"{print_in_flight} runs in flight:")
@@ -160,6 +214,7 @@ def cmd_status(args):
             print(f"  held  #{n}  waits for #{h['blocker']} ({h.get('repo') or '-'}): {', '.join(files[:3])}"
                   + (f" +{len(files) - 3} more" if len(files) > 3 else "") + f"  since {h.get('held_at') or '?'}")
     _print_incidents()
+    _print_event_runs()
     for (agent, issue), entry in sorted(entries.items()):
         if entry.get("pending_status"):
             print(f"PENDING HANDBACK  {agent} #{issue}  status '{entry['pending_status']}', assign "
@@ -172,6 +227,22 @@ def cmd_status(args):
             print(f"  {agent} #{issue}  runs {entry.get('runs') or 0}  last model {entry.get('last_model') or '-'}"
                   f"  last ended {entry.get('last_ended_at') or '-'}" + ("  escalated" if entry.get("escalated") else ""))
     return 0
+
+
+def _print_event_runs(limit=10):
+    """Events agents' latest runs: queued, running, done or failed (with why), newest first."""
+    rows = event_store.recent(limit)
+    if not rows:
+        return
+    print("EVENT RUNS (latest first)")
+    for r in rows:
+        at = r.get("ended_at") or r.get("started_at") or r.get("received_at") or "?"
+        line = f"  {r['agent']}  {r['event']} {r['resource_id']}  {r['status']}  {at}"
+        if r.get("summary"):
+            line += f"  {r['summary'][:160]}"
+        print(line)
+        if r["status"] == event_store.FAILED and r.get("detail"):
+            print(f"    {r['detail'][:300]}")
 
 
 def _print_incidents():
@@ -336,17 +407,20 @@ def cmd_gc(args):
 def cmd_agents(args):
     """List the registry, with each agent's Gaia identity and projects resolved."""
     for agent in load_agents(args.agent):
-        line = {"name": agent.name, "role": agent.role, "enabled": agent.enabled,
-                "models": {"default": agent.model_default, "byComplexity": agent.model_by_complexity,
-                           "escalate": agent.model_escalate},
-                "maxIterations": agent.max_iterations,
-                "statuses": sorted(agent.actions), "permissionMode": agent.permission_mode}
+        line = {"name": agent.name, "role": agent.role, "enabled": agent.enabled}
         try:
             tracker = Tracker(agent)
+            if agent.gaia_agent:        # its models and limits as Gaia sets them now
+                line["gaiaAgent"] = agent.gaia_agent
+                agent_spec.follow(agent, tracker.agent_spec)
             line["gaiaUser"] = tracker.user_id()
             line["projects"] = tracker.project_ids()
         except TalosError as e:
             line["error"] = str(e)
+        line.update(models={"default": agent.model_default, "byComplexity": agent.model_by_complexity,
+                            "escalate": agent.model_escalate},
+                    maxIterations=agent.max_iterations,
+                    statuses=sorted(agent.actions), permissionMode=agent.permission_mode, dispatch=agent.dispatch)
         print(json.dumps(line, indent=2))
     return 0
 

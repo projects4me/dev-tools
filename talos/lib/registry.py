@@ -95,8 +95,10 @@ class Agent:
     max_turns: int = 0                  # turns per run before Claude stops and the issue goes back (0 = no limit)
     limit_comment_hours: float = 1.0    # comment on the issue when a Claude usage-limit pause lasts longer than this
     kind: str = "issues"                # "issues": works assigned issues; "ideas": brainstorms ideas (Gaia, or the sim);
-                                        # "orchestrator": assigns issues to another agent (no Claude runs)
+                                        # "orchestrator": assigns issues to another agent (no Claude runs);
+                                        # "events": runs once per Hermes event (triggers)
     events: list = field(default_factory=list)       # event names to subscribe to (kind ideas)
+    triggers: dict = field(default_factory=dict)     # event name -> prompt template (kind events)
     builtin_tools: str = ""             # `claude --tools`: the built-in tools loaded at all (empty = all)
     denied_tools: list = field(default_factory=list)  # `--disallowedTools`
     limits_by_model: dict = field(default_factory=dict)  # model -> {"maxTurns", "maxBudgetUsd"} for that model's runs
@@ -111,8 +113,17 @@ class Agent:
     max_parallel_by_model: dict = field(default_factory=lambda: {"opus": 1})   # model -> runs at once
     test_slots: int = 0                 # test slots to lease per run (0 = max_parallel; at most TEST_SLOTS in p4m.env)
     runner: dict = field(default_factory=dict)       # where runs execute: {} / {"type": "local"} or a container (container.py)
+    dispatch: str = "status"            # "status": works issues assigned to it by their status (actions);
+                                        # "workflow": runs the Run agent steps Gaia's workflows send it (workflow_steps.py)
     extra: dict = field(default_factory=dict)
     orchestration: Orchestration = None     # kind orchestrator only
+    gaia_agent: str = ""                # the Gaia agent (name, email or id) whose spec sets the role prompt, model
+                                        # and limits (agent_spec.py); "" = they come from agent.json
+    docker_memory_high_percent: float = 85   # Docker memory used/total (%) at or above which Docker is pressured
+    docker_memory_ok_percent: float = 70     # once pressured, Docker is ok again only below this (%)
+    docker_start_command: list = None        # argv that starts the Docker engine (docker_engine.py); None = default
+    docker_restart_command: list = None      # argv that restarts it; None = default
+    docker_start_timeout_seconds: float = 180   # how long a start/restart waits for the daemon to answer
 
     def action_for(self, status):
         return self.actions.get(status)
@@ -122,9 +133,34 @@ class Agent:
 
 
 REQUIRED = ("name", "gaiaEnv", "projects", "acceptAssignmentsFrom", "handoffTo", "actions", "model", "rolePrompt")
+FROM_GAIA = ("model", "rolePrompt")     # set by the Gaia agentspec when gaiaAgent is given
 REQUIRED_ORCHESTRATOR = ("name", "gaiaEnv", "worker")
-KINDS = ("issues", "ideas", "orchestrator")
+REQUIRED_EVENTS = ("name", "gaiaEnv", "projects", "triggers", "model", "rolePrompt")
+KINDS = ("issues", "ideas", "orchestrator", "events")
 RUNNERS = ("local", "container")
+DISPATCH = ("status", "workflow")
+
+
+def _argv(docker, key):
+    """agent.json `docker.<key>`: a non-empty list of strings (run without a shell), or None when not set."""
+    value = docker.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, list) or not value or not all(isinstance(a, str) and a for a in value):
+        raise TalosError(f"agent.json docker.{key} must be a list of arguments, e.g. "
+                         f'["sudo", "-n", "systemctl", "restart", "docker"]')
+    return list(value)
+
+
+def docker_settings(raw):
+    """agent.json `docker: {"memoryHighPercent": 85, "memoryOkPercent": 70, "startCommand": [...],
+    "restartCommand": [...], "startTimeoutSeconds": 180}` -> the Agent fields."""
+    docker = raw.get("docker") or {}
+    return {"docker_memory_high_percent": float(docker.get("memoryHighPercent", 85)),
+            "docker_memory_ok_percent": float(docker.get("memoryOkPercent", 70)),
+            "docker_start_command": _argv(docker, "startCommand"),
+            "docker_restart_command": _argv(docker, "restartCommand"),
+            "docker_start_timeout_seconds": float(docker.get("startTimeoutSeconds", 180))}
 
 
 def load_agent(folder):
@@ -137,17 +173,29 @@ def load_agent(folder):
     if local.exists():
         with open(local, encoding="utf-8") as f:
             raw.update(json.load(f))
+    gaia_agent = str(raw.get("gaiaAgent") or "").strip()
+    if gaia_agent and raw.get("kind", "issues") != "issues":
+        raise TalosError(f"{path}: gaiaAgent is supported for issues agents only")
     if raw.get("kind") == "orchestrator":
         return _load_orchestrator(path, raw)
-    missing = [k for k in REQUIRED if k not in raw]
+    if raw.get("kind") == "events":
+        return _load_events(folder, path, raw)
+    missing = [k for k in REQUIRED if k not in raw and not (gaia_agent and k in FROM_GAIA)]
     if missing:
         raise TalosError(f"{path}: missing {', '.join(missing)}")
     if not raw["acceptAssignmentsFrom"] or not raw["handoffTo"]:
         raise TalosError(f"{folder.name}: no reviewer configured (acceptAssignmentsFrom/handoffTo); "
                          f"run `dev-tools/installer/p4m configure`, which writes {local.name}")
-    role_file = folder / raw["rolePrompt"]
-    if not role_file.exists():
-        raise TalosError(f"{path}: rolePrompt {role_file.name} not found")
+    if gaia_agent:
+        both = [k for k in FROM_GAIA if k in raw]
+        if both:
+            raise TalosError(f"{path}: gaiaAgent takes {', '.join(both)} from Gaia; remove them from agent.json")
+        role_prompt, model = "", {"default": ""}     # filled from the spec before the agent starts
+    else:
+        role_file = folder / raw["rolePrompt"]
+        if not role_file.exists():
+            raise TalosError(f"{path}: rolePrompt {role_file.name} not found")
+        role_prompt, model = role_file.read_text(encoding="utf-8"), raw["model"]
     env_file = LOCAL_DIR / raw["gaiaEnv"]
     if not env_file.exists():
         raise TalosError(f"{path}: gaiaEnv {env_file} not found")
@@ -162,6 +210,9 @@ def load_agent(folder):
     kind = raw.get("kind", "issues")
     if kind not in KINDS:
         raise TalosError(f"{path}: kind must be one of {', '.join(KINDS)}")
+    dispatch = raw.get("dispatch", "status")
+    if dispatch not in DISPATCH:
+        raise TalosError(f"{path}: dispatch must be one of {', '.join(DISPATCH)}")
     test_slots = int(raw.get("testSlots", 0))
     if test_slots > 0:
         try:
@@ -185,13 +236,13 @@ def load_agent(folder):
         actions=actions,
         statuses={"needs_input": "feedback", "blocked": "pending", "failed": "pending", "limit": "pending",
                   **raw.get("handoffStatuses", {})},
-        model_default=raw["model"]["default"],
-        model_escalate=raw["model"].get("escalate", raw["model"]["default"]),
-        model_by_complexity=raw["model"].get("byComplexity", {}),
+        model_default=model["default"],
+        model_escalate=model.get("escalate", model["default"]),
+        model_by_complexity=model.get("byComplexity", {}),
         permission_mode=raw.get("permissionMode", "dontAsk"),
         allowed_tools=raw.get("allowedTools", []),
         max_iterations=int(raw.get("maxIterations", 10)),
-        role_prompt=role_file.read_text(encoding="utf-8"),
+        role_prompt=role_prompt,
         reviewer_name=raw.get("reviewerName") or "your reviewer",
         enabled=raw.get("enabled", True),
         pickup_status=raw.get("pickupStatus"),
@@ -215,7 +266,10 @@ def load_agent(folder):
         max_parallel_by_model={str(k): int(v) for k, v in raw.get("maxParallelByModel", {"opus": 1}).items()},
         test_slots=test_slots,
         runner=dict(runner),
+        dispatch=dispatch,
         extra={k: raw[k] for k in ("knowledgeMap", "ideaSource") if k in raw},
+        gaia_agent=gaia_agent,
+        **docker_settings(raw),
     )
 
 
@@ -303,6 +357,47 @@ def _load_orchestrator(path, raw):
         statuses={}, model_default="", model_escalate="", model_by_complexity={}, permission_mode="",
         allowed_tools=[], max_iterations=0, role_prompt="", enabled=raw.get("enabled", True),
         kind="orchestrator", orchestration=orchestration)
+
+
+def _load_events(folder, path, raw):
+    """An events agent: a Gaia identity, its projects, and a prompt per trigger event; it claims no issues, so it
+    has no actions, acceptAssignmentsFrom or handoffTo."""
+    missing = [k for k in REQUIRED_EVENTS if k not in raw]
+    if missing:
+        raise TalosError(f"{path}: missing {', '.join(missing)}")
+    projects = raw["projects"]
+    if not isinstance(projects, dict) or not projects:
+        raise TalosError(f"{path}: projects must map at least one project name to its repo folder")
+    triggers = raw["triggers"]
+    if not isinstance(triggers, dict) or not triggers:
+        raise TalosError(f"{path}: triggers must map at least one event name to {{\"prompt\": ...}}")
+    prompts = {}
+    for name, trigger in triggers.items():
+        prompt = trigger.get("prompt") if isinstance(trigger, dict) else None
+        if not isinstance(prompt, str) or not prompt.strip():
+            raise TalosError(f"{path}: trigger {name} needs a prompt")
+        prompts[str(name)] = prompt
+    role_file = folder / raw["rolePrompt"]
+    if not role_file.exists():
+        raise TalosError(f"{path}: rolePrompt {role_file.name} not found")
+    env_file = LOCAL_DIR / raw["gaiaEnv"]
+    if not env_file.exists():
+        raise TalosError(f"{path}: gaiaEnv {env_file} not found")
+    reserved = [k for k in raw.get("env", {}) if str(k).upper().startswith("GAIA_")]
+    if reserved:
+        raise TalosError(f"{path}: env may not set {', '.join(reserved)} (the agent's credentials come from gaiaEnv)")
+    model = raw["model"]
+    return Agent(
+        name=raw["name"], display_name=raw.get("displayName", raw["name"]), role=raw.get("role", ""),
+        gaia_env=str(env_file), projects=projects, accept_from=[], handoff_to="", milestones=[], actions={},
+        statuses={}, model_default=model["default"], model_escalate=model.get("escalate", model["default"]),
+        model_by_complexity={}, permission_mode=raw.get("permissionMode", "dontAsk"),
+        allowed_tools=raw.get("allowedTools", []), max_iterations=0, role_prompt=role_file.read_text(encoding="utf-8"),
+        reviewer_name=raw.get("reviewerName") or "your reviewer", enabled=raw.get("enabled", True),
+        max_turns=int(raw.get("maxTurns", 0)), kind="events", triggers=prompts,
+        builtin_tools=raw.get("builtinTools", ""), denied_tools=list(raw.get("deniedTools", [])),
+        limits_by_model=dict(raw.get("limitsByModel", {})),
+        env={str(k): str(v) for k, v in raw.get("env", {}).items()})
 
 
 def load_agents(only=None):

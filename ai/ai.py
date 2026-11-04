@@ -10,8 +10,8 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 from lib.common import AiError, REPOS  # noqa: E402
-from lib import (apitester, coderabbit, context, cost, doctor, kb, mergegate, rabbitdigest, review, ship,  # noqa: E402
-                 tests, workflow)
+from lib import (apitester, coderabbit, context, cost, designreview, doctor, kb, mergegate, rabbitdigest,  # noqa: E402
+                 review, ship, tests, workflow)
 
 
 def build_parser():
@@ -145,8 +145,14 @@ def build_parser():
     sp.add_argument("--wait", action="store_true", help="poll every 30 s until the state is not pending")
     sp.add_argument("--timeout", type=float, default=10, help="minutes to wait with --wait (default 10)")
 
-    sp = add("mergecheck", mergegate.cmd_mergecheck, "the merge gate for an agent PR's head commit: CodeRabbit clean, "
-             "CI green, tests recorded, mergeable, nothing from people, no do-not-merge (ok/fail/pending, exit 0/1/2)")
+    sp = add("design-review", designreview.cmd_design_review, "run the design-reviewer headless on the repo's "
+             "change and record its verdict for this tree; ai ship writes the design-review line from it "
+             "(exit 0 clean, 1 not)")
+    sp.add_argument("repo", choices=repos)
+
+    sp = add("mergecheck", mergegate.cmd_mergecheck, "the merge gate for an agent PR's head commit: CodeRabbit "
+             "(or, for mergeReviewers, the recorded design review) clean, CI green, tests recorded, mergeable, "
+             "nothing from people, no do-not-merge (ok/fail/pending, exit 0/1/2)")
     sp.add_argument("repo", choices=repos)
     sp.add_argument("pr", type=int)
     sp.add_argument("--json", action="store_true")

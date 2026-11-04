@@ -7,6 +7,7 @@
   "prFooter": "🤖 Generated with [Claude Code](https://claude.com/claude-code)",
   "codeRabbitRepos": ["gaia", "prometheus", "hermes"],
   "codeRabbitTrigger": "@coderabbitai full review",
+  "mergeReviewers": {"dev-tools": "design-review"},
   "agamemnonProtected": [
     "talos/agents/agamemnon/**",
     "talos/lib/orchestrator/**",
