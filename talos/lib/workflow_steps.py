@@ -3,7 +3,8 @@ agent's own user), Talos claims the step, runs Claude on the step's issue with t
 and the agent's spec, and reports the outcome. The workflow, not Talos, then decides what happens to the issue.
 
 The run itself is the dispatcher's (workspace, test slot, escalation, fresh ship session, CodeRabbit loop); only the
-five outcomes Gaia knows leave Talos (see report)."""
+five outcomes Gaia knows leave Talos (see report). A step on any other record (a milestone, ...) is a record run
+(record_runs.py): a scratch folder instead of a repo, and none of the issue flow."""
 
 import dataclasses
 import html
@@ -11,7 +12,7 @@ import queue
 import threading
 import time
 
-from . import policy
+from . import policy, record_runs
 from .config import TalosError, log
 
 STEP_EVENT = "workflow.agent.run.requested"
@@ -159,10 +160,10 @@ class StepRunner:
         if step.get("status") != PENDING or str(step.get("actorUserId") or "") != self.user_id:
             log(f"step {sid} skipped: {step.get('status')}, for user {step.get('actorUserId')}", self.agent.name)
             return None
-        issue, repo, refusal = self._subject(step)
+        issue, repo, record, refusal = self._subject(step)
         if self.dry_run:
-            log(f"step {sid} dry run, would claim and run" + (f" #{issue['number']} in {repo}" if issue else
-                                                               f" nothing: {refusal}"), self.agent.name)
+            what = f"#{issue['number']} in {repo}" if issue else record.key if record else f"nothing: {refusal}"
+            log(f"step {sid} dry run, would claim and run {what}", self.agent.name)
             return None
         try:
             self.tracker.claim_step(sid)
@@ -176,14 +177,27 @@ class StepRunner:
         except TalosError as e:
             return self._report(sid, "failed", f"<p>Talos could not read the agent spec: {html.escape(str(e))}</p>")
         run = StepRun(sid, with_spec(self.agent, spec), max_turns=int(step.get("maxTurns") or 0))
-        number = issue["number"]
-        while not self.dispatcher.reserve(number):
+        prompt, resume, model = str(step.get("prompt") or ""), step.get("session") == "resume", step.get("model")
+        if record:
+            try:
+                record = record_runs.read(self.tracker, record.type, record.id)
+            except TalosError as e:
+                return self._report(sid, "failed", f"<p>Talos could not read the step's {html.escape(record.type)}: "
+                                                   f"{html.escape(str(e))}</p>")
+            return self._run(sid, step, run, record.key, f"{record.key} in a scratch folder",
+                             lambda: self.dispatcher.run_record(record, prompt, resume, model, run))
+        return self._run(sid, step, run, issue["number"], f"#{issue['number']} in {repo}",
+                         lambda: self.dispatcher.run_step(issue, repo, prompt, resume, model, run))
+
+    def _run(self, sid, step, run, key, what, attempt):
+        """Run the step once its subject (issue number or record key) is free, again after a usage limit, and
+        report it."""
+        while not self.dispatcher.reserve(key):
             time.sleep(BUSY_POLL_SECONDS)       # e.g. a CodeRabbit round on the issue: the step runs after it
         try:
-            log(f"step {sid} runs #{number} in {repo} (session {step.get('session') or 'new'})", self.agent.name)
+            log(f"step {sid} runs {what} (session {step.get('session') or 'new'})", self.agent.name)
             while True:
-                dispatched = self.dispatcher.run_step(issue, repo, str(step.get("prompt") or ""),
-                                                      step.get("session") == "resume", step.get("model"), run)
+                dispatched = attempt()
                 if dispatched != policy.LIMITED:
                     break
                 if not self.dispatcher.wait_for_usage():    # a usage limit: the same step runs again once it is over
@@ -191,23 +205,27 @@ class StepRunner:
         except Exception as e:      # broke inside Talos: report it now rather than leave the step to time out
             return self._report(sid, "failed", f"<p>The run failed in Talos: {html.escape(str(e))}</p>")
         finally:
-            self.dispatcher.release(number)
+            self.dispatcher.release(key)
         return self._report(sid, *report(dispatched, run))
 
     def _subject(self, step):
-        """(issue, repo, None) for a step on an issue in one of the agent's projects, else (None, None, why not)."""
-        if step.get("entityType") != ISSUE_ENTITY or not step.get("entityId"):
-            return None, None, (f"Talos runs agents on issues only; this step is about "
-                                f"{step.get('entityType') or 'no record'}.")
+        """What the step is about: (issue, repo, None, None) for an issue in one of the agent's projects, (None, None,
+        Record, None) for any other record (its details are read once the step is claimed), else (None, None, None,
+        why not)."""
+        entity_type, entity_id = str(step.get("entityType") or ""), str(step.get("entityId") or "")
+        if not entity_type or not entity_id:
+            return None, None, None, "This step names no record to run the agent on."
+        if entity_type != ISSUE_ENTITY:
+            return None, None, record_runs.Record(entity_type, entity_id), None
         try:
-            issue = self.tracker.issue_by_id(str(step["entityId"]))
+            issue = self.tracker.issue_by_id(entity_id)
         except TalosError as e:
-            return None, None, f"Talos could not read the step's issue: {e}"
+            return None, None, None, f"Talos could not read the step's issue: {e}"
         repo = self.agent.repo_for(issue.get("project"))
         if not repo:
-            return None, None, (f"Issue #{issue['number']} is in {issue.get('project')}, which is not one of "
-                                f"{self.agent.display_name}'s projects.")
-        return issue, repo, None
+            return None, None, None, (f"Issue #{issue['number']} is in {issue.get('project')}, which is not one of "
+                                      f"{self.agent.display_name}'s projects.")
+        return issue, repo, None, None
 
     def _report(self, sid, outcome, comment):
         try:

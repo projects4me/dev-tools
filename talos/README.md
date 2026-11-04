@@ -209,8 +209,8 @@ node records a step for the agent and publishes `workflow.agent.run.requested` t
    drives gc and hand-off retries). On every (re)connect it queues the agent's `pending` steps; on start it reports
    steps it had `claimed` before a restart as `failed`.
 2. **Claim.** It reads the step (`GET workflowactorstep/{id}`) and claims it (`PATCH status: claimed`); a step that
-   is not pending, or not the agent's, is skipped. A step not about an issue in one of the agent's `projects` is
-   claimed and reported `failed`.
+   is not pending, or not the agent's, is skipped. A step on an issue outside the agent's `projects`, or naming no
+   record, is claimed and reported `failed`. A step on any other record is a [record run](#record-runs).
 3. **Spec.** It reads the agent spec (`GET agentspec/{agentId}`). Where the spec sets them, its role prompt,
    `maxTurns`, `maxRunsPerIssue` (the iteration cap) and `permissionMode` replace `agent.json`'s; its tool grants
    are added to `allowedTools` (`mcp__<server>` or `mcp__<server>__<tool>` for MCP grants, the permission rule or
@@ -225,6 +225,27 @@ node records a step for the agent and publishes `workflow.agent.run.requested` t
    `limit`. Talos sets no status and assignee and posts no hand-off comment: the comment goes on the report, and
    the workflow goes on by the outcome's port. A report Gaia refuses is logged; the step then times out to
    `failed`.
+
+### Record runs
+
+A Run agent step on a record that isn't an issue (`entityType` other than `issue`; first case a Retrospective agent
+started by "Milestone completed") gets none of the issue flow: no repo, workspace, branch, commit, PR, Gaia pack,
+ship session, CodeRabbit loop or test slot (`lib/record_runs.py`, `Dispatcher.run_record`). Record runs that change
+code are out of scope.
+
+- **Where.** Claude runs on this machine (also for an agent with a container `runner`) in a scratch folder,
+  `dev-tools/talos/state/records/<agent>/<type>-<id>/`, under the per-machine state. The runtime-copy hook guards it
+  as for any run.
+- **What.** The step's prompt, model (else the agent's `modelDefault`) and `maxTurns`, the agent spec as for an
+  issue step, and on a fresh session a short context block first: the record's type, id and project; for a
+  milestone also its name, status, dates and issues by status (gaia-mcp `get_milestone`). A milestone that can't be
+  read fails the step.
+- **Sessions** are kept per agent and record (`type:id`) in the `records` table, so `session: resume` resumes the
+  record's last session while its cache is warm. Two steps on one record run one after the other.
+- **Report.** `done` with the summary; `needs_input` and `blocked` with the comment; `escalate` is `needs_input`
+  (no rerun on a stronger model); `ready_to_ship` and `awaiting_bot_review` need a repo, so they are `failed`, as is
+  a run that breaks. A usage limit pauses the agent and runs the step again, as for an issue step. Runs show in
+  `runs` with `status_at_start` `record`; the step's run count is not capped by `maxRunsPerIssue`.
 
 The default, `"dispatch": "status"`, is the assignment flow below. `talos dispatch` always works by status.
 
@@ -598,6 +619,8 @@ Readable by other tools while Talos runs (WAL mode), e.g. a future Projects4Me U
   transcript (main session; subagents are in the cost but not the token counts).
 - `ideas`: one row per ideas agent and idea: session to resume and its cumulative cost, the note for the next turn,
   the last engineer message a turn has taken in, `last_ended_at`.
+- `records`: one row per agent and record a workflow step ran on (`record` is `type:id`): session to resume, its
+  cumulative cost, `last_ended_at` (see [Record runs](#record-runs)).
 - `orchestrators` / `orchestrated`: per orchestrator, paused or not (and why), its failure streak and last sweep;
   the issues it assigned, to whom and when.
 - `aga_incidents` / `aga_actions` / `aga_holds`: Agamemnon's incidents (source, triage model, outcome and cost), its
@@ -624,6 +647,7 @@ The pre-SQLite `state/sessions.json` is imported when `talos run`/`dispatch` sta
 | `lib/policy.py` | pure decisions: which events count, whether to run, prompt filling, outcome parsing |
 | `lib/dispatcher.py` | per-agent queue; runs a job and applies the outcome to the tracker |
 | `lib/workflow_steps.py` | workflow Run agent steps: the user-scoped event, claim, the agent spec applied, run through the dispatcher, report |
+| `lib/record_runs.py` | Run agent steps on a record that isn't an issue: the record and its context block, the scratch folder, the per-record session, the outcome reported |
 | `lib/bot_review.py` | the CodeRabbit loop: waits kept in `bot_reviews`, the watcher that polls `ai rabbit` and runs `ai handoff` |
 | `lib/runner.py` | builds and runs the `claude -p` command, keeps its output; the `Runner` interface and `LocalRunner` |
 | `lib/container.py` + `container/` | `ContainerRunner`: the run in a container (`docker run` with the credentials by name); the image and its entrypoint |

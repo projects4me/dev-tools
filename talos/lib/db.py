@@ -68,6 +68,14 @@ CREATE TABLE IF NOT EXISTS ideas (
     last_ended_at       TEXT,
     PRIMARY KEY (agent, idea)
 );
+CREATE TABLE IF NOT EXISTS records (       -- workflow step runs on a record that isn't an issue (record_runs.py)
+    agent               TEXT    NOT NULL,
+    record              TEXT    NOT NULL,   -- type:id, e.g. milestone:<id>
+    session_id          TEXT,               -- Claude session to resume
+    session_cost_usd    REAL    DEFAULT 0,  -- that session's cumulative cost as Claude reports it
+    last_ended_at       TEXT,               -- end of the latest run (decides warm vs cold resume)
+    PRIMARY KEY (agent, record)
+);
 CREATE TABLE IF NOT EXISTS bot_reviews (
     agent               TEXT    NOT NULL,
     issue               INTEGER NOT NULL,
