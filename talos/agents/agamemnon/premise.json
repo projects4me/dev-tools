@@ -32,8 +32,12 @@
       "generatedFiles": []
     },
     "docker_down": {
-      "tiers": ["read", "pause", "notify"],
-      "does": "detect, pause dispatch and notify the owner; starting Docker is not in the premise"
+      "tiers": ["read", "engine", "wait", "retry", "notify"],
+      "does": "start the engine; restart only if it stays unresponsive and nothing else is running; then retry"
+    },
+    "docker_pressure": {
+      "tiers": ["read", "free", "wait", "retry", "notify"],
+      "does": "stop stale containers; if still short, hold-until-docker; then retry"
     },
     "handback_failed": {
       "tiers": ["read", "retry"],

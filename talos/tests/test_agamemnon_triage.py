@@ -135,6 +135,24 @@ class TriageTest(unittest.TestCase):
         self.triage().offer(5, triage.HANDBACK, "blocked", "", since=NOW)
         self.assertEqual(journal.incidents(issue=5)[0]["type"], "docker_down")
 
+    def test_the_packet_carries_docker_state_and_verdict(self):
+        state = {"daemon": True, "memTotal": 100, "memUsed": 95, "containers": []}
+        t = self.triage()
+        t.docker = lambda: {"verdict": "pressured", "state": state}
+        self.log_file = self.tmp / "run.json"
+        self.log_file.write_text(json.dumps({"session_id": "x", "result": "npm run build\nKilled"}), encoding="utf-8")
+        t.offer(5, triage.HANDBACK, "run_error", "", since=NOW)
+        text = self.launched[0][0]
+        self.assertIn("type `docker_pressure`", text)
+        self.assertIn('"verdict": "pressured"', text)
+        self.assertIn('"memUsed": 95', text)
+
+    def test_a_docker_read_that_fails_leaves_the_packet_without_it(self):
+        t = self.triage()
+        t.docker = mock.Mock(side_effect=OSError("boom"))
+        t.offer(6, triage.MERGE, None, "CI failed again after one re-run: build")
+        self.assertIn('"docker": null', self.launched[0][0])
+
     def test_the_same_type_on_the_same_issue_again_goes_to_the_owner(self):
         self.triage().offer(6, triage.MERGE, None, "CI failed again after one re-run: build")
         decision = self.triage().offer(6, triage.MERGE, None, "CI failed again after one re-run: build")

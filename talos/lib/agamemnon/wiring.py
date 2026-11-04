@@ -114,6 +114,13 @@ def docker_ok(agent):
     return docker_state.verdict(state, agent.docker_memory_high_percent, agent.docker_memory_ok_percent) == docker_state.OK
 
 
+def docker_packet(agent):
+    """Docker's state with its verdict, for the triage packet."""
+    state = docker_state.read()
+    return {"verdict": docker_state.verdict(state, agent.docker_memory_high_percent, agent.docker_memory_ok_percent),
+            "state": state}
+
+
 def build(agent_name=AGENT):
     """(Settings, Ports) for the orchestrator agent."""
     agent = load_agents(agent_name)[0]

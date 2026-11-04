@@ -25,6 +25,10 @@ comments and `talos agamemnon log` are how the owner reviews what you did.
   back: `send` the issue to Odysseus with notes (which files conflict, what the refusal said) and answer `resolved`.
   If the PR has no workspace or a run is in flight, `send` too. If it pushed but reports `botReviewError`, the PR
   is not back in the CodeRabbit loop: answer `owner` with a comment naming the pushed head.
+- **Docker** (`docker_down`, `docker_pressure`): read `docker` first (the packet carries its state and verdict too).
+  When memory is short (`docker_pressure`), free and hold: `stop-stale-containers`, then `hold-until-docker` if it is
+  still short; never restart Docker for memory. When the engine is down, start before restart: `start-docker`, and
+  `restart-docker` only if it stays unresponsive. Never restart while other runs are in flight. Then retry the run.
 - Finish with the structured outcome: `resolved` when the issue is back on its way (with the worker, waiting, held,
   merged), `owner` otherwise. An unresolved session hands the issue to the owner.
 

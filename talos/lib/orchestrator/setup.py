@@ -60,7 +60,8 @@ def _triage(agent, worker, tracker, me, owners, claude, dry_run):
         raise TalosError("agaTriage needs the claude binary (claudeBin in talos/config.json)")
     triage = Triage(agent, tracker, me, owners, premise.load(),
                     launcher(claude, agent.name, agent.orchestration, WORKSPACE, runner.run),
-                    run_log=wiring.run_log(worker.name), in_flight=wiring.in_flight(worker.name), dry_run=dry_run)
+                    run_log=wiring.run_log(worker.name), in_flight=wiring.in_flight(worker.name), dry_run=dry_run,
+                    docker=lambda: wiring.docker_packet(agent))
     if not dry_run:
         triage.recover()
     return triage
