@@ -14,7 +14,7 @@ import time
 import urllib.request
 from datetime import datetime
 
-from lib import agent_spec, container, db, policy, runner, sessions, workflow_steps, workspace_gc, workspaces
+from lib import agent_spec, container, db, docker_state, policy, runner, sessions, workflow_steps, workspace_gc, workspaces
 from lib import runs as run_log
 from lib.agamemnon import journal as agamemnon_journal
 from lib.agamemnon import undo as agamemnon_undo
@@ -166,6 +166,20 @@ def cmd_dispatch(args):
     return 0
 
 
+def _print_docker():
+    """One line: Docker's verdict, memory used/total and the p4m test containers. Thresholds come from the first
+    agent that loads (agent.json `docker`), else the defaults."""
+    high, low = docker_state.DEFAULT_HIGH, docker_state.DEFAULT_OK
+    try:
+        agent = next(iter(load_agents()), None)
+    except (TalosError, OSError):
+        agent = None
+    if agent:
+        high, low = agent.docker_memory_high_percent, agent.docker_memory_ok_percent
+    state = docker_state.read()
+    print(docker_state.status_line(state, docker_state.verdict(state, high, low)))
+
+
 def cmd_status(args):
     """What Talos is running now (with the live transcript's latest steps) and each issue's state."""
     entries = sessions.all_entries()
@@ -177,6 +191,7 @@ def cmd_status(args):
         print(f"RUNNING  {r['agent']} idea {r['issue']} \"{r.get('summary') or ''}\"  on {r.get('model')}"
               f"  since {r.get('started_at') or '?'}")
         _print_live(runner.transcript(r.get("session_id")), args.steps)
+    _print_docker()
     print_in_flight = len(running)
     if print_in_flight > 1:
         print(f"{print_in_flight} runs in flight:")
