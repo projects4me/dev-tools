@@ -127,6 +127,7 @@ class Agent:
     docker_stale_hours: float = 72           # a pressured Docker stops the test containers of issues unchanged this long
     docker_check_seconds: float = 30         # the dispatcher re-reads Docker at most this often
     docker_start_timeout_seconds: float = 180   # how long a start/restart waits for the daemon to answer
+    docker_hold_max_hours: float = 72        # `aga hold-until-docker` hands the issue to the owner after this
 
     def action_for(self, status):
         return self.actions.get(status)
@@ -166,7 +167,8 @@ def docker_settings(raw):
             "docker_auto_start": bool(docker.get("autoStart", True)),
             "docker_stale_hours": float(docker.get("staleHours", 72)),
             "docker_check_seconds": float(docker.get("checkSeconds", 30)),
-            "docker_start_timeout_seconds": float(docker.get("startTimeoutSeconds", 180))}
+            "docker_start_timeout_seconds": float(docker.get("startTimeoutSeconds", 180)),
+            "docker_hold_max_hours": float(docker.get("holdMaxHours", 72))}
 
 
 def load_agent(folder):

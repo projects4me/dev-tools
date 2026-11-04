@@ -8,7 +8,7 @@ import subprocess
 from datetime import datetime, timedelta
 
 from .. import bot_review as review_loop
-from .. import db, sessions, workspaces
+from .. import db, docker_engine, docker_free, docker_state, sessions, workspaces
 from ..ai_cli import run_ai
 from ..config import LOCAL_DIR, WORKSPACE, TalosError
 from ..orchestrator import github
@@ -102,6 +102,18 @@ def free_slot():
     return next((k for k in range(1, count + 1) if not filelock.is_held(locks / testslots.lock_name(k))), None)
 
 
+def stale_containers(agent, tracker):
+    """docker_free.plan for the worker's workspaces; OSError when Docker can't be asked."""
+    import testenv      # installer/, put on the path by lib.registry
+    return lambda: docker_free.plan(WORKSPACE, sessions.all_entries(), tracker, testenv, agent.docker_stale_hours)
+
+
+def docker_ok(agent):
+    """Whether Docker's verdict is ok now (the Docker holds' release condition)."""
+    state = docker_state.read()
+    return docker_state.verdict(state, agent.docker_memory_high_percent, agent.docker_memory_ok_percent) == docker_state.OK
+
+
 def build(agent_name=AGENT):
     """(Settings, Ports) for the orchestrator agent."""
     agent = load_agents(agent_name)[0]
@@ -113,10 +125,14 @@ def build(agent_name=AGENT):
     worker_id = Tracker(worker).user_id()
     settings = Settings(worker=worker, worker_id=worker_id, my_id=tracker.user_id(),
                         agent_name=agent.name, display_name=agent.display_name, orchestration=agent.orchestration,
-                        premise=premise.load(), workspace_root=WORKSPACE)
+                        premise=premise.load(), workspace_root=WORKSPACE,
+                        docker_thresholds=(agent.docker_memory_high_percent, agent.docker_memory_ok_percent),
+                        docker_hold_max_hours=agent.docker_hold_max_hours)
     ports = Ports(tracker=tracker, merger=Merger(tracker.child_env, github.agamemnon_gh), gh=github.agamemnon_gh,
                   git=git, push=push, worker_state=lambda issue: sessions.get(worker.name, issue),
                   run_log=run_log(worker.name), in_flight=in_flight(worker.name), free_slot=free_slot,
                   ody_git=ody_git, test_changed=test_changed, bot_review=bot_review(worker, worker_id, tracker),
-                  update_worker_state=lambda issue, **fields: sessions.update(worker.name, issue, **fields))
+                  update_worker_state=lambda issue, **fields: sessions.update(worker.name, issue, **fields),
+                  docker_read=docker_state.read, docker_engine=lambda action: docker_engine.for_agent(agent, action),
+                  stale_containers=stale_containers(agent, tracker), stop_containers=docker_free.stop)
     return settings, ports

@@ -85,11 +85,11 @@ class AgaTest(unittest.TestCase):
         self.merger = FakeMerger()
         self.gh_calls, self.pushes = [], []
         self.premise = premise.parse({
-            "tiers": {t: "" for t in ("read", "wait", "retry", "restore", "handoff", "update", "merge")},
+            "tiers": {t: "" for t in ("read", "wait", "retry", "restore", "handoff", "update", "merge", "engine", "free")},
             "incidents": {"ci_failed": {"tiers": ["read", "retry", "handoff"]},
                           "dirty_generated": {"tiers": ["read", "restore"], "generatedFiles": ["gen.txt"]},
                           "everything": {"tiers": ["read", "wait", "retry", "restore", "handoff", "update",
-                                                   "merge"]}}})
+                                                   "merge", "engine", "free"]}}})
         worker = SimpleNamespace(name="odysseus", display_name="Agent Odysseus", repo_for=lambda p: "gaia",
                                  dependency_done_statuses=("done", "closed"))
         self.orch = registry.Orchestration(worker="odysseus", auto_merge_milestones=("aga-v1",),

@@ -120,9 +120,12 @@ def mark_undone(action_id, at, note):
 
 # -- holds ---------------------------------------------------------------------------------
 
-def hold(issue, until, assignee):
-    _write("INSERT OR REPLACE INTO aga_holds (issue, until, assignee, released_at) VALUES (?, ?, ?, NULL)",
-           (int(issue), until, assignee))
+DOCKER = "docker"      # the condition of a hold that ends when Docker is ok (`until` is then the latest it may last)
+
+
+def hold(issue, until, assignee, condition=None):
+    _write("INSERT OR REPLACE INTO aga_holds (issue, until, assignee, condition, released_at) "
+           "VALUES (?, ?, ?, ?, NULL)", (int(issue), until, assignee, condition))
 
 
 def active_hold(issue):
@@ -131,8 +134,15 @@ def active_hold(issue):
 
 
 def due_holds(now):
-    """Holds whose time has come and that are not released yet."""
-    return _query("SELECT * FROM aga_holds WHERE released_at IS NULL AND until <= ? ORDER BY until", (now,))
+    """Time holds whose time has come and that are not released yet."""
+    return _query("SELECT * FROM aga_holds WHERE released_at IS NULL AND condition IS NULL AND until <= ? "
+                  "ORDER BY until", (now,))
+
+
+def docker_holds():
+    """The unreleased holds that wait for Docker, oldest first."""
+    return _query("SELECT * FROM aga_holds WHERE released_at IS NULL AND condition = ? ORDER BY until, issue",
+                  (DOCKER,))
 
 
 def release_hold(issue, at):

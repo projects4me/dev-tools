@@ -11,6 +11,12 @@ NEXT = {
     "rerun-ci": "waiting on the CI re-run; the merge gate is checked again when it finishes",
     "wait-for": "{wait}",
     "hold-until-tomorrow": "held by {me} until {until}, then given back to {worker}",
+    "hold-until-docker": "held by {me} until Docker is ok, then given back to {worker}; the owner gets it if Docker "
+                         "is not back by {until}",
+    "start-docker": "{docker}",
+    "restart-docker": "{docker}",
+    "stop-stale-containers": "the freed memory is available to the runs waiting for Docker; the next `ai test` of a "
+                             "stopped issue starts its containers again",
     "send": "waiting on {worker}, who has the notes above",
     "update-branch": "waiting on CI to run on the updated branch",
     "push-merge": "waiting on CI to run on the pushed merge",
@@ -26,7 +32,11 @@ def _next(verb, result, settings):
                 f"waited {result.get('seconds')}s for {result.get('waitedFor')} and it is still not ready; "
                 f"Agamemnon retries later or sends the issue to the owner")
         return NEXT[verb].format(wait=wait)
-    return NEXT[verb].format(worker=worker, me=me, until=result.get("heldUntil"))
+    docker = ("Docker answers again" + (f"; stack containers not running: {', '.join(result['stackMissing'])}"
+                                         if result.get("stackMissing") else "")
+              if result.get("ok") else f"Docker did not come back ({result.get('error') or 'no reason given'}); "
+                                       f"Agamemnon retries or sends the issue to the owner")
+    return NEXT[verb].format(worker=worker, me=me, until=result.get("heldUntil"), docker=docker)
 
 
 def _what(verb, args):
