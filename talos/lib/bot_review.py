@@ -5,6 +5,7 @@ A waiting issue holds no run slot: its record lives in the `bot_reviews` table, 
 Watcher polls `ai rabbit` for it in the background. Nothing about the loop is posted to the tracker.
 """
 
+import html
 import json
 import threading
 from datetime import datetime, timedelta
@@ -17,6 +18,7 @@ WAITING = "waiting"     # polling `ai rabbit` for the PR's head commit
 ROUND = "round"         # a bot-round run is queued or running
 
 HAND_OFF, RUN_ROUND, WAIT = "handoff", "round", "wait"
+UNREVIEWED = "unreviewed"   # `ai rabbit` for a mergeReviewers repo: the PR body records no clean design review
 
 
 def _now():
@@ -111,7 +113,8 @@ def next_step(state, rounds_done, cap, timed_out):
 # -- the ai commands ------------------------------------------------------------------------------
 
 def ai_rabbit(env, repo, pr):
-    """CodeRabbit's state for the PR head (one snapshot, no --wait): clean/findings/pending/paused/absent."""
+    """CodeRabbit's state for the PR head (one snapshot, no --wait): clean/findings/pending/paused/absent; for a
+    mergeReviewers repo the recorded design review's: clean/unreviewed."""
     r = run_ai(env, "rabbit", repo, str(pr), "--json")
     lines = (r.stdout or "").strip().splitlines()
     try:
@@ -223,11 +226,15 @@ class Watcher:
             return step
         why = ("round cap reached" if state == "findings" else "timed out" if state == "pending" else state)
         target = self.route(issue) if state == "clean" else None
+        if state == UNREVIEWED:     # explain first: once handed off, a failed comment could not be retried
+            self.tracker.comment(number, f"{self.agent.display_name}: no recorded design review",
+                                 f"<p>PR {record['pr']} in {html.escape(record['repo'])} records no clean design "
+                                 f"review, so it goes to the reviewer instead of Agent Agamemnon.</p>")
         if target:
             self.handoff(number, to=target[0])
         else:
             self.handoff(number)
         drop(name, number)
-        log(f"#{number} CodeRabbit {why} on PR {record['pr']} after {record['rounds']} round(s): handed to "
+        log(f"#{number} bot review {why} on PR {record['pr']} after {record['rounds']} round(s): handed to "
             f"{target[1] + ' to merge' if target else 'the reviewer'}", name)
         return step

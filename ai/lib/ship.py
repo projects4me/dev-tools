@@ -206,7 +206,7 @@ def cmd_ship(args):
     if not progress.get("pr"):
         progress["pr"] = existing_pr(repo, issue) or workflow.open_pr(repo, issue, spec["title"], body)
         save_progress(repo, issue, progress)
-    defer = args.defer_handoff and coderabbit.enabled(repo)
+    defer = args.defer_handoff and (coderabbit.enabled(repo) or mergereviewer.merge_reviewer(repo) is not None)
     if args.defer_handoff and not defer:
         say(f"CodeRabbit not enabled for {repo}: handing off now (in_review), nothing to wait for; "
             f"finish as done, not awaiting_bot_review")

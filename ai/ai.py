@@ -10,7 +10,7 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 from lib.common import AiError, REPOS  # noqa: E402
-from lib import (apitester, coderabbit, context, cost, designreview, doctor, kb, mergegate, rabbitdigest,  # noqa: E402
+from lib import (apitester, coderabbit, context, cost, designreview, doctor, kb, mergegate, mergereviewer, rabbitdigest,  # noqa: E402
                  review, ship, tests, workflow)
 
 
@@ -137,8 +137,8 @@ def build_parser():
     sp.add_argument("--open", action="store_true", help="only threads without an agent reply or with follow-ups")
     sp.add_argument("--raw", action="store_true", help="don't fold bot boilerplate (<details> blocks, walkthroughs)")
 
-    sp = add("rabbit", coderabbit.cmd_rabbit, "CodeRabbit's state for the PR head: clean/findings/pending/paused/absent "
-             "(exit 0/1/2/3/4)")
+    sp = add("rabbit", mergereviewer.cmd_rabbit, "CodeRabbit's state for the PR head: clean/findings/pending/paused/absent "
+             "(exit 0/1/2/3/4); for a mergeReviewers repo clean/unreviewed (exit 0/5)")
     sp.add_argument("repo", choices=repos)
     sp.add_argument("pr", type=int)
     sp.add_argument("--json", action="store_true")

@@ -130,6 +130,15 @@ class BotReviewTest(unittest.TestCase):
         self.assertEqual(sent, [(42, "60")])
         self.assertEqual(bot_review.get("odysseus", 42), {})
 
+    def test_unreviewed_goes_to_the_reviewer_with_a_comment_even_when_routed(self):
+        d = self.dispatcher(Rabbit("unreviewed"))
+        d.bot_review.route = lambda issue: ("60", "Agent Agamemnon")
+        self.ship(d)
+        self.assertEqual(d.bot_review.check_one(bot_review.get("odysseus", 42)), bot_review.HAND_OFF)
+        self.assertEqual(self.handoffs, [42])
+        self.assertEqual(len(self.tracker.comments), 1)
+        self.assertEqual(bot_review.get("odysseus", 42), {})
+
     def test_an_addressed_re_review_goes_back_into_the_loop(self):
         d = self.dispatcher(Rabbit("clean"), issue=make_issue(status="in_review", assignee=REVIEWER))
         handed = []

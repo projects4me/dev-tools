@@ -23,6 +23,26 @@ def patch_config(reviewers, rabbit=("gaia", "prometheus", "hermes")):
             mock.patch.object(coderabbit, "config", return_value=values))
 
 
+class ReviewStateTest(unittest.TestCase):
+    def state(self, body, repo="dev-tools"):
+        a, b = patch_config({"dev-tools": "design-review"})
+        with a, b, mock.patch.object(mergereviewer, "ody", return_value=body):
+            return mergereviewer.review_state(repo, 5)["state"]
+
+    def test_the_recorded_line_is_clean(self):
+        self.assertEqual(self.state("text " + reviewrecord.REVIEW_LINE), "clean")
+
+    def test_no_line_is_unreviewed(self):
+        self.assertEqual(self.state("text"), "unreviewed")
+
+    def test_a_repo_outside_mergereviewers_uses_codeRabbit(self):
+        a, b = patch_config({"dev-tools": "design-review"})
+        args = mock.Mock(repo="gaia", pr=1, json=True)
+        with a, b, mock.patch.object(coderabbit, "cmd_rabbit", return_value=7) as rabbit:
+            self.assertEqual(mergereviewer.cmd_rabbit(args), 7)
+            rabbit.assert_called_once_with(args)
+
+
 class MergeReviewersTest(unittest.TestCase):
     def lookup(self, reviewers, repo, rabbit=("gaia", "prometheus", "hermes")):
         a, b = patch_config(reviewers, rabbit)
