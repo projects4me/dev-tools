@@ -10,7 +10,7 @@ from .review import _api, _is_bot, open_threads, resolved_threads
 STATUS_CONTEXT = "CodeRabbit"   # the legacy commit status
 CHECK_APP = "coderabbitai"      # the app slug of the check run that replaced it
 PAUSED = re.compile(r"auto(?:matic)? reviews? (?:are |is )?paused|reviews? paused|rate limit", re.I)
-EXIT_CODES = {"clean": 0, "findings": 1, "pending": 2, "paused": 3, "absent": 4}
+EXIT_CODES = {"clean": 0, "findings": 1, "pending": 2, "paused": 3, "absent": 4, "unreviewed": 5}
 POLL_SECONDS = 30
 
 
