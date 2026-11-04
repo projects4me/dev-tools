@@ -10,15 +10,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from lib.agamemnon import classifier, packet, premise  # noqa: E402
 from lib.config import TalosError  # noqa: E402
 
-TYPES = {"test_contention", "ci_failed", "merge_conflict", "dirty_generated", "docker_down", "handback_failed"}
+TYPES = {"test_contention", "ci_failed", "merge_conflict", "dirty_generated", "docker_down", "docker_pressure",
+         "handback_failed"}
 
 
 class PremiseTests(unittest.TestCase):
-    def test_shipped_premise_lists_the_six_incident_types(self):
+    def test_shipped_premise_lists_the_seven_incident_types(self):
         p = premise.load()
         self.assertEqual(set(p.incidents), TYPES)
-        self.assertEqual(p.tiers_for("docker_down"), ("read", "pause", "notify"))
+        self.assertEqual(p.tiers_for("docker_down"), ("read", "engine", "wait", "retry", "notify"))
         self.assertFalse(p.allows("docker_down", "restore"))
+        self.assertEqual(p.tiers_for("docker_pressure"), ("read", "free", "wait", "retry", "notify"))
 
     def test_unlisted_type_is_not_handled(self):
         p = premise.load()
@@ -45,6 +47,17 @@ class ClassifierTests(unittest.TestCase):
     def test_cases(self):
         cases = [
             ("handoff_failed", "", "", "handback_failed"),
+            ("run_error", "", "npm run build\nKilled\n", "docker_pressure"),
+            ("run_error", "", "tests exited with code 137", "docker_pressure"),
+            ("agent_blocked", "the test runner was killed: container OOMKilled", "", "docker_pressure"),
+            ("run_error", "", "FATAL ERROR: JavaScript heap out of memory", "docker_pressure"),
+            ("run_error", "", "tree changed\nKilled\n", "docker_pressure"),
+            ("run_error", "", "Docker Desktop is starting...", "docker_down"),
+            ("run_error", "", "error during connect: Get http://%2F%2F.%2Fpipe%2FdockerDesktopLinuxEngine/v1.47/info: "
+                              "open //./pipe/dockerDesktopLinuxEngine: The system cannot find the file specified.",
+             "docker_down"),
+            ("run_error", "", "failed to connect: dial unix /var/run/docker.sock: no such file or directory", "docker_down"),
+            ("run_error", "", "the skill killed nothing", "other"),
             ("talos_error", "", "Cannot connect to the Docker daemon at npipe", "docker_down"),
             ("agent_blocked", "", "CONFLICT (content): Merge conflict in a.py", "merge_conflict"),
             ("agent_blocked", "tests: tree changed after a parallel run", "", "test_contention"),

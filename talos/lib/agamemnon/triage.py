@@ -101,16 +101,17 @@ def parse(result):
 class Triage:
     """Runs triage sessions for one orchestrator agent (Agamemnon). Ports: launch(prompt, model, incident id, issue)
     -> (Claude's JSON result or None, log path); run_log(issue) -> the worker's latest run log; in_flight() -> the
-    issue numbers the worker is running."""
+    issue numbers the worker is running; docker() -> {"verdict", "state"} for the packet."""
 
     def __init__(self, agent, tracker, my_id, owners, premise, launch, run_log, in_flight, now=_now,
-                 dry_run=False, background=True):
+                 dry_run=False, background=True, docker=None):
         self.agent, self.tracker, self.premise = agent, tracker, premise
         self.settings = agent.orchestration
         self.my_id = str(my_id) if my_id else None
         self.owner = owners[0] if owners else None
         self.launch, self.run_log, self.in_flight = launch, run_log, in_flight
         self.now, self.dry_run, self.background = now, dry_run, background
+        self.docker = docker
         self._jobs = queue.Queue()
         self._thread = None
         self._lock = threading.Lock()
@@ -190,6 +191,16 @@ class Triage:
                 self._thread.start()
         self._jobs.put(job)
 
+    def _docker(self):
+        """Docker's state and verdict for the packet, or None when there is no reader or it fails."""
+        if not self.docker:
+            return None
+        try:
+            return self.docker()
+        except Exception as e:      # noqa: BLE001  the packet is built without it
+            log(f"docker state unreadable for the packet: {e}", self.agent.name)
+            return None
+
     def _loop(self):
         while True:
             job = self._jobs.get()
@@ -201,7 +212,7 @@ class Triage:
     def run(self, job):
         """Run one session and close its incident; unresolved, the issue goes to the owner."""
         number, incident = job["issue"], job["incident"]
-        data = packet.build(number, job.get("pr"), job["handback"], job["run"], None, None, None,
+        data = packet.build(number, job.get("pr"), job["handback"], job["run"], None, None, self._docker(),
                             {n: [] for n in self.in_flight()}, [], incident=job["type"])
         try:
             result, log_path = self.launch(prompt(incident, job["type"], self._spec(job["type"]), data),
