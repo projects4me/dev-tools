@@ -619,7 +619,19 @@ Thresholds are set in the agent's `agent.json`; these are the defaults:
 "docker": {"memoryHighPercent": 85, "memoryOkPercent": 70}
 ```
 
+`docker.staleHours` (default 72) is used by the memory freeing below.
+
 `talos status` prints one line: `DOCKER  ok  memory 2.0GiB / 8.0GiB (25%)  test containers 3` (or `down (…)`).
+
+### Freeing memory
+
+`lib/docker_free.py`: when a hold starts because Docker is `pressured` (not `down`), the dispatcher calls it once, stops
+the p4m test containers (`docker stop`, not removed: the workspace and the next `ai test` still work) of the issues
+nobody is using, then reads Docker again. An issue qualifies when it has no run in flight and its status is deferred or
+won't fix, or its Gaia modified time is more than `docker.staleHours` (default 72) old. An issue Gaia can't be asked
+about is never chosen; with Docker unreachable nothing is stopped and the hold carries on. Each stopped container is
+logged with its issue and reason; the issue gets no comment. `talos gc --dry-run` lists the containers that would be
+stopped. The warm ember build inside a container that is otherwise in use is not touched.
 
 ### Starting and restarting the engine
 

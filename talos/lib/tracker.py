@@ -103,6 +103,7 @@ class Tracker:
             "assignee": str(i.get("assignee") or ""),
             "type": (i.get("issuetype") or {}).get("name") or i.get("type"),
             "modifiedUser": str(i.get("modifiedUser") or ""),
+            "modified": i.get("dateModified"),
             "priority": str(i.get("priority") or "").lower(),
             "project": (i.get("project") or {}).get("name"),
             "milestone": (i.get("issuemilestone") or {}).get("name"),

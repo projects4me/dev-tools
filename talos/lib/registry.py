@@ -124,6 +124,7 @@ class Agent:
     docker_start_command: list = None        # argv that starts the Docker engine (docker_engine.py); None = default
     docker_restart_command: list = None      # argv that restarts it; None = default
     docker_auto_start: bool = True           # the dispatcher starts a stopped engine once per hold (docker_pause.py)
+    docker_stale_hours: float = 72           # a pressured Docker stops the test containers of issues unchanged this long
     docker_check_seconds: float = 30         # the dispatcher re-reads Docker at most this often
     docker_start_timeout_seconds: float = 180   # how long a start/restart waits for the daemon to answer
 
@@ -163,6 +164,7 @@ def docker_settings(raw):
             "docker_start_command": _argv(docker, "startCommand"),
             "docker_restart_command": _argv(docker, "restartCommand"),
             "docker_auto_start": bool(docker.get("autoStart", True)),
+            "docker_stale_hours": float(docker.get("staleHours", 72)),
             "docker_check_seconds": float(docker.get("checkSeconds", 30)),
             "docker_start_timeout_seconds": float(docker.get("startTimeoutSeconds", 180))}
 
