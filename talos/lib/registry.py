@@ -119,6 +119,8 @@ class Agent:
     orchestration: Orchestration = None     # kind orchestrator only
     gaia_agent: str = ""                # the Gaia agent (name, email or id) whose spec sets the role prompt, model
                                         # and limits (agent_spec.py); "" = they come from agent.json
+    docker_memory_high_percent: float = 85   # Docker memory used/total (%) at or above which Docker is pressured
+    docker_memory_ok_percent: float = 70     # once pressured, Docker is ok again only below this (%)
 
     def action_for(self, status):
         return self.actions.get(status)
@@ -134,6 +136,13 @@ REQUIRED_EVENTS = ("name", "gaiaEnv", "projects", "triggers", "model", "roleProm
 KINDS = ("issues", "ideas", "orchestrator", "events")
 RUNNERS = ("local", "container")
 DISPATCH = ("status", "workflow")
+
+
+def docker_settings(raw):
+    """agent.json `docker: {"memoryHighPercent": 85, "memoryOkPercent": 70}` -> the Agent fields."""
+    docker = raw.get("docker") or {}
+    return {"docker_memory_high_percent": float(docker.get("memoryHighPercent", 85)),
+            "docker_memory_ok_percent": float(docker.get("memoryOkPercent", 70))}
 
 
 def load_agent(folder):
@@ -242,6 +251,7 @@ def load_agent(folder):
         dispatch=dispatch,
         extra={k: raw[k] for k in ("knowledgeMap", "ideaSource") if k in raw},
         gaia_agent=gaia_agent,
+        **docker_settings(raw),
     )
 
 

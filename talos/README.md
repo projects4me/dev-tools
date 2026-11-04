@@ -605,6 +605,22 @@ and is `enabled: false` until the engineer turns it on.
   with the token in `agamemnon/agamemnon.env` (see `agamemnon/README.md`). `talos check --agent agamemnon` shows the
   login and fails when the token can't write to one of the worker's repos.
 
+## Docker state
+
+`lib/docker_state.py` reads Docker for Talos: `read()` returns the CLI (found or not), the daemon (reachable, with the
+error text), `serverVersion`, `memTotal` (from `docker info`), `memUsed` and per-container memory and CPU
+(`docker stats --no-stream`), and `p4mTestContainers` (containers labelled `p4m.test` by `p4m test`). It never raises.
+`verdict(state, high, low, was)` is `down` (no CLI or the daemon is unreachable), `pressured` (used/total at or above
+`high`, or still above `low` when the previous verdict was `pressured`, so it doesn't flap) or `ok`.
+
+Thresholds are set in the agent's `agent.json`; these are the defaults:
+
+```json
+"docker": {"memoryHighPercent": 85, "memoryOkPercent": 70}
+```
+
+`talos status` prints one line: `DOCKER  ok  memory 2.0GiB / 8.0GiB (25%)  test containers 3` (or `down (…)`).
+
 ## State: `state/talos.db` (SQLite)
 
 Readable by other tools while Talos runs (WAL mode), e.g. a future Projects4Me UI panel.
