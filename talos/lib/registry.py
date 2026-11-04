@@ -121,6 +121,9 @@ class Agent:
                                         # and limits (agent_spec.py); "" = they come from agent.json
     docker_memory_high_percent: float = 85   # Docker memory used/total (%) at or above which Docker is pressured
     docker_memory_ok_percent: float = 70     # once pressured, Docker is ok again only below this (%)
+    docker_start_command: list = None        # argv that starts the Docker engine (docker_engine.py); None = default
+    docker_restart_command: list = None      # argv that restarts it; None = default
+    docker_start_timeout_seconds: float = 180   # how long a start/restart waits for the daemon to answer
 
     def action_for(self, status):
         return self.actions.get(status)
@@ -138,11 +141,26 @@ RUNNERS = ("local", "container")
 DISPATCH = ("status", "workflow")
 
 
+def _argv(docker, key):
+    """agent.json `docker.<key>`: a non-empty list of strings (run without a shell), or None when not set."""
+    value = docker.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, list) or not value or not all(isinstance(a, str) and a for a in value):
+        raise TalosError(f"agent.json docker.{key} must be a list of arguments, e.g. "
+                         f'["sudo", "-n", "systemctl", "restart", "docker"]')
+    return list(value)
+
+
 def docker_settings(raw):
-    """agent.json `docker: {"memoryHighPercent": 85, "memoryOkPercent": 70}` -> the Agent fields."""
+    """agent.json `docker: {"memoryHighPercent": 85, "memoryOkPercent": 70, "startCommand": [...],
+    "restartCommand": [...], "startTimeoutSeconds": 180}` -> the Agent fields."""
     docker = raw.get("docker") or {}
     return {"docker_memory_high_percent": float(docker.get("memoryHighPercent", 85)),
-            "docker_memory_ok_percent": float(docker.get("memoryOkPercent", 70))}
+            "docker_memory_ok_percent": float(docker.get("memoryOkPercent", 70)),
+            "docker_start_command": _argv(docker, "startCommand"),
+            "docker_restart_command": _argv(docker, "restartCommand"),
+            "docker_start_timeout_seconds": float(docker.get("startTimeoutSeconds", 180))}
 
 
 def load_agent(folder):
