@@ -655,6 +655,20 @@ password (`sudo visudo -f /etc/sudoers.d/talos`, with your user and `systemctl` 
 talos ALL=(root) NOPASSWD: /usr/bin/systemctl start docker, /usr/bin/systemctl restart docker
 ```
 
+### Holding dispatch while Docker is down or full
+
+`lib/docker_pause.py` `DockerPause` (modelled on `UsagePause`) keeps the last Docker verdict, re-read at most every
+`docker.checkSeconds` (default 30). Before a worker takes a job it waits while the verdict is `down` or `pressured`
+(85% high, 70% ok, hysteresis as above); a hold is logged once when it starts and once when it ends, with no issue
+comments. When Docker is `down` and `docker.autoStart` is true (default), the engine is started once per hold, after
+a 60 second grace period so a Docker that is still booting isn't started twice; a failed start is logged and the hold
+goes on. Talos never restarts the engine from here. A run already in flight is not touched. `talos status` shows
+`DOCKER HOLD <agent>: dispatch held, docker <verdict>, since <time>`.
+
+```json
+"docker": {"autoStart": true, "checkSeconds": 30}
+```
+
 ## State: `state/talos.db` (SQLite)
 
 Readable by other tools while Talos runs (WAL mode), e.g. a future Projects4Me UI panel.

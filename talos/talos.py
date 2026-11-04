@@ -180,6 +180,17 @@ def _print_docker():
     print(docker_state.status_line(state, docker_state.verdict(state, high, low)))
 
 
+def _print_docker_holds():
+    """One line per agent whose dispatcher is holding jobs for Docker (written by the dispatcher)."""
+    for path in sorted(STATE_DIR.glob("*/docker_hold.json")):
+        try:
+            hold = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        print(f"DOCKER HOLD  {path.parent.name}: dispatch held, docker {hold.get('verdict')}, "
+              f"since {hold.get('since') or '?'}")
+
+
 def cmd_status(args):
     """What Talos is running now (with the live transcript's latest steps) and each issue's state."""
     entries = sessions.all_entries()
@@ -192,6 +203,7 @@ def cmd_status(args):
               f"  since {r.get('started_at') or '?'}")
         _print_live(runner.transcript(r.get("session_id")), args.steps)
     _print_docker()
+    _print_docker_holds()
     print_in_flight = len(running)
     if print_in_flight > 1:
         print(f"{print_in_flight} runs in flight:")
