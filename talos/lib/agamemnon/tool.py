@@ -13,7 +13,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Callable
 
-from .. import workspaces
+from .. import docker_state, workspaces
 from ..orchestrator import state as orchestrator_state
 from . import conflicts, journal, narrative, verbs
 from .verbs import Refused
@@ -42,6 +42,8 @@ class Settings:
     orchestration: object               # registry.Orchestration of Agamemnon
     premise: object                     # premise.Premise
     workspace_root: Path                # the workspace that holds .runs/issue-N
+    docker_thresholds: tuple = (docker_state.DEFAULT_HIGH, docker_state.DEFAULT_OK)    # pressured at / ok below, %
+    docker_hold_max_hours: float = 72   # `hold-until-docker` hands the issue to the owner after this
 
 
 @dataclass
@@ -61,6 +63,10 @@ class Ports:
     test_changed: Callable = None       # test_changed(folder, repo) -> (passed, output): ai test <repo> --changed
     bot_review: Callable = None         # bot_review(issue, repo, pr): the PR back into the worker's CodeRabbit loop
     update_worker_state: Callable = None    # update_worker_state(issue, **fields): the worker's talos.db issues row
+    docker_read: Callable = None        # docker_read() -> docker_state.read()'s dict
+    docker_engine: Callable = None      # docker_engine("start"|"restart") -> docker_engine's result dict
+    stale_containers: Callable = None   # stale_containers() -> [(issue, names, reason)] (docker_free.plan)
+    stop_containers: Callable = None    # stop_containers(names): docker stop; raises OSError
 
 
 @dataclass
@@ -339,7 +345,8 @@ class Aga:
         return Act({"issue": self.number, "waitedFor": what, "ready": met, "seconds": waited}, {}, {},
                    {"op": "none"}, "nothing to undo: waiting changes nothing")
 
-    def _hold_until_tomorrow(self, args):
+    def _holdable(self):
+        """The issue's state when Agamemnon may hold it; Refused with a run in flight, in in_review or already held."""
         before = self.issue_state()
         if before["running"]:
             raise Refused(f"#{self.number} has a run in flight")
@@ -348,6 +355,10 @@ class Aga:
                           f"waiting to be merged")
         if journal.active_hold(self.number):
             raise Refused(f"#{self.number} is already held")
+        return before
+
+    def _hold_until_tomorrow(self, args):
+        before = self._holdable()
         tomorrow = (self.p.now() + timedelta(days=1)).replace(
             hour=self.s.orchestration.aga_hold_until_hour, minute=0, second=0, microsecond=0)
         self.p.tracker.assign(self.number, self.s.my_id)
@@ -356,6 +367,66 @@ class Aga:
         return Act({"issue": self.number, "heldUntil": stamp(tomorrow)}, before, after,
                    {"op": "release_hold", "issue": self.number, "assignee": before["assignee"]},
                    "talos agamemnon undo <id> releases the hold and gives the issue back to whom it was assigned to")
+
+    def _hold_until_docker(self, args):
+        before = self._holdable()
+        latest = stamp(self.p.now() + timedelta(hours=self.s.docker_hold_max_hours))
+        self.p.tracker.assign(self.number, self.s.my_id)
+        journal.hold(self.number, latest, before["assignee"], journal.DOCKER)
+        after = {**self.issue_state(), "heldUntil": latest}
+        return Act({"issue": self.number, "heldUntil": latest, "condition": journal.DOCKER}, before, after,
+                   {"op": "release_hold", "issue": self.number, "assignee": before["assignee"]},
+                   "talos agamemnon undo <id> releases the hold and gives the issue back to whom it was assigned to")
+
+    # -- docker ----------------------------------------------------------------------------
+
+    def docker_verdict(self, state):
+        return docker_state.verdict(state, *self.s.docker_thresholds)
+
+    def _docker(self, args):
+        state = self.p.docker_read()
+        return {"verdict": self.docker_verdict(state), "state": state}
+
+    def _engine(self, action):
+        before_state = self.p.docker_read()
+        before = {"verdict": self.docker_verdict(before_state), "daemon": before_state["daemon"]}
+        if action == "start" and before_state["daemon"]:
+            raise Refused("the Docker daemon is already up; nothing to start")
+        if action == "restart" and before["verdict"] != docker_state.DOWN:
+            others = [n for n in self.p.in_flight() if n != self.number]
+            if others:
+                raise Refused(f"Docker is {before['verdict']} and runs are in flight (#"
+                              f"{', #'.join(str(n) for n in others)}): a restart would kill them")
+        result = self.p.docker_engine(action)
+        after_state = self.p.docker_read()
+        after = {"verdict": self.docker_verdict(after_state), "daemon": after_state["daemon"]}
+        return Act(result, before, after, {"op": "none"},
+                   f"nothing to undo: the engine was {action}ed; a stopped engine is not worth restoring")
+
+    def _start_docker(self, args):
+        return self._engine("start")
+
+    def _restart_docker(self, args):
+        return self._engine("restart")
+
+    def _stop_stale_containers(self, args):
+        try:
+            chosen = self.p.stale_containers()
+        except OSError as e:
+            raise Refused(f"Docker could not be asked about test containers: {e}")
+        if not chosen:
+            raise Refused("no test container qualifies: each belongs to an issue with a run in flight, or one that "
+                          "is not deferred, won't fix or unchanged for long enough")
+        stopped, failed = [], []
+        for issue, names, reason in chosen:
+            try:
+                self.p.stop_containers(names)
+                stopped.append({"issue": issue, "containers": list(names), "reason": reason})
+            except OSError as e:
+                failed.append({"issue": issue, "containers": list(names), "error": str(e)})
+        return Act({"stopped": stopped, "failed": failed}, {}, {"stopped": len(stopped)}, None,
+                   "cannot be undone here: the containers were stopped, not removed, and the next `ai test` of "
+                   "each issue starts them again")
 
     # -- tier 2: reversible and visible ----------------------------------------------------
 

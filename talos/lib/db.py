@@ -156,7 +156,7 @@ CREATE TABLE IF NOT EXISTS aga_actions (
 );
 CREATE TABLE IF NOT EXISTS aga_holds (
     issue               INTEGER PRIMARY KEY,
-    until               TEXT    NOT NULL,       -- given back to the worker by the orchestrator's sweep after this
+    until               TEXT    NOT NULL,       -- given back to the worker by the orchestrator's sweep after this (a condition hold: the owner gets it then)
     assignee            TEXT,                   -- who had the issue before the hold
     released_at         TEXT
 );
@@ -201,6 +201,7 @@ MIGRATIONS = (
     ("aga_incidents", "model", "TEXT"),
     ("aga_incidents", "outcome", "TEXT"),
     ("aga_incidents", "cost_usd", "REAL DEFAULT 0"),
+    ("aga_holds", "condition", "TEXT"),           # "docker": given back when Docker is ok, `until` is the latest
 )
 
 _init_lock = threading.Lock()

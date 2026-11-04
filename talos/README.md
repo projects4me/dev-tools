@@ -585,6 +585,15 @@ and is `enabled: false` until the engineer turns it on.
     Agamemnon until `agaHoldUntilHour` (6:00) the next day, when the orchestrator's sweep gives it to the worker;
     not for in_review issues), `send --notes` (tier `handoff`: a comment, then assigned to the worker; for a
     `merge_conflict` incident it also sets the worker's `merge_conflict` action and counts its one attempt).
+  - Docker: `docker` (tier `read`: Docker's state and verdict, `ok`, `pressured` or `down`), `start-docker` and
+    `restart-docker` (tier `engine`, through `docker_engine`, wait until the daemon answers and report the stack
+    containers not running; `start-docker` is refused when the daemon is up, `restart-docker` while another issue has
+    a run in flight unless Docker is `down`), `stop-stale-containers` (tier `free`: `docker_free`'s rule, no run in
+    flight and deferred, won't fix or unchanged for `docker.staleHours`; cannot be undone, the next `ai test` starts
+    the containers again) and `hold-until-docker` (tier `wait`: as `hold-until-tomorrow`, but the issue is given to
+    the worker when Docker is `ok`, one Docker-held issue per sweep, oldest first. A hold ends without giving the
+    issue back when it was moved to deferred or won't fix, and the owner gets it with a comment after
+    `docker.holdMaxHours` (default 72). Undo releases it). The premise grants these tiers to no incident type yet.
   - Level 2, reversible and visible: `update-branch` and `push-merge` (tier `update`: a merge of the base on GitHub,
     never a rebase; a committed merge pushed only as a fast-forward), `merge` (tier `merge`: through `ai merge` and
     its gate, only for `autoMergeMilestones`, within `maxAutoMergesPerDay` together with the automatic merges).
@@ -624,7 +633,8 @@ Thresholds are set in the agent's `agent.json`; these are the defaults:
 "docker": {"memoryHighPercent": 85, "memoryOkPercent": 70}
 ```
 
-`docker.staleHours` (default 72) is used by the memory freeing below.
+`docker.staleHours` (default 72) is used by the memory freeing below; `docker.holdMaxHours` (default 72) by
+`aga hold-until-docker`.
 
 `talos status` prints one line: `DOCKER  ok  memory 2.0GiB / 8.0GiB (25%)  test containers 3` (or `down (…)`).
 
