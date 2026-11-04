@@ -18,7 +18,7 @@ class DockerPause:
 
     def __init__(self, read=docker_state.read, high=docker_state.DEFAULT_HIGH, low=docker_state.DEFAULT_OK,
                  check_seconds=CHECK_SECONDS, auto_start=True, start=None, grace_seconds=START_GRACE_SECONDS,
-                 clock=time.monotonic, on_change=None, log=None, poll_seconds=5):
+                 clock=time.monotonic, on_change=None, log=None, poll_seconds=5, free=None):
         self._read, self._high, self._low = read, high, low
         self._check, self._grace, self._poll = check_seconds, grace_seconds, poll_seconds
         self._auto_start, self._start = auto_start, start
@@ -31,6 +31,8 @@ class DockerPause:
         self._since = None          # clock reading when the current hold began (None = not holding)
         self._since_text = None     # the same moment as an ISO time, for `talos status`
         self._tried = False         # start() already called in this hold
+        self._free = free           # stops idle test containers; called once per pressured hold
+        self._freed = False         # free() already called in this hold
 
     @property
     def stopped(self):
@@ -57,7 +59,7 @@ class DockerPause:
         self._verdict = docker_state.verdict(self._read(), self._high, self._low, was=self._verdict)
         holding = self._verdict != docker_state.OK
         if holding and self._since is None:
-            self._since, self._tried = now, False
+            self._since, self._tried, self._freed = now, False, False
             self._since_text = time.strftime("%Y-%m-%dT%H:%M:%S%z")
             self._log(f"Docker {self._verdict}: dispatching held")
             self._changed()
@@ -85,6 +87,17 @@ class DockerPause:
             self._log(f"Docker start failed: {e}")
         self._read_at = None        # read again at once to see whether it answers now
 
+    def _maybe_free(self):
+        """Once per pressured hold, let free() stop idle containers, then read docker again. Call with the lock held."""
+        if self._verdict != docker_state.PRESSURED or self._free is None or self._freed:
+            return
+        self._freed = True
+        try:
+            self._free()
+        except Exception as e:      # freeing is best effort: the hold carries on
+            self._log(f"Docker free failed: {e}")
+        self._read_at = None
+
     def wait(self):
         """Block while Docker is down or pressured. True when this call saw the hold end, False when there was
         nothing to wait for or stop() interrupted it."""
@@ -95,6 +108,7 @@ class DockerPause:
                 if self._since is None:
                     return False
                 self._maybe_start()
+                self._maybe_free()
             self._stopped.wait(min(self._check, self._poll))
         return False
 

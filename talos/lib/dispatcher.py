@@ -48,7 +48,7 @@ class Dispatcher:
     slot."""
 
     def __init__(self, agent, tracker, claude, dry_run=False, mcp=None, collector=None, merge_route=None,
-                 refresh_spec=None):
+                 refresh_spec=None, docker_free=None):
         self.agent = agent
         self.tracker = tracker
         self.claude = claude
@@ -71,7 +71,7 @@ class Dispatcher:
             high=agent.docker_memory_high_percent, low=agent.docker_memory_ok_percent,
             check_seconds=agent.docker_check_seconds, auto_start=agent.docker_auto_start,
             start=lambda: log(docker_engine.describe(docker_engine.for_agent(agent, "start")), agent.name),
-            on_change=self._write_docker_hold, log=lambda text: log(text, agent.name))
+            on_change=self._write_docker_hold, free=docker_free, log=lambda text: log(text, agent.name))
         self._deps = DependencyGate(agent.dependency_done_statuses)   # issues waiting on "Depends on" issues
         self._releases = queue.Queue()      # changed issue numbers (None = unknown) for the release worker
         # the CodeRabbit loop; merge_route(issue) names an orchestrator that merges a clean PR itself (or None)

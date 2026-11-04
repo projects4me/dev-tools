@@ -115,6 +115,33 @@ class DockerPauseTest(unittest.TestCase):
         failing._maybe_start()
         self.assertIsNotNone(failing.since)
 
+    def test_free_is_called_once_per_pressured_hold_and_verdict_rechecked(self):
+        fake = Fake(state(90))
+        freed = []
+
+        def free():
+            freed.append(1)
+            fake.st = state(10)         # the stopped containers gave the memory back
+        pause = make(fake, check_seconds=0, free=free)
+        self.assertTrue(pause.wait())
+        self.assertEqual(freed, [1])
+        fake.st = state(90)             # a new hold may free again
+        pause._refresh()
+        pause.wait()
+        self.assertEqual(freed, [1, 1])
+
+    def test_free_not_called_when_down_and_a_failure_keeps_the_hold(self):
+        down = make(Fake(state(daemon=False)), check_seconds=0, free=lambda: self.fail("down must not free"))
+        down._refresh()
+        down._maybe_free()
+
+        def boom():
+            raise RuntimeError("no docker")
+        pressured = make(Fake(state(90)), check_seconds=0, free=boom)
+        pressured._refresh()
+        pressured._maybe_free()
+        self.assertIsNotNone(pressured.since)
+
     def test_stop_releases_waiters(self):
         pause = make(Fake(state(daemon=False)), check_seconds=0)
         result = []

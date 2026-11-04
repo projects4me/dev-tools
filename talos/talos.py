@@ -14,7 +14,7 @@ import time
 import urllib.request
 from datetime import datetime
 
-from lib import agent_spec, container, db, docker_state, policy, runner, sessions, workflow_steps, workspace_gc, workspaces
+from lib import agent_spec, container, db, docker_free, docker_state, policy, runner, sessions, workflow_steps, workspace_gc, workspaces
 from lib import runs as run_log
 from lib.agamemnon import journal as agamemnon_journal
 from lib.agamemnon import undo as agamemnon_undo
@@ -98,7 +98,8 @@ def _run(args):
         dispatcher = Dispatcher(agent, tracker, claude, dry_run=args.dry_run,
                                 mcp=mcp_config(STATE_DIR / agent.name / "mcp.json"),
                                 collector=lambda issue: gc_workspaces(only=issue),
-                                merge_route=merge_routes.get(agent.name), refresh_spec=refresh_spec)
+                                merge_route=merge_routes.get(agent.name), refresh_spec=refresh_spec,
+                                docker_free=lambda agent=agent, tracker=tracker: free_docker(agent, tracker))
         dispatcher.recover_interrupted()
         dispatcher.start()
         dispatchers.append(dispatcher)
@@ -373,6 +374,27 @@ def cmd_clean(args):
 GC_LOCK = threading.Lock()
 
 
+def free_docker(agent, tracker, dry_run=False):
+    """Stop the test containers of idle issues (see lib/docker_free); with dry_run only list them.
+    Returns [(issue, name, reason)]. Docker unreachable: nothing is stopped."""
+    try:
+        chosen = docker_free.plan(WORKSPACE, sessions.all_entries(), tracker, testenv, agent.docker_stale_hours)
+    except OSError as e:
+        log(f"docker free: docker not reachable: {e}", agent.name)
+        return []
+    stopped = []
+    for issue, names, reason in chosen:
+        if not dry_run:
+            try:
+                docker_free.stop(names)
+            except OSError as e:
+                log(f"docker free: #{issue} not stopped: {e}", agent.name)
+                continue
+            log(f"docker free: stopped {', '.join(names)} of #{issue} ({reason})", agent.name)
+        stopped += [(issue, name, reason) for name in names]
+    return stopped
+
+
 def gc_workspaces(dry_run=False, only=None):
     """Remove the workspaces and container leftovers of finished issues (see lib/workspace_gc)."""
     agents, trackers = {}, {}
@@ -413,6 +435,10 @@ def cmd_gc(args):
         print(f"#{issue}: {action} ({reason})")
     if not results:
         print("No workspaces.")
+    if args.dry_run:
+        agent = next(iter(load_agents()), None)
+        for issue, name, reason in (free_docker(agent, Tracker(agent), dry_run=True) if agent else []):
+            print(f"#{issue}: would-stop test container {name} ({reason}), when Docker is short of memory")
     return 0
 
 
