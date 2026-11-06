@@ -2,7 +2,8 @@
 
 The shell is a static copy of what Prometheus renders for app-layouts/application-header.hbs,
 application-sidebar.hbs and app-ui/nav-bar.hbs (keep it in step when those change). shell="none" renders the
-screen alone. The screen's HTML is already sanitised (screens.py); everything put into the page is escaped.
+screen alone. The screen's HTML and CSS are already sanitised (screens.py); everything else put into the page is
+escaped. The screen's CSS comes after the stylesheets, so its own classes are styled in both shells.
 """
 
 import html
@@ -22,6 +23,8 @@ def _items(entries):
 
 def build(screen, css, engineer=""):
     links = "\n".join(f'<link rel="stylesheet" href="{html.escape(href, quote=True)}">' for href in css)
+    if screen.get("css"):
+        links += f"\n<style>\n{screen['css'].replace('<', '')}\n</style>"     # css.clean_css never keeps '<'
     body_class = html.escape(screen.get("body") or "", quote=True)
     if screen["shell"] == "none":
         body = f'<body class="{body_class}" style="background:#ecf0f5;padding:20px">{screen["html"]}</body>'

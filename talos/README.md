@@ -425,7 +425,9 @@ Prometheus ─▶ Gaia ─publish─▶ Hermes ─idea.message.created───�
   it (`milestone` in the plan block). Talos uses the project's exact spelling, marks a milestone the project
   doesn't have as new (the plan card shows it), and the gaia MCP client creates it when the issue is created.
 - **UI screens** (lib/ideas/screens.py, render.py): when asked, the agent writes `nestor-screen` blocks of HTML in
-  Prometheus' markup; Talos sanitises them (no scripts, styles or external URLs), renders each to a PNG with a
+  Prometheus' markup; Talos sanitises them (no scripts, style attributes or external URLs; one `<style>` block for
+  a new component's own classes, checked by `css.clean_css`: class selectors, allowed properties, design
+  system colours only, at most 8 KB, with dropped rules reported in the reply), renders each to a PNG with a
   headless Chromium (Edge or Chrome on Windows; Chromium, Chrome or Edge on Linux; `browserBin` to choose) and
   uploads it to the idea, listed in the reply's `screens` (on the sim: `ideascreen`), where the UI shows it. The page uses Prometheus' real built CSS from the
   running app (`prometheusUrl`, else `appUrl` from `p4m configure`), falling back to the checkout's
@@ -752,7 +754,7 @@ The pre-SQLite `state/sessions.json` is imported when `talos run`/`dispatch` sta
 | `lib/simbus.py` | sim Hermes connection (SSE): the event source for ideas agents until Hermes carries idea events |
 | `lib/orchestrator/` | orchestrator agents: `policy` (pure: candidates, ranking, slots, the breaker), `worker` (the `Orchestrator`: triggers, sweep, assigning), `state` (its rows in talos.db), `setup` (wires one orchestrator: worker, Gaia user, Hermes listener) |
 | `lib/events/` | events agents: `policy` (pure: trigger match, dedupe key, prompt variables and rendering), `store` (`event_runs`: claim, update, recover), `worker` (queue, one run per event, usage-limit pause), `setup` (wires one agent: Gaia user, worker, Hermes listener) |
-| `lib/ideas/` | ideas agents: `setup` (wiring), `policy` (events, what waits), `worker` (queue, stop, reconcile), `conversation` (a turn), `approval` (plan → issues), `stream` (streamed run, command), `client` (Gaia idea resources) and `sim_client` (the sim's), `progress` (live progress on the sim), `plan`, `screens` (blocks) + `render` (= `styles` + `page` + `browser`) + `screen_kit/` (UI screens → PNG), `sanitize`, `steps`, `kb`, `state` |
+| `lib/ideas/` | ideas agents: `setup` (wiring), `policy` (events, what waits), `worker` (queue, stop, reconcile), `conversation` (a turn), `approval` (plan → issues), `stream` (streamed run, command), `client` (Gaia idea resources) and `sim_client` (the sim's), `progress` (live progress on the sim), `plan`, `screens` (blocks) + `render` (= `styles` + `page` + `browser`) + `screen_kit/` (UI screens → PNG), `sanitize` (+ `css`: a screen's style block), `steps`, `kb`, `state` |
 
 ## Parallel runs
 

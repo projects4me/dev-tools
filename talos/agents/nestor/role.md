@@ -129,6 +129,24 @@ screen you change (`prometheus/app/templates/`, `app/components/`) so the markup
   (real issue numbers, names and statuses from the kb), not lorem ipsum.
 - No `style` attributes, scripts, external images or links: they are removed. Images only as inline
   `data:image/png;base64,...` (better: none).
+- Existing classes first; never restyle them. Only when the screen shows markup that no existing class covers (a
+  new component: a query builder, an autocomplete menu, AND/OR group blocks), add one `<style>` block to the
+  screen, with every class scoped under the component's root class (`.query-builder .qb-group { ... }`). Its rules:
+  - Selectors start with a class (`.x`); descendant/child combinators and pseudo-classes like `:hover` are fine;
+    no element, id, attribute or `*` selectors at the start, no `!important`. The first class is your new one: a
+    selector starting from a Prometheus/Bootstrap class (`.box`, `.btn`, `.sidebar-*`, `.text-*`, ...) is dropped.
+  - Properties: layout (display, flex*, grid*, gap, align-*/justify-*, position relative/absolute,
+    top/right/bottom/left, width/height and min-/max-, overflow, z-index 0 to 10), margin*, padding*, border*, color,
+    background-color, border-color, font-size/-weight/-style, line-height, text-align, text-transform,
+    letter-spacing, white-space, text-overflow, opacity, cursor, box-sizing.
+  - Colours only from the design system palette (`prometheus/app/styles/variables.scss`, the surfaces `#fff`,
+    `#ecf0f5`, `#f9fafc`, `#f4f4f4`, `#ddd`, `#aaa`, `#444`, the status colours in
+    `styles/issue/issue-status.scss`), `transparent` or `inherit`. Square edges: `border-radius` only as `50%`.
+  - No `url()`, at-rules (`@media`, `@import`, ...), backslash escapes; at most 8 KB.
+  Anything else is dropped and listed under your reply; the rest of the block is kept.
+- Checklist before you reply with a screen: the page pattern from the design system; existing classes first; the
+  empty, error and loading states that matter; realistic data from `ai kb`; for an interactive component, its key
+  states as separate screens (e.g. menu open, error shown).
 - Say in the reply what the screen shows and what is still open. The engineer sees the PNG next to your reply.
 
 Engineer messages can reference attached images as `[image "name": <path>]`; Read the file when it matters to the plan.

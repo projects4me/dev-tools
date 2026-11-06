@@ -4,8 +4,10 @@ Two policies:
 - DESCRIPTION: issue descriptions, which Gaia stores and Prometheus renders. Plain formatting, no attributes except
   an http(s) link target.
 - SCREEN: UI screens (screens.py), which a headless browser renders to PNG. Layout, forms and tables with `class`
-  (Prometheus' Bootstrap/AdminLTE classes), but no scripts, styles, event handlers or external URLs: links are
-  "#..." and images only inline data: PNG/JPEG/GIF, so a screen can't fetch or run anything.
+  (Prometheus' Bootstrap/AdminLTE classes), but no scripts, style attributes, event handlers or external URLs:
+  links are "#..." and images only inline data: PNG/JPEG/GIF, so a screen can't fetch or run anything. One
+  <style> block is kept apart from the markup (clean_screen) and goes through clean_css: class selectors, an
+  allowlist of properties and the design system's colours only, for components Prometheus has no classes for yet.
 Everything else is dropped; text is escaped.
 """
 
@@ -13,6 +15,8 @@ import html
 import re
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
+
+from .css import clean_css
 
 DROP_CONTENT = {"script", "style", "iframe", "object", "embed", "template", "noscript", "svg", "math", "link", "meta",
                 "base", "frame", "frameset", "head", "title"}
@@ -29,6 +33,7 @@ class Policy:
     href: str = "http"                             # "http": http(s) only; "anchor": "#..." only
     images: bool = False                           # <img src="data:image/...">
     prefixed: tuple = field(default=())            # attribute prefixes, e.g. ("aria-", "data-")
+    style: bool = False                            # keep the text of <style> blocks apart (clean_screen)
 
 
 DESCRIPTION = Policy(tags=frozenset({"p", "br", "ul", "ol", "li", "strong", "b", "em", "i", "code", "pre",
@@ -44,7 +49,7 @@ SCREEN = Policy(
     attrs=frozenset({"class", "id", "colspan", "rowspan", "type", "placeholder", "value", "checked", "selected",
                      "disabled", "readonly", "title", "alt", "rows", "cols", "name", "for", "role", "width",
                      "height", "multiple", "maxlength", "href", "src"}),
-    href="anchor", images=True, prefixed=("aria-", "data-"))
+    href="anchor", images=True, prefixed=("aria-", "data-"), style=True)
 
 
 class _Cleaner(HTMLParser):
@@ -52,6 +57,7 @@ class _Cleaner(HTMLParser):
         super().__init__(convert_charrefs=True)
         self.policy = policy
         self.out, self.open, self.skip = [], [], 0
+        self.styles, self.in_style = [], False             # text of top-level <style> blocks (policy.style)
 
     def _attrs(self, tag, attrs):
         kept = []
@@ -75,6 +81,9 @@ class _Cleaner(HTMLParser):
 
     def handle_starttag(self, tag, attrs):
         if tag in DROP_CONTENT:
+            if tag == "style" and self.policy.style and not self.skip:
+                self.styles.append("")
+                self.in_style = True
             if tag not in DROP_VOID:
                 self.skip += 1
             return
@@ -92,6 +101,8 @@ class _Cleaner(HTMLParser):
             self.out.append(f"<{tag}{self._attrs(tag, attrs)}>")
 
     def handle_endtag(self, tag):
+        if tag == "style":
+            self.in_style = False
         if tag in DROP_CONTENT:
             if tag not in DROP_VOID:
                 self.skip = max(0, self.skip - 1)
@@ -105,6 +116,8 @@ class _Cleaner(HTMLParser):
                 break
 
     def handle_data(self, data):
+        if self.in_style:
+            self.styles[-1] += data
         if not self.skip:
             self.out.append(html.escape(data, quote=False))
 
@@ -113,7 +126,23 @@ class _Cleaner(HTMLParser):
         return "".join(self.out) + "".join(f"</{t}>" for t in reversed(self.open))
 
 
-def clean_html(text, policy=DESCRIPTION):
+def _clean(text, policy):
     cleaner = _Cleaner(policy)
     cleaner.feed(text or "")
-    return cleaner.result().strip()
+    return cleaner
+
+
+def clean_html(text, policy=DESCRIPTION):
+    return _clean(text, policy).result().strip()
+
+
+def clean_screen(text, policy=SCREEN):
+    """(markup, css, problems) of a screen: the sanitised markup, and its first <style> block through clean_css."""
+    cleaner = _clean(text, policy)
+    markup = cleaner.result().strip()
+    if not cleaner.styles:
+        return markup, "", []
+    css, problems = clean_css(cleaner.styles[0])
+    if len(cleaner.styles) > 1:
+        problems.append(f"only one <style> block per screen; {len(cleaner.styles) - 1} more dropped")
+    return markup, css, problems
