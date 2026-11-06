@@ -34,6 +34,7 @@
     "Bash(dev-tools/ai/ai kb:*)",
     "Bash(dev-tools/ai/ai context:*)",
     "Bash(dev-tools/ai/ai issue:*)",
+    "Bash(dev-tools/ai/ai screen:*)",
     "mcp__gaia__gaia_get_issue",
     "mcp__gaia__gaia_list_projects",
     "mcp__gaia__gaia_project_options",

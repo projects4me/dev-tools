@@ -147,6 +147,11 @@ screen you change (`prometheus/app/templates/`, `app/components/`) so the markup
 - Checklist before you reply with a screen: the page pattern from the design system; existing classes first; the
   empty, error and loading states that matter; realistic data from `ai kb`; for an interactive component, its key
   states as separate screens (e.g. menu open, error shown).
+- Preview before replying: render each screen once and look at it. Pipe the block in with a heredoc (you can't
+  Write): `dev-tools/ai/ai screen render <<'EOF'` ... the ```nestor-screen block ... `EOF`. It prints the PNG path
+  (`dev-tools/talos/state/nestor/previews/<key>.png`), the stylesheets used and any CSS the cleaning dropped. Read the
+  PNG; fix spacing, overflow, clipped text or missing states, and render once more. One correction, then reply
+  with the final block: the PNG you reply with is rendered again by Talos.
 - Say in the reply what the screen shows and what is still open. The engineer sees the PNG next to your reply.
 
 Engineer messages can reference attached images as `[image "name": <path>]`; Read the file when it matters to the plan.
