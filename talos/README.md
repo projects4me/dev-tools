@@ -433,7 +433,7 @@ Prometheus ─▶ Gaia ─publish─▶ Hermes ─idea.message.created───�
   uploads it to the idea, listed in the reply's `screens` (on the sim: `ideascreen`), where the UI shows it. The page uses Prometheus' real built CSS from the
   running app (`prometheusUrl`, else `appUrl` from `p4m configure`), falling back to the checkout's
   Bootstrap/AdminLTE plus screen_kit/projects4me.css. Plan issues list `screens`; on approval their latest PNGs
-  are attached to the created issues (a failed attachment is reported in the idea). No browser, or a screen that fails to render: the reply says so and the plan simply doesn't attach it.
+  are attached to the created issues (a failed attachment is reported in the idea). During its turn the agent previews a screen with `ai screen render` (stdin: one block; PNG in `talos/state/nestor/previews/<key>.png`) and corrects it once before replying. No browser, or a screen that fails to render: the reply says so and the plan simply doesn't attach it.
 - **Approval** (lib/ideas/approval.py): no LLM. The approved version's issues are created through the gaia MCP
   client as the agent, assigned to the idea's owner, in dependency order, each with a "Depends on" line; each is
   recorded on the idea at once, so approving a failed plan again creates only the missing ones. The agent is told

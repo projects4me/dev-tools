@@ -11,7 +11,7 @@ sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 from lib.common import AiError, REPOS  # noqa: E402
 from lib import (apitester, coderabbit, context, cost, designreview, doctor, kb, mergegate, mergereviewer, rabbitdigest,  # noqa: E402
-                 review, ship, tests, workflow)
+                 review, screen, ship, tests, workflow)
 
 
 def build_parser():
@@ -166,6 +166,10 @@ def build_parser():
              "PRs, categorised, as a markdown report")
     sp.add_argument("--repo", choices=repos, help="one repo (default: every codeRabbitRepos entry)")
     sp.add_argument("--since", metavar="DATE", help="only PRs created on or after YYYY-MM-DD")
+
+    sp = add("screen", screen.cmd_screen, "render one nestor-screen block (stdin) to a PNG under "
+             "talos/state/nestor/previews/ (Nestor previews a screen before replying)")
+    sp.add_argument("action", choices=["render"])
 
     sp = add("reply", review.cmd_reply, 'post replies from JSON {"<comment id>": "<reply>"}')
     sp.add_argument("repo", choices=repos)
