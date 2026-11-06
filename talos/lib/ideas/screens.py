@@ -8,13 +8,14 @@
 The HTML uses Prometheus' own markup and classes (Bootstrap 3, AdminLTE, the design system). `shell="app"` (the
 default) puts it inside the app's header and sidebar, as a page; `shell="none"` renders it alone (a modal, a
 component). `body="notifications-sidebar-open"` adds state classes to <body> (panels Prometheus opens with a body
-class); `project="A Gaia"` is the project shown in the sidebar's selector. render.py turns it into a PNG. A later
-block with the same key is a new version of that screen.
+class); `project="A Gaia"` is the project shown in the sidebar's selector. One <style> block may style classes a
+new component needs (css.clean_css); what it may not contain is dropped and reported. render.py turns it into
+a PNG. A later block with the same key is a new version of that screen.
 """
 
 import re
 
-from .sanitize import SCREEN, clean_html
+from .sanitize import clean_screen
 
 BLOCK = re.compile(r"```nestor-screen([^\n]*)\r?\n(.*?)\r?\n[ \t]*```", re.S)
 ATTR = re.compile(r'(\w+)\s*=\s*"([^"]*)"')
@@ -28,7 +29,7 @@ MAX_HTML = 60_000
 
 def extract(reply):
     """(reply text without the screen blocks, valid screens, problems). Each screen: key, title, width, height,
-    shell, html (sanitised)."""
+    shell, html (sanitised), css (cleaned; "" without a <style> block)."""
     screens, problems, seen = [], [], set()
     for m in BLOCK.finditer(reply or ""):
         attrs = dict(ATTR.findall(m.group(1)))
@@ -43,7 +44,7 @@ def extract(reply):
         width, height = (int(size.group(1)), int(size.group(2))) if size else DEFAULT_SIZE
         if not (800 <= width <= 2560 and 400 <= height <= 4000):
             width, height = DEFAULT_SIZE
-        markup = clean_html(m.group(2)[:MAX_HTML], SCREEN)
+        markup, css, dropped = clean_screen(m.group(2)[:MAX_HTML])
         if not markup:
             problems.append(f"screen '{key}' has no HTML left after removing what screens may not contain")
             continue
@@ -51,10 +52,11 @@ def extract(reply):
             problems.append(f"at most {MAX_SCREENS} screens per reply; '{key}' was left out")
             continue
         seen.add(key)
+        problems.extend(f"screen '{key}' CSS: {reason}" for reason in dropped)
         body = attrs.get("body", "")
         project = " ".join(attrs.get("project", "").split())[:60]
         screens.append({"key": key, "title": title or key, "width": width, "height": height,
-                        "shell": "none" if attrs.get("shell") == "none" else "app", "html": markup,
+                        "shell": "none" if attrs.get("shell") == "none" else "app", "html": markup, "css": css,
                         "body": body if CLASSES.fullmatch(body) else "",
                         "project": project})                  # escaped where it goes into the page (page.py)
     text = BLOCK.sub("", reply or "").strip()

@@ -16,7 +16,8 @@ from lib.ideas import browser, page, plan, policy, screens, state, stream, style
 from lib.ideas.approval import Approval  # noqa: E402
 from lib.ideas.images import Images  # noqa: E402
 from lib.ideas.conversation import Conversation  # noqa: E402
-from lib.ideas.sanitize import SCREEN, clean_html  # noqa: E402
+from lib.ideas.css import MAX_CSS, clean_css  # noqa: E402
+from lib.ideas.sanitize import SCREEN, clean_html, clean_screen  # noqa: E402
 from lib.ideas.worker import IdeaWorker  # noqa: E402
 from lib.registry import Agent  # noqa: E402
 from lib.simbus import parse_sse  # noqa: E402
@@ -262,6 +263,70 @@ class ScreensTest(unittest.TestCase):
         sheets._at -= styles.REFRESH_SECONDS + 1
         sheets.current()
         self.assertEqual(len(calls), 2)
+
+    @mock.patch("lib.ideas.css.MAX_CSS_PROBLEMS", 50)
+    def test_css_keeps_palette_class_rules_and_drops_the_rest_with_reasons(self):
+        css, problems = clean_css(
+            "/* note */ .qb .qb-group > .qb-rule:hover, div.x { display: flex; border: 1px solid #DDD; "
+            "color: #b3244f; background-color: red; border-radius: 4px }\n"
+            ".qb-dot { border-radius: 50%; background-color: #fff; width: calc(100% - 2px) }\n"
+            ".qb { background-color: url(https://evil/x.png) }\n"
+            "@import 'x.css';\n@media (min-width: 1px) { .qb { color: #000 } }\n"
+            "#id, *, [x], .qb-in { position: fixed; z-index: 2; content: 'x'; color: #123456 !important; "
+            "color: inherit }\n"
+            ".qb-a { color: \\72 ed } .qb-b { top: 0; grid-template-columns: repeat(2, 1fr) }\n"
+            ".qb-c { transform: rotate(1deg) }")
+        self.assertEqual(css.split("\n"), [
+            ".qb .qb-group > .qb-rule:hover { display: flex; border: 1px solid #ddd; color: #b3244f }",
+            ".qb-dot { border-radius: 50%; background-color: #fff; width: calc(100% - 2px) }",
+            ".qb-in { z-index: 2; color: inherit }",
+            ".qb-b { top: 0; grid-template-columns: repeat(2, 1fr) }"])
+        text = "\n".join(problems)
+        for reason in ("selector 'div.x'", "colour red is not in", "only as 50%", "'url(' is not allowed",
+                       "'@import': at-rules", "'@media': at-rules", "selector '#id'", "selector '*'",
+                       "selector '[x]'", "relative or absolute", "property 'content'", "!important",
+                       "'\\' is not allowed", "property 'transform'"):
+            self.assertIn(reason, text)
+        self.assertEqual(clean_css(""), ("", []))
+        css, problems = clean_css(".btn, .box-body p, .qb-x { z-index: 99999; z-index: 3 }")
+        self.assertEqual(css, ".qb-x { z-index: 3 }")
+        text = "\n".join(problems)
+        self.assertIn("'.btn' is a Prometheus/Bootstrap class", text)
+        self.assertIn("'.box-body' is a Prometheus/Bootstrap class", text)
+        self.assertIn("z-index may only be 0 to 10", text)
+
+    def test_css_is_capped_and_nothing_can_close_the_style_element(self):
+        css, problems = clean_css("".join(f".c{i} {{ margin: {i}px }}\n" for i in range(800)))
+        self.assertLessEqual(len(css), MAX_CSS)
+        self.assertTrue(any("over 8 KB" in p for p in problems))
+        self.assertLessEqual(len(problems), 13)
+        css, problems = clean_css(".a { color: #fff } </style><script>x()</script> .b { color: #fff }")
+        self.assertNotIn("<", css)
+        self.assertEqual(css, ".a { color: #fff }")
+
+    def test_a_screen_style_block_is_kept_apart_cleaned_and_reported(self):
+        reply = ('```nestor-screen key="qb" title="Query builder"\n<style>.qb { display: flex; color: red }</style>'
+                 '<div class="qb">x</div><style>.qb { color: #fff }</style>\n```\n'
+                 '```nestor-screen key="plain" title="Plain"\n<p>x</p>\n```')
+        _, found, problems = screens.extract(reply)
+        self.assertEqual([(f["html"], f["css"]) for f in found],
+                         [('<div class="qb">x</div>', ".qb { display: flex }"), ("<p>x</p>", "")])
+        self.assertEqual(len(problems), 2)
+        self.assertTrue(problems[0].startswith("screen 'qb' CSS: '.qb' color: red: colour red"))
+        self.assertIn("only one <style> block", problems[1])
+        self.assertEqual(clean_html("<style>.a{}</style><p>x</p>", SCREEN), "<p>x</p>")
+        self.assertEqual(clean_screen("<svg><style>.a { color: #fff }</style></svg><p>x</p>"), ("<p>x</p>", "", []))
+
+    def test_page_puts_the_screen_css_after_the_stylesheets_in_both_shells(self):
+        screen = {"key": "a", "title": "A", "width": 1440, "height": 900, "shell": "app", "html": "<p>x</p>",
+                  "css": ".qb { display: flex }"}
+        for shell in ("app", "none"):
+            built = page.build(dict(screen, shell=shell), ["http://prom/x.css"])
+            self.assertIn('<link rel="stylesheet" href="http://prom/x.css">\n<style>\n.qb { display: flex }\n'
+                          '</style>\n</head>', built)
+            self.assertNotIn("<style>", page.build(dict(screen, shell=shell, css=""), ["http://prom/x.css"]))
+        self.assertEqual(page.build(dict(screen, css=""), []),
+                         page.build({k: v for k, v in screen.items() if k != "css"}, []))
 
     def test_sanitiser_edge_cases(self):
         out = clean_html('<a href="JaVaScRiPt:alert(1)">a</a><a href="#ok">b</a><img src="DATA:image/png;base64,AAAA">'
