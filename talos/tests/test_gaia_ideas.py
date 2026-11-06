@@ -153,6 +153,7 @@ class GaiaPolicyTest(unittest.TestCase):
     def test_ignored(self):
         self.assertIsNone(self.job(gaia_env(policy.MESSAGE, actor=NESTOR, changes={"kind": "message"})))  # its own
         self.assertIsNone(self.job(gaia_env(policy.MESSAGE, changes={"kind": "system"})))
+        self.assertIsNone(self.job(gaia_env(policy.MESSAGE, changes={"kind": "working"})))   # the notice isn't a turn
         self.assertIsNone(self.job(gaia_env(policy.MESSAGE, actor="99", changes={"kind": "message"})))  # not allowed
         self.assertIsNone(self.job(gaia_env(policy.MESSAGE, changes={"kind": "message"}, project="p-other")))
         self.assertIsNone(self.job(gaia_env(policy.MESSAGE, changes={"kind": "message"}, idea=None)))
@@ -198,7 +199,7 @@ class MappingTest(unittest.TestCase):
         client.set_state(IDEA, "queued")
         client.set_state(IDEA, "working")
         rows = [(m["kind"], m["body"]) for m in tools.messages]
-        self.assertEqual(rows, [("message", "Hi"), ("error", "No"), ("system", "Agent Nestor is working on it.")])
+        self.assertEqual(rows, [("message", "Hi"), ("error", "No"), ("working", "Agent Nestor is working on it.")])
         first = tools.messages[0]
         self.assertEqual((first["ideaplanId"], first["costUsd"], json.loads(first["screens"])),
                          ("pl-9", 0.25, [{"uploadId": "up"}]))
@@ -224,6 +225,17 @@ class GaiaFlowTest(TempDb):
     def thread(self):
         return [(m["kind"], m["body"]) for m in self.tools.messages]
 
+    def test_a_working_notice_is_not_replayed_in_a_fresh_sessions_history(self):
+        self.tools.say("first")
+        self.tools.say("an answer", author=NESTOR)
+        self.tools.say("Agent Nestor is working on it.", author=NESTOR, kind="working")
+        self.tools.say("second")
+        self.launcher.replies.append("ok")
+        self.worker.handle(("turn", IDEA))
+        prompt = self.launcher.calls[0][0]
+        self.assertIn("Engineer: first\n\nYou: an answer\n\nThe engineer says:\n\nsecond", prompt)
+        self.assertNotIn("working on it", prompt)
+
     def test_send_gets_a_working_notice_then_the_reply_with_a_plan_and_screens(self):
         shot = '```nestor-screen key="list" title="Grouped list"\n<section class="content">Hi</section>\n```'
         self.tools.say("Issues that repeat weekly")
@@ -232,7 +244,7 @@ class GaiaFlowTest(TempDb):
         self.worker.on_event(gaia_env(policy.MESSAGE, changes={"kind": "message"}))
         self.worker.handle(self.worker._queue.get_nowait())
         self.assertEqual(self.thread(), [("message", "Issues that repeat weekly"),
-                                         ("system", "Agent Nestor is working on it."), ("message", "Here.")])
+                                         ("working", "Agent Nestor is working on it."), ("message", "Here.")])
         reply = self.tools.messages[-1]
         plan = self.tools.plans[0]
         self.assertEqual((reply["ideaplanId"], reply["costUsd"]), (plan["id"], 0.25))
@@ -303,7 +315,7 @@ class GaiaFlowTest(TempDb):
 
     def test_reconcile_answers_a_turn_cut_off_and_resumes_plans(self):
         self.tools.say("anyone there?")
-        self.client.post(IDEA, "system", "Agent Nestor is working on it.")      # Talos stopped mid-turn
+        self.client.post(IDEA, "working", "Agent Nestor is working on it.")      # Talos stopped mid-turn
         self.client.add_plan(IDEA, {"summary": "s", "issues": [issue("api", type="Task", priority="normal")]})
         self.tools.plans[0]["status"] = "creating"
         self.tools.add_idea("other-idea", project="A Prometheus")              # nothing waiting there

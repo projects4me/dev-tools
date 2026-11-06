@@ -412,8 +412,9 @@ Prometheus ─▶ Gaia ─publish─▶ Hermes ─idea.message.created───�
   records onto one shape. A message's `kind` plus its author become its role (`message` by the agent is its
   reply), `ideaplanId`/`costUsd` carry the plan and cost, `steps` and `screens` are JSON; the idea's screens are
   the uploads its messages list; a plan's created issues are its Ideaplanissues; the idea's owner is who created
-  it. Idea ids are GUIDs. Gaia ideas have no agent state: a turn starts with a `kind: system` notice ("Agent
-  Nestor is working on it"), and there is no live progress (Hermes has no agent publish path).
+  it. Idea ids are GUIDs. Gaia ideas have no agent state: a turn starts with a `kind: working` notice ("Agent
+  Nestor is working on it"; Prometheus is to show it as an indicator, and Talos never removes it), and there is
+  no live progress (Hermes has no agent publish path).
 - **A turn** (lib/ideas/conversation.py): takes in every engineer message since the last turn (also ones sent
   while the agent was answering), resumes the idea's Claude session (or replays the conversation when there is
   none), syncs the `ai kb` issue index (at most every `kbMaxAgeMinutes`), runs `claude -p --output-format
