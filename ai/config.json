@@ -8,6 +8,7 @@
   "codeRabbitRepos": ["gaia", "prometheus", "hermes"],
   "codeRabbitBudget": {"everyPrUntil": 10, "limit": 25, "largePrFiles": 6},
   "codeRabbitTrigger": "@coderabbitai full review",
+  "codeRabbitTrigger": "@coderabbitai full review",
   "mergeReviewers": {"dev-tools": "design-review"},
   "agamemnonProtected": [
     "talos/agents/agamemnon/**",
