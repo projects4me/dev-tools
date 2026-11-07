@@ -543,6 +543,7 @@ and is `enabled: false` until the engineer turns it on.
   While Agamemnon is paused, issues already handed to it go to the reviewer instead of waiting. Merging lives in
   `lib/orchestrator/merging.py` (`MergeSweeper`), separate from feeding the worker. Each attempt is kept in
   talos.db (`auto_merges`); `talos status` lists today's automatic merges.
+- **Merges by a person** (`lib/orchestrator/human_merges.py`, every sweep while not paused): for each in_review issue held by an owner, find its `claude-issue-N` PR by the Agent Odysseus account. When that PR is merged and Agamemnon's own merge flow has no record of it (open or merged in `auto_merges`), the issue is set `done` with the comment "PR repo#N merged by <login>; set done", worded apart from the "merged automatically" comment. Issues with no agent PR, an open one (or several), or only a PR closed without merging are left to the owner. Each step is safe to repeat.
 - **Keeping agent PRs mergeable** (`lib/orchestrator/keeper.py`, every sweep while not paused): for each open
   `claude-issue-N` PR in the worker's repos whose issue waits for a review or a merge (in_review, held by an owner
   or by Agamemnon; never one the worker is on, with a run in flight, or checked out by hand outside `.runs`):
