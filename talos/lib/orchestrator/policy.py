@@ -197,12 +197,13 @@ def only_ci_fails(gate):
     return gate.get("state") == "fail" and bool(failed) and all(c.get("name") == "ci" for c in failed)
 
 
-def ci_step(rerun_sha, rerun_minutes, head):
-    """RERUN (the first CI failure at this head), WAIT (re-run just now: let GitHub catch up) or HAND_BACK (it failed
-    again at the same head). A new push has a new head, so it gets its own re-run."""
-    if rerun_sha != head:
-        return RERUN
-    return WAIT if rerun_minutes < CI_RERUN_GRACE_MINUTES else HAND_BACK
+def ci_step(rerun_sha, rerun_count, rerun_minutes, head, attempts):
+    """RERUN (fewer than `attempts` re-runs at this head), WAIT (re-run just now: let GitHub catch up, after each
+    one) or HAND_BACK (it failed again after the last re-run). A new push has a new head, so it starts over."""
+    count = rerun_count if rerun_sha == head else 0
+    if count and rerun_minutes < CI_RERUN_GRACE_MINUTES:
+        return WAIT
+    return RERUN if count < attempts else HAND_BACK
 
 
 # -- keeping agent PRs mergeable --------------------------------------------------------------------

@@ -307,7 +307,7 @@ class FakeMerger:
     def __init__(self, *gates, pr=77, already_merged=False):
         self.gates, self.pr, self.merged = list(gates), pr, []
         self.already_merged = already_merged
-        self.reruns = []
+        self.reruns, self.rerun_error = [], None
 
     def find_pr(self, repo, issue):
         return {"number": self.pr, "merged": self.already_merged,
@@ -317,6 +317,8 @@ class FakeMerger:
         return [{"name": "Build-and-Test", "url": "https://github.com/x/actions/runs/99/job/1", "run": "99"}]
 
     def rerun(self, repo, runs):
+        if self.rerun_error:
+            raise TalosError(self.rerun_error)
         self.reruns.append((repo, list(runs)))
 
     def check(self, repo, pr):
@@ -358,10 +360,13 @@ class AutoMergeTest(SweepTest):
         self.assertEqual(policy.merge_step("fail", 0, 60, 0, 5)[0], policy.HAND_BACK)
         self.assertEqual(policy.merge_step("ok", 0, 60, 5, 5)[0], policy.WAIT)       # over the limit: held
         self.assertEqual(policy.merge_step("fail", 0, 60, 5, 5)[0], policy.HAND_BACK)
-        self.assertEqual(policy.ci_step(None, 0, "h1"), policy.RERUN)
-        self.assertEqual(policy.ci_step("h1", 1, "h1"), policy.WAIT)
-        self.assertEqual(policy.ci_step("h1", 3, "h1"), policy.HAND_BACK)
-        self.assertEqual(policy.ci_step("h1", 3, "h2"), policy.RERUN)            # a new push
+        self.assertEqual(policy.ci_step(None, 0, 0, "h1", 3), policy.RERUN)
+        self.assertEqual(policy.ci_step("h1", 1, 1, "h1", 3), policy.WAIT)       # just re-run
+        self.assertEqual(policy.ci_step("h1", 1, 3, "h1", 3), policy.RERUN)
+        self.assertEqual(policy.ci_step("h1", 3, 1, "h1", 3), policy.WAIT)
+        self.assertEqual(policy.ci_step("h1", 3, 3, "h1", 3), policy.HAND_BACK)  # after the last one
+        self.assertEqual(policy.ci_step("h1", 3, 3, "h2", 3), policy.RERUN)      # a new push starts over
+        self.assertEqual(policy.ci_step(None, 0, 0, "h1", 0), policy.HAND_BACK)
         self.assertTrue(policy.only_ci_fails(gate("fail", ("ci", "failed: build"))))
         self.assertFalse(policy.only_ci_fails(gate("fail", ("ci", "x"), ("people", "y"))))
 
@@ -409,25 +414,86 @@ class AutoMergeTest(SweepTest):
         o.sweep()
         self.assertEqual(tracker.issues[6]["status"], "done")
 
-    def test_failed_ci_is_rerun_once_then_goes_to_the_owner(self):
+    def sweep_ci(self, o, minutes):
+        """Move the clock `minutes` past the first sweep (10:00) and sweep."""
+        self.clock[0] = f"2026-10-31T{10 + minutes // 60}:{minutes % 60:02d}:00+05:00"
+        o.sweep()
+
+    def test_failed_ci_is_rerun_up_to_three_times_then_goes_to_the_owner(self):
         tracker = FakeTracker([self.clean()])
         merger = FakeMerger(gate("fail", ("ci", "failed: Build-and-Test (failure)")))
         o = self.merging(tracker, merger)
         o.sweep()
         self.assertEqual(merger.reruns, [("gaia", ["99"])])
         self.assertEqual(tracker.issues[5]["assignee"], MERGER_ID)
-        self.assertIn("re-running failed CI", tracker.comments[-1][1])
+        self.assertIn("attempt 1 of 3", tracker.comments[-1][2])
         self.assertIn("re-ran failed CI", store.find_open_merge("agamemnon", 5, 77)["note"])
-        self.clock[0] = "2026-10-31T10:01:00+05:00"
-        o.sweep()                                       # just re-run: GitHub may still show the old failure
+        self.sweep_ci(o, 1)                             # just re-run: GitHub may still show the old failure
         self.assertEqual(len(merger.reruns), 1)
+        self.sweep_ci(o, 5)
+        self.assertEqual(len(merger.reruns), 2)
+        self.assertIn("attempt 2 of 3", tracker.comments[-1][2])
+        self.sweep_ci(o, 6)
+        self.assertEqual(len(merger.reruns), 2)
+        self.sweep_ci(o, 10)
+        self.assertEqual(len(merger.reruns), 3)
+        self.assertIn("attempt 3 of 3", tracker.comments[-1][2])
         self.assertEqual(tracker.issues[5]["assignee"], MERGER_ID)
-        self.clock[0] = "2026-10-31T10:05:00+05:00"
+        self.sweep_ci(o, 15)
+        self.assertEqual(len(merger.reruns), 3)
+        self.assertEqual(tracker.issues[5]["assignee"], OWNER)
+        self.assertIn("failed again after 3 re-runs", tracker.comments[-1][2])
+        self.assertIn("https://github.com/x/actions/runs/99/job/1", tracker.comments[-1][2])
+
+    def test_one_rerun_when_the_attempts_are_one(self):
+        tracker = FakeTracker([self.clean()])
+        merger = FakeMerger(gate("fail", ("ci", "failed: build")))
+        o = self.merging(tracker, merger, ci_rerun_attempts=1)
         o.sweep()
+        self.sweep_ci(o, 5)
         self.assertEqual(len(merger.reruns), 1)
         self.assertEqual(tracker.issues[5]["assignee"], OWNER)
-        self.assertIn("failed again after one re-run", tracker.comments[-1][2])
-        self.assertIn("https://github.com/x/actions/runs/99/job/1", tracker.comments[-1][2])
+        self.assertIn("after 1 re-run:", tracker.comments[-1][2])
+
+    def test_a_new_head_starts_the_rerun_count_over(self):
+        tracker = FakeTracker([self.clean()])
+        merger = FakeMerger(gate("fail", ("ci", "failed: build")))
+        o = self.merging(tracker, merger, ci_rerun_attempts=2)
+        o.sweep()
+        self.sweep_ci(o, 5)
+        self.assertEqual(len(merger.reruns), 2)
+        merger.gates = [{**gate("fail", ("ci", "failed: build")), "sha": "newhead99"}]
+        self.sweep_ci(o, 10)
+        self.assertEqual(len(merger.reruns), 3)
+        self.assertEqual(tracker.issues[5]["assignee"], MERGER_ID)
+        self.assertIn("attempt 1 of 2", tracker.comments[-1][2])
+
+    def test_a_failing_rerun_is_counted_and_handed_back_with_the_error(self):
+        tracker = FakeTracker([self.clean()])
+        merger = FakeMerger(gate("fail", ("ci", "failed: build")))
+        merger.rerun_error = "gh run rerun 99: HTTP 403: Resource not accessible by personal access token"
+        o = self.merging(tracker, merger)
+        o.sweep()                                       # error 1 of 2: recorded, still with the merger
+        record = store.find_open_merge("agamemnon", 5, 77)
+        self.assertEqual((record["ci_rerun_errors"], record["ci_rerun_count"]), (1, 0))
+        self.assertIn("HTTP 403", record["ci_rerun_error"])
+        self.assertEqual(tracker.issues[5]["assignee"], MERGER_ID)
+        o.sweep()                                       # error 2 of 2: handed back, never loops
+        self.assertEqual(tracker.issues[5]["assignee"], OWNER)
+        self.assertIn("failed 2 times", tracker.comments[-1][2])
+        self.assertIn("HTTP 403", tracker.comments[-1][2])
+        self.assertEqual(merger.reruns, [])
+
+    def test_the_rerun_error_limit_is_per_head(self):
+        tracker = FakeTracker([self.clean()])
+        merger = FakeMerger(gate("fail", ("ci", "failed: build")))
+        merger.rerun_error = "boom"
+        o = self.merging(tracker, merger, ci_rerun_errors=2)
+        o.sweep()
+        merger.gates = [{**gate("fail", ("ci", "failed: build")), "sha": "newhead99"}]
+        o.sweep()                                       # a new head: the error count starts over
+        self.assertEqual(tracker.issues[5]["assignee"], MERGER_ID)
+        self.assertEqual(store.find_open_merge("agamemnon", 5, 77)["ci_rerun_errors"], 1)
 
     def test_failed_ci_that_passes_on_the_rerun_merges(self):
         tracker = FakeTracker([self.clean()])
@@ -459,6 +525,13 @@ class AutoMergeTest(SweepTest):
         self.assertEqual(merger.merged, [])
         self.assertEqual(tracker.issues[5]["assignee"], OWNER)
         self.assertIn("is paused", tracker.comments[-1][2])
+
+    def test_dry_run_does_not_rerun_or_count_ci(self):
+        tracker = FakeTracker([self.clean()])
+        merger = FakeMerger(gate("fail", ("ci", "failed: build")))
+        self.merging(tracker, merger, dry_run=True).sweep()
+        self.assertEqual((merger.reruns, tracker.comments), ([], []))
+        self.assertIsNone(store.find_open_merge("agamemnon", 5, 77))
 
     def test_dry_run_merges_nothing_and_starts_no_wait(self):
         tracker, merger = FakeTracker([self.clean()]), FakeMerger(gate("ok"))

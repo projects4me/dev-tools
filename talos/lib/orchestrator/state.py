@@ -87,16 +87,38 @@ def find_open_merge(agent, issue, pr):
         conn.close()
 
 
-def note_merge(record_id, text, ci_rerun_sha=None, at=None):
-    """Add a step to the record's note (a CI re-run also stores its head and time, so it is only done once)."""
+def note_merge(record_id, text):
+    """Add a step to the record's note."""
     conn = db.connect()
     try:
         with conn:
-            conn.execute("UPDATE auto_merges SET note = CASE WHEN note IS NULL OR note = '' THEN ? ELSE note || '; ' "
-                         "|| ? END WHERE id = ?", (text, text, record_id))
-            if ci_rerun_sha:
-                conn.execute("UPDATE auto_merges SET ci_rerun_sha = ?, ci_rerun_at = ? WHERE id = ?",
-                             (ci_rerun_sha, at, record_id))
+            _note(conn, record_id, text)
+    finally:
+        conn.close()
+
+
+def _note(conn, record_id, text):
+    conn.execute("UPDATE auto_merges SET note = CASE WHEN note IS NULL OR note = '' THEN ? ELSE note || '; ' "
+                 "|| ? END WHERE id = ?", (text, text, record_id))
+
+
+def note_ci_rerun(record_id, head, at, text, error=None):
+    """Count a CI re-run at the PR head, or (with `error`) a re-run command that failed. A new head starts the
+    counts over. A started re-run stores its time too, for the grace wait; an error needs none."""
+    conn = db.connect()
+    try:
+        with conn:
+            row = conn.execute("SELECT ci_rerun_sha, ci_rerun_count, ci_rerun_errors FROM auto_merges WHERE id = ?",
+                               (record_id,)).fetchone()
+            same = row and row["ci_rerun_sha"] == head
+            count, errors = (row["ci_rerun_count"] or 0, row["ci_rerun_errors"] or 0) if same else (0, 0)
+            if error:
+                conn.execute("UPDATE auto_merges SET ci_rerun_sha = ?, ci_rerun_count = ?, ci_rerun_errors = ?, "
+                             "ci_rerun_error = ? WHERE id = ?", (head, count, errors + 1, error, record_id))
+            else:
+                conn.execute("UPDATE auto_merges SET ci_rerun_sha = ?, ci_rerun_count = ?, ci_rerun_errors = ?, "
+                             "ci_rerun_at = ? WHERE id = ?", (head, count + 1, errors, at, record_id))
+            _note(conn, record_id, text)
     finally:
         conn.close()
 

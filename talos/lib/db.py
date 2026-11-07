@@ -194,8 +194,11 @@ MIGRATIONS = (
     ("issues", "pending_assignee", "TEXT"),
     ("issues", "pending_tries", "INTEGER DEFAULT 0"),
     ("issues", "conflict_noted", "TEXT"),         # PR head the reviewer was told about once the attempts ran out
-    ("auto_merges", "ci_rerun_sha", "TEXT"),      # PR head whose failed CI job(s) were re-run once
+    ("auto_merges", "ci_rerun_sha", "TEXT"),      # PR head whose failed CI job(s) were re-run
     ("auto_merges", "ci_rerun_at", "TEXT"),
+    ("auto_merges", "ci_rerun_count", "INTEGER DEFAULT 0"),   # re-runs started at ci_rerun_sha
+    ("auto_merges", "ci_rerun_errors", "INTEGER DEFAULT 0"),  # re-run commands that failed at ci_rerun_sha
+    ("auto_merges", "ci_rerun_error", "TEXT"),                # the last of those errors
     ("auto_merges", "note", "TEXT"),              # steps taken before the end (daily-limit hold, CI re-run)
     ("aga_incidents", "source", "TEXT"),          # triage sessions (agamemnon/triage.py)
     ("aga_incidents", "model", "TEXT"),
