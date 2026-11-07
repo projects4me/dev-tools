@@ -206,11 +206,20 @@ def cmd_ship(args):
     if not progress.get("pr"):
         progress["pr"] = existing_pr(repo, issue) or workflow.open_pr(repo, issue, spec["title"], body)
         save_progress(repo, issue, progress)
-    defer = args.defer_handoff and (coderabbit.enabled(repo) or mergereviewer.merge_reviewer(repo) is not None)
-    if args.defer_handoff and not defer:
-        say(f"CodeRabbit not enabled for {repo}: handing off now (in_review), nothing to wait for; "
-            f"finish as done, not awaiting_bot_review")
-    notes += sizecheck.tracker_note(size) + cost_note(issue) + (f"<p>{html.escape(warning)}</p>" if warning else "")
+    review_note, defer = "", False
+    if coderabbit.enabled(repo):
+        result = workflow.review_decision(repo, issue, progress["pr"], size["count"])
+        review_note = workflow.human_review_note(result)
+        defer = bool(args.defer_handoff) and result["decision"] == "coderabbit"
+        if args.defer_handoff and not defer:
+            say("not sent to CodeRabbit: handing off now (in_review) to the reviewer; "
+                "finish as done, not awaiting_bot_review")
+    else:
+        defer = bool(args.defer_handoff) and mergereviewer.merge_reviewer(repo) is not None
+        if args.defer_handoff and not defer:
+            say(f"CodeRabbit not enabled for {repo}: handing off now (in_review), nothing to wait for; "
+                f"finish as done, not awaiting_bot_review")
+    notes += review_note + sizecheck.tracker_note(size) + cost_note(issue) + (f"<p>{html.escape(warning)}</p>" if warning else "")
     workflow.pr_hand_off(issue, progress["pr"], git(repo, "rev-parse", "--short", "HEAD"),
                          git(repo, "rev-parse", "--short", f"origin/{base_branch(repo)}"),
                          spec.get("timeNote") or f"commit and PR ({spec['title']})", notes_html=notes,

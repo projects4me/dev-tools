@@ -174,30 +174,69 @@ def open_pr(repo, issue, title, body):
     url = ody(repo, "gh", "pr", "create", "--repo", REPOS[repo], "--base", base_branch(repo),
               "--head", branch_name(issue), "--title", title, "--body-file", str(body_file)).splitlines()[-1]
     say(f"PR: {url}")
-    request_coderabbit_review(repo, url)
     return url
 
 
-def request_coderabbit_review(repo, url):
-    """CodeRabbit doesn't review agent PRs by itself: comment its trigger. A failure only warns, the PR is open."""
-    from . import coderabbit            # imported here: coderabbit imports review, which imports this package
-    trigger = config().get("codeRabbitTrigger")
-    if not trigger or not coderabbit.enabled(repo):
-        return
+def pr_number(url):
+    return int(url.rstrip("/").split("/")[-1])
+
+
+def pr_files(repo, url):
+    """The paths the PR changes, from GitHub."""
+    out = ody(repo, "gh", "pr", "view", url, "--repo", REPOS[repo], "--json", "files", "--jq", ".files[].path")
+    return [line.strip() for line in out.splitlines() if line.strip()]
+
+
+def review_decision(repo, issue, url, files):
+    """Who reviews the new PR: ask the CodeRabbit budget (which posts the trigger on `coderabbit`). Returns
+    {decision: coderabbit|human|absent, used, limit, everyPrUntil}. A PR already in the ledger or the pending
+    hand-off is not asked again. A failed request means the human reviews."""
+    from . import rabbitbudget          # imported here: rabbitbudget imports coderabbit, which imports review -> this
+    number = pr_number(url)
+    if not rabbitbudget.coderabbit.enabled(repo):
+        return {"decision": "absent"}
+    known = rabbitbudget.known_decision(repo, number)
+    pending = load_pending_handoff(issue)
+    if known is None and pending and pending.get("pr") == url:
+        known = "coderabbit"
+    if known:
+        return {"decision": known, "known": True}
     try:
-        ody(repo, "gh", "pr", "comment", url, "--repo", REPOS[repo], "--body", trigger)
-        say("CodeRabbit: requested full review")
-    except Exception as e:
-        say(f"warning: could not request the CodeRabbit review ({e}); comment `{trigger}` on the PR yourself")
+        result = rabbitbudget.request(repo, number, "pr-opened", files, False, issue)
+    except Exception as e:  # noqa: BLE001 - the PR is open; the human reviews
+        say(f"warning: could not ask the CodeRabbit budget ({e}); handing the review to the human")
+        return {"decision": "human", "error": str(e)}
+    result["everyPrUntil"] = (rabbitbudget.settings() or {}).get("everyPrUntil")
+    say(f"CodeRabbit: {result['decision']} ({result['reason']})")
+    return result
+
+
+def human_review_note(result):
+    """Tracker note for a PR that went to the human reviewer instead of CodeRabbit."""
+    if result.get("decision") != "human":
+        return ""
+    if result.get("limit") is None or "used" not in result:
+        used = "Not sent to CodeRabbit (the review request failed or was already deferred)."
+    else:
+        used = (f"Not sent to CodeRabbit: {result['used']} of {result['limit']} reviews used in the last 24 hours "
+                f"(small PRs go to you from {result.get('everyPrUntil')}).")
+    return f"<p>{used} Please review by hand; CodeRabbit may add a review later when credit frees up.</p>"
 
 
 def cmd_pr(args):
     """Open the PR as Agent Odysseus, then comment, log time, set in_review and assign the reviewer."""
     repo, issue = args.repo, args.issue
     url = open_pr(repo, issue, args.title, Path(args.body_file).read_text(encoding="utf-8"))
+    from . import sizecheck
+    try:
+        files = len(sizecheck.hand_written(pr_files(repo, url), sizecheck.settings()["generated"]))
+    except Exception as e:  # noqa: BLE001 - size only picks the tier
+        say(f"warning: could not list the PR's files ({e}); counting 0")
+        files = 0
+    note = human_review_note(review_decision(repo, issue, url, files))
     commit = git(repo, "rev-parse", "--short", "HEAD")
     base = git(repo, "rev-parse", "--short", f"origin/{base_branch(repo)}")
-    pr_hand_off(issue, url, commit, base, args.time_note, args.no_time)
+    pr_hand_off(issue, url, commit, base, args.time_note, args.no_time, notes_html=note)
 
 
 def pr_hand_off(issue, url, commit, base, time_note=None, no_time=False, notes_html="", defer=None):

@@ -141,6 +141,16 @@ def request(repo, pr, source, files=0, rereview=False, issue=None):
     return {"decision": choice, "used": used, "limit": limit, "reason": reason}
 
 
+def known_decision(repo, pr):
+    """`coderabbit` when the ledger counted a trigger for the PR, `human` when it is deferred, else None."""
+    ledger = _read()
+    if any(s["repo"] == repo and s["pr"] == pr for s in ledger["sent"]):
+        return "coderabbit"
+    if any(d["repo"] == repo and d["pr"] == pr for d in ledger["deferred"]):
+        return "human"
+    return None
+
+
 def budget():
     """{used, limit, tier, nextSlot, deferred} for the rolling last 24 hours."""
     conf = settings()
