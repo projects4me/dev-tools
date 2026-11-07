@@ -14,6 +14,7 @@ from ..config import LOCAL_DIR, WORKSPACE, TalosError
 from ..orchestrator import github
 from ..orchestrator import state as store
 from ..orchestrator.merge import Merger
+from ..orchestrator.rabbit import RabbitBudget
 from ..registry import load_agents
 from ..tracker import Tracker, read_env_file
 from . import branch_update, premise
@@ -59,6 +60,8 @@ def bot_review(worker, worker_id, tracker):
     """The PR back into the worker's CodeRabbit loop after a push, as a re-review does (bot_review.Watcher.reenter):
     waiting for CodeRabbit on the new head, then the clean PR is routed to the orchestrator to merge."""
     def reenter(issue, repo, pr):
+        if RabbitBudget(tracker.child_env).request(repo, pr, "conflict", issue) == "human":
+            raise TalosError("CodeRabbit limit reached: the pushed merge was not sent for review")
         deadline = datetime.now().astimezone() + timedelta(minutes=worker.bot_review_wait_minutes)
         review_loop.reenter(worker.name, tracker, worker_id, issue, repo, pr, tracker.issue(issue).get("status"),
                             deadline)

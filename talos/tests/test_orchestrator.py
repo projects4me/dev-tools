@@ -671,6 +671,22 @@ class FakeGh:
         raise AssertionError(f"unexpected gh call {args}")
 
 
+class FakeRabbit:
+    """lib.orchestrator.rabbit.RabbitBudget: the limit and the recorded review requests."""
+
+    def __init__(self, limited=False, fail=False):
+        self.limited, self.fail, self.requests = limited, fail, []
+
+    def at_limit(self):
+        if self.fail:
+            raise TalosError("ai rabbit budget failed")
+        return self.limited
+
+    def request(self, repo, pr, source, issue):
+        self.requests.append((repo, pr, source, issue))
+        return "coderabbit"
+
+
 class KeeperTest(SweepTest):
     def setUp(self):
         super().setUp()
@@ -678,10 +694,10 @@ class KeeperTest(SweepTest):
         log.start()
         self.addCleanup(log.stop)
 
-    def keeper(self, tracker, gh, dry_run=False, max_conflict_attempts=1):
+    def keeper(self, tracker, gh, dry_run=False, max_conflict_attempts=1, rabbit=None):
         o = self.orchestrator(tracker, dry_run, max_conflict_attempts=max_conflict_attempts)
         return BranchKeeper(o.agent, o.worker, tracker, gh, WORKER_ID, MERGER_ID, [OWNER],
-                            lambda repo, number: self.holder, now=lambda: self.clock[0], dry_run=dry_run)
+                            lambda repo, number: self.holder, now=lambda: self.clock[0], dry_run=dry_run, rabbit=rabbit)
 
     def waiting(self, number=5, **fields):
         return issue(number, **{"status": "in_review", "assignee": OWNER, **fields})
@@ -701,6 +717,51 @@ class KeeperTest(SweepTest):
         self.assertTrue(policy.only_mergeability_fails(mergeable_only))
         self.assertFalse(policy.only_mergeability_fails(
             {"state": "fail", "checks": [{"name": "mergeable", "state": "fail"}, {"name": "ci", "state": "fail"}]}))
+
+    def test_an_update_at_the_codeRabbit_limit_is_skipped(self):
+        gh = FakeGh([gh_pr(77, 5, merge_state="BEHIND", head="abc")])
+        rabbit = FakeRabbit(limited=True)
+        keeper = self.keeper(FakeTracker([self.waiting()]), gh, rabbit=rabbit)
+        keeper.sweep()
+        keeper.sweep()
+        self.assertEqual((gh.updates, rabbit.requests), ([], []))
+
+    def test_an_update_asks_for_the_review_of_the_new_head(self):
+        gh = FakeGh([gh_pr(77, 5, merge_state="BEHIND", head="abc")])
+        rabbit = FakeRabbit()
+        self.keeper(FakeTracker([self.waiting()]), gh, rabbit=rabbit).sweep()
+        self.assertEqual(len(gh.updates), 1)
+        self.assertEqual(rabbit.requests, [("gaia", 77, "update-branch", 5)])
+
+    def test_a_conflict_at_the_codeRabbit_limit_goes_to_the_owner(self):
+        tracker = FakeTracker([self.waiting(assignee=MERGER_ID)])
+        keeper = self.keeper(tracker, FakeGh([gh_pr(77, 5, "CONFLICTING", "DIRTY")]), rabbit=FakeRabbit(limited=True))
+        keeper.sweep()
+        keeper.sweep()
+        self.assertEqual(tracker.issues[5]["assignee"], OWNER)
+        self.assertEqual(sessions.get("odysseus", 5), {})
+        self.assertEqual(len(tracker.comments), 1)
+        self.assertIn("CodeRabbit limit reached", tracker.comments[0][2])
+
+    def test_a_failing_ai_command_hands_the_issue_to_the_owner(self):
+        tracker = FakeTracker([self.waiting(assignee=MERGER_ID)])
+        gh = FakeGh([gh_pr(77, 5, merge_state="BEHIND", head="abc")])
+        self.keeper(tracker, gh, rabbit=FakeRabbit(fail=True)).sweep()
+        self.assertEqual((gh.updates, tracker.issues[5]["assignee"]), ([], OWNER))
+
+    def test_a_failed_review_request_after_an_update_hands_the_issue_to_the_owner(self):
+        tracker = FakeTracker([self.waiting(assignee=MERGER_ID)])
+        gh = FakeGh([gh_pr(77, 5, merge_state="BEHIND", head="abc")])
+        rabbit = FakeRabbit()
+        rabbit.request = lambda *a: (_ for _ in ()).throw(TalosError("ai down"))
+        self.keeper(tracker, gh, rabbit=rabbit).sweep()
+        self.assertEqual((len(gh.updates), tracker.issues[5]["assignee"]), (1, OWNER))
+
+    def test_a_conflict_below_the_limit_still_goes_to_the_worker(self):
+        tracker = FakeTracker([self.waiting()])
+        rabbit = FakeRabbit()
+        self.keeper(tracker, FakeGh([gh_pr(77, 5, "CONFLICTING", "DIRTY")]), rabbit=rabbit).sweep()
+        self.assertEqual(tracker.issues[5]["assignee"], WORKER_ID)
 
     def test_a_branch_behind_its_base_is_updated_on_github(self):
         gh = FakeGh([gh_pr(77, 5, merge_state="BEHIND", head="abc")])

@@ -25,7 +25,7 @@
     },
     "merge_conflict": {
       "tiers": ["read", "restore", "resolve", "handoff"],
-      "does": "back up the workspace, then resolve the conflict when every hunk is additive (resolve-conflict); otherwise send the issue to Odysseus with notes"
+      "does": "back up the workspace, then resolve the conflict when every hunk is additive (resolve-conflict); otherwise send the issue to Odysseus with notes. CodeRabbit's auto review is off, so every commit an agent pushes needs a trigger from the shared daily budget (tiers: every PR, then large PRs and re-reviews, then a person only; ai rabbit budget). An update or a pushed resolution is a re-review; at the limit do not push, hand the issue to the owner (in_review, 'merge conflict, CodeRabbit limit reached: please resolve and review by hand'). The owner's own GitHub activity is not counted."
     },
     "dirty_generated": {
       "tiers": ["read", "restore"],

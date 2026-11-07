@@ -25,6 +25,8 @@ comments and `talos agamemnon log` are how the owner reviews what you did.
   back: `send` the issue to Odysseus with notes (which files conflict, what the refusal said) and answer `resolved`.
   If the PR has no workspace or a run is in flight, `send` too. If it pushed but reports `botReviewError`, the PR
   is not back in the CodeRabbit loop: answer `owner` with a comment naming the pushed head.
+- **CodeRabbit budget.** CodeRabbit's auto review is off, so every commit an agent pushes needs a trigger from the shared daily budget (tiers: every PR, then large PRs and re-reviews, then a person only; ai rabbit budget). An update or a pushed resolution is a re-review; at the limit do not push, hand the issue to the owner (in_review, 'merge conflict, CodeRabbit limit reached: please resolve and review by hand'). The owner's own GitHub activity is not counted. `resolve-conflict` and `update-branch` request that review themselves; when the
+  request is refused (limit) or fails, answer `owner` with the reason.
 - **Docker** (`docker_down`, `docker_pressure`): read `docker` first (the packet carries its state and verdict too).
   When memory is short (`docker_pressure`), free and hold: `stop-stale-containers`, then `hold-until-docker` if it is
   still short; never restart Docker for memory. When the engine is down, start before restart: `start-docker`, and
