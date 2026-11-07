@@ -29,6 +29,20 @@ comments and `talos agamemnon log` are how the owner reviews what you did.
   When memory is short (`docker_pressure`), free and hold: `stop-stale-containers`, then `hold-until-docker` if it is
   still short; never restart Docker for memory. When the engine is down, start before restart: `start-docker`, and
   `restart-docker` only if it stays unresponsive. Never restart while other runs are in flight. Then retry the run.
+- **CI failures** (`ci_failed`): the packet's `ci` names the PR head, the failed jobs and the re-runs already spent
+  on that head (`reruns` of `rerunAttempts`, plus `rerunErrors`/`lastRerunError` when the re-run command itself
+  failed). Read `ci-log` (each failed job's log tail) and `base-ci` (the base branch's latest run) first, then tell
+  the three cases apart:
+  - **Temporary** (timeouts, network errors, a registry or GitHub 5xx, rate limits): `rerun-ci`, only while re-runs
+    are left; it refuses past the attempts per head.
+  - **Fails on the base branch too** (`base-ci` lists the job in `also_failing_on_base`): `file-bug` (it links the
+    open bug when one is already filed for the same failure), then `hold-until-done` on that bug, so the PR gets
+    the base merged in and CI runs again once the bug is done.
+  - **Caused by the PR's diff** (the job passes on the base branch and the log points at the PR's change): `send`
+    the issue to Odysseus with the failing test and a short log excerpt.
+  - Never file a bug without `base-ci` showing the same failure. Merge the base (`update-branch`), never rebase.
+  - Escalate when the cause is unclear (the log tail says nothing, `base-ci` has no completed run, or re-run errors
+    such as a token without access): answer `owner` with what you read.
 - Finish with the structured outcome: `resolved` when the issue is back on its way (with the worker, waiting, held,
   merged), `owner` otherwise. An unresolved session hands the issue to the owner.
 

@@ -113,6 +113,14 @@ def _note(conn, record_id, text):
                  "|| ? END WHERE id = ?", (text, text, record_id))
 
 
+def ci_reruns_at(record, head):
+    """(re-runs, re-run errors) the merge record counted at the PR head; a new head starts both over at 0."""
+    record = record or {}
+    if record.get("ci_rerun_sha") != head:
+        return 0, 0
+    return record.get("ci_rerun_count") or 0, record.get("ci_rerun_errors") or 0
+
+
 def note_ci_rerun(record_id, head, at, text, error=None):
     """Count a CI re-run at the PR head, or (with `error`) a re-run command that failed. A new head starts the
     counts over. A started re-run stores its time too, for the grace wait; an error needs none."""

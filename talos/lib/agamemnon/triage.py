@@ -121,9 +121,9 @@ class Triage:
 
     # -- deciding (on the sweep's thread) --------------------------------------------------
 
-    def offer(self, number, source, reason, detail, pr=None, since=None):
+    def offer(self, number, source, reason, detail, pr=None, since=None, ci=None):
         """Take the incident into a triage session, or say why not. since: the handback's time, so a handback
-        already decided is not decided again."""
+        already decided is not decided again. ci: the merge sweep's CI state for the packet (a CI handback)."""
         if not self.enabled():
             return Decision(False, "")
         earlier = journal.incidents(issue=number)
@@ -133,7 +133,7 @@ class Triage:
         if since and any(_at(i.get("opened_at")) >= _at(since) for i in earlier):
             return Decision(False, None)
         summary, log_text = run_text(self.run_log(number))
-        incident_type = classifier.classify(reason, f"{detail or ''}\n{summary}", packet.tail(log_text))
+        incident_type = classifier.classify(reason, summary, packet.tail(log_text), detail=detail)
         at = self.now()
         why_not = self._why_not(number, incident_type, at)
         if why_not:
@@ -154,7 +154,7 @@ class Triage:
                       f"does. Each action it takes is commented here; <code>talos agamemnon log --issue {number}"
                       f"</code> lists them.</p>")
         job = {"incident": incident, "issue": number, "type": incident_type, "model": model, "source": source,
-               "pr": pr, "handback": {"reason": reason, "detail": detail},
+               "pr": pr, "ci": ci, "handback": {"reason": reason, "detail": detail},
                "run": {"summary": summary, "log": log_text}}
         if self.background:
             self._enqueue(job)
@@ -213,7 +213,8 @@ class Triage:
         """Run one session and close its incident; unresolved, the issue goes to the owner."""
         number, incident = job["issue"], job["incident"]
         data = packet.build(number, job.get("pr"), job["handback"], job["run"], None, None, self._docker(),
-                            {n: [] for n in self.in_flight()}, [], incident=job["type"])
+                            {n: [] for n in self.in_flight()}, [], incident=job["type"],
+                            ci=job.get("ci"))
         try:
             result, log_path = self.launch(prompt(incident, job["type"], self._spec(job["type"]), data),
                                            job["model"], incident, number)

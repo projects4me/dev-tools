@@ -347,8 +347,26 @@ class Aga:
         runs = [j["run"] for j in jobs if j.get("run")]
         if not runs:
             raise Refused(f"PR #{pr['number']} has no failed CI job on {head[:7]} to re-run")
-        self.p.merger.rerun(self.repo(), runs)
-        state = {"head": head, "failed": sorted(j["name"] for j in jobs)}
+        # the re-runs at this head share the merge sweep's attempts (its open auto_merges record counts them)
+        record = orchestrator_state.find_open_merge(self.s.agent_name, self.number, pr["number"]) or {}
+        spent, _ = orchestrator_state.ci_reruns_at(record, head)
+        attempts = self.s.orchestration.ci_rerun_attempts
+        if spent >= attempts:
+            raise Refused(f"CI on {head[:7]} was already re-run {spent} time(s), the most allowed ({attempts}) "
+                          f"per PR head")
+        try:
+            self.p.merger.rerun(self.repo(), runs)
+        except Exception as e:
+            if record:  # counted like the sweep's failed re-runs (ciRerunErrors)
+                orchestrator_state.note_ci_rerun(record["id"], head, stamp(self.p.now()),
+                                                 f"{self.s.display_name} could not re-run CI on {head[:7]} in "
+                                                 f"triage: {e}", error=str(e))
+            raise
+        state = {"head": head, "failed": sorted(j["name"] for j in jobs), "reruns": spent + 1}
+        if record:
+            orchestrator_state.note_ci_rerun(record["id"], head, stamp(self.p.now()),
+                                             f"{self.s.display_name} re-ran failed CI on {head[:7]} in triage: "
+                                             f"{', '.join(state['failed'])}")
         return Act({"issue": self.number, "pr": pr["number"], "rerun": state["failed"]}, state, state,
                    {"op": "none"}, "nothing to undo: a CI re-run changes no code")
 
