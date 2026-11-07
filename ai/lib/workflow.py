@@ -174,7 +174,21 @@ def open_pr(repo, issue, title, body):
     url = ody(repo, "gh", "pr", "create", "--repo", REPOS[repo], "--base", base_branch(repo),
               "--head", branch_name(issue), "--title", title, "--body-file", str(body_file)).splitlines()[-1]
     say(f"PR: {url}")
+    request_coderabbit_review(repo, url)
     return url
+
+
+def request_coderabbit_review(repo, url):
+    """CodeRabbit doesn't review agent PRs by itself: comment its trigger. A failure only warns, the PR is open."""
+    from . import coderabbit            # imported here: coderabbit imports review, which imports this package
+    trigger = config().get("codeRabbitTrigger")
+    if not trigger or not coderabbit.enabled(repo):
+        return
+    try:
+        ody(repo, "gh", "pr", "comment", url, "--repo", REPOS[repo], "--body", trigger)
+        say("CodeRabbit: requested full review")
+    except Exception as e:
+        say(f"warning: could not request the CodeRabbit review ({e}); comment `{trigger}` on the PR yourself")
 
 
 def cmd_pr(args):
