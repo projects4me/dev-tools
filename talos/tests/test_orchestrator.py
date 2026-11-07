@@ -62,6 +62,34 @@ class PolicyTest(unittest.TestCase):
         self.assertIn("D:/x", self.restart(back, branch, holder="D:/x"))
         self.assertIsNone(self.restart(back, branch, holder=None))
 
+    def stranded(self, i=None, state=None, assigned_at=None, deps=None, minutes=15):
+        i = i or issue(1, assignee=WORKER_ID, modified="2026-10-31T09:00:00+05:00")
+        return policy.stranded_skip_reason(i, state, assigned_at, "aga-", PROJECTS, WORKER_ID, deps or {},
+                                           "2026-10-31T10:00:00+05:00", minutes)
+
+    def test_stranded_candidate(self):
+        self.assertIsNone(self.stranded())
+        self.assertIsNone(self.stranded(issue(1, assignee=WORKER_ID, status="pending", modified="2026-10-31T09:00:00+05:00")))
+        mine = issue(1, assignee=WORKER_ID, modified="2026-10-31T09:00:00+05:00")
+        for bad, why in (({**mine, "assignee": OWNER}, "not assigned"), ({**mine, "status": "in_progress"}, "not new"),
+                         ({**mine, "status": "in_review"}, "not new"), ({**mine, "milestone": "x"}, "aga-"),
+                         ({**mine, "type": "epic"}, "epic")):
+            self.assertIn(why, self.stranded(bad))
+
+    def test_stranded_dependencies(self):
+        mine = issue(1, assignee=WORKER_ID, modified="2026-10-31T09:00:00+05:00", dependsOn=[9])
+        self.assertIn("#9", self.stranded(mine, deps={9: "in_progress"}))
+        self.assertIsNone(self.stranded(mine, deps={9: "done"}))
+
+    def test_stranded_needs_an_idle_worker(self):
+        self.assertIn("run is in flight", self.stranded(state={"running": 1}))
+        self.assertIn("retried", self.stranded(state={"pending_status": "feedback"}))
+        self.assertIn("9 minute", self.stranded(assigned_at="2026-10-31T09:51:00+05:00"))      # below the minutes
+        self.assertIsNone(self.stranded(assigned_at="2026-10-31T09:44:00+05:00"))               # above
+        self.assertIn("5 minute", self.stranded(state={"last_ended_at": "2026-10-31T09:55:00+05:00"}))
+        self.assertIsNone(self.stranded(state={"last_ended_at": "2026-10-31T09:55:00+05:00"}, minutes=5))
+        self.assertIn("no time", self.stranded(issue(1, assignee=WORKER_ID)))
+
     def test_rank_priority_then_milestone_then_number(self):
         issues = [issue(5, priority="low"), issue(4, priority="high", milestone="aga-v2"),
                   issue(3, priority="high", milestone="aga-v1"), issue(2, priority="?"), issue(1, priority="Blocker")]
@@ -202,6 +230,42 @@ class SweepTest(unittest.TestCase):
                                issue(6, status="in_progress", assignee=WORKER_ID)])
         sessions.update("odysseus", 6, pending_status="feedback", pending_assignee=OWNER)
         self.assertEqual(self.orchestrator(tracker).sweep(), [(1, "new")])     # only #5 holds a slot
+
+    def stranded_issue(self, number, **fields):
+        return issue(number, assignee=WORKER_ID, modified="2026-10-31T09:00:00+05:00", **fields)
+
+    def test_stranded_issue_is_given_back_with_a_comment(self):
+        tracker = FakeTracker([self.stranded_issue(1)])
+        self.assertEqual(self.orchestrator(tracker).sweep(), [(1, "stranded")])
+        self.assertEqual(tracker.assigned, [1, 1])          # through the owner, then back to the worker
+        self.assertEqual(tracker.issues[1]["assignee"], WORKER_ID)
+        number, title, body = tracker.comments[0]
+        self.assertEqual(title, "Agent Agamemnon: picked up a stranded issue")
+        self.assertIn("15 minutes", body)
+
+    def test_stranded_issue_with_unmet_dependency_or_activity_is_left(self):
+        tracker = FakeTracker([self.stranded_issue(1, dependsOn=[9]), self.stranded_issue(2),
+                               self.stranded_issue(3), self.stranded_issue(4, status="in_review")],
+                              dependencies={9: "in_progress"})
+        sessions.update("odysseus", 2, running=1)
+        sessions.update("odysseus", 3, last_ended_at="2026-10-31T09:50:00+05:00")
+        self.assertEqual(self.orchestrator(tracker, max_in_flight=9).sweep(), [])
+        self.assertEqual(tracker.assigned, [])
+
+    def test_stranded_issues_hold_no_slot_but_are_limited_to_free_ones(self):
+        busy = issue(9, assignee=WORKER_ID, status="in_progress")
+        tracker = FakeTracker([self.stranded_issue(1, priority="low"), self.stranded_issue(2, priority="high"),
+                               self.stranded_issue(3, priority="high"), busy])
+        # 2 slots, one taken by #9: one stranded issue is given back, the most urgent first
+        self.assertEqual(self.orchestrator(tracker).sweep(), [(2, "stranded")])
+        self.assertIn("stranded, no free slot: #3, #1", store.get("agamemnon")["last_sweep"])
+        tracker = FakeTracker([self.stranded_issue(11), self.stranded_issue(12)])
+        self.assertEqual(self.orchestrator(tracker).sweep(), [(11, "stranded"), (12, "stranded")])
+
+    def test_stranded_dry_run_assigns_nothing(self):
+        tracker = FakeTracker([self.stranded_issue(1)])
+        self.assertEqual(self.orchestrator(tracker, dry_run=True).sweep(), [(1, "stranded")])
+        self.assertEqual(tracker.assigned, [])
 
     def test_max_in_flight_defaults_to_worker_max_parallel(self):
         tracker = FakeTracker([issue(1), issue(2)])

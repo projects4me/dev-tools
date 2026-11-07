@@ -507,6 +507,7 @@ and is `enabled: false` until the engineer turns it on.
     worker was its last modifier (the reviewer hasn't touched it since the handback), its `handoff_reason` is in
     `autoRetryReasons` and `auto_retries` is below `maxAutoRetries` (2). For `branch_checked_out` it waits until
     `workspaces.branch_holder()` finds the branch checked out in no other folder; that checkout is never touched.
+  - *Stranded*: assigned to the worker already, status new or pending, every "Depends on" issue done, and the worker has shown no sign of it (no run in flight, nothing started, ended, handed back, assigned to it or changed in Gaia) for `strandedMinutes` (15). It is given back through the assignee (via the first owner, since Gaia reports no change for the same assignee), as the `aga retry` path assigns it, with the comment "picked up a stranded issue". Issues held by Agamemnon, in triage or in review are never stranded (they are not assigned to the worker). Stranded issues hold no slot until given back; at most the free slots are given back per sweep, after restarts and before new issues. The sweep note (shown by `talos status`) lists the ones that had to wait for a slot.
   - *New*: status new, unassigned or assigned to an owner, not an epic, every "Depends on" issue done.
   - *Overlap hold* (`lib/orchestrator/overlap.py`, new issues only): an issue whose predicted files overlap an issue
     in flight in the same repo (started and not done or wont_fix, in the worker's milestones, or assigned earlier in

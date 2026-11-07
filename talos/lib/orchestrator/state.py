@@ -58,6 +58,17 @@ def record_assignment(agent, issue, worker, at):
         conn.close()
 
 
+def assigned_at(agent, issue):
+    """When the orchestrator last assigned the issue to its worker, or None."""
+    conn = db.connect()
+    try:
+        row = conn.execute("SELECT assigned_at FROM orchestrated WHERE agent = ? AND issue = ?",
+                           (agent, issue)).fetchone()
+        return row["assigned_at"] if row else None
+    finally:
+        conn.close()
+
+
 def open_merge(agent, issue, repo, pr, at):
     """The issue's merge record still waiting (ended_at NULL), created when it is first seen."""
     conn = db.connect()
