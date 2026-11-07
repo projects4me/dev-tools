@@ -585,7 +585,9 @@ and is `enabled: false` until the engineer turns it on.
   never from the command line. Every verb checks, and refuses (exit 3, `{"refused": …}`, nothing done) otherwise:
   the premise grants its tier for the incident type, the issue is in an `aga-` milestone, an acting verb has a
   `--why` and the incident has taken fewer than `agaMaxActionsPerIncident` (5) actions; then its own preconditions.
-  - Level 0, read (tier `read`, not journaled): `status`, `logs`, `diff`, `mergecheck`, `workspace`, `overlap`.
+  - Level 0, read (tier `read`, not journaled): `status`, `logs`, `diff`, `mergecheck`, `ci-log` (the failed jobs on the PR head: name, URL, last 150 log
+    lines each), `base-ci` (the same workflow's latest completed run on the base branch: whether it passed and
+    which of the PR's failed jobs also fail there), `workspace`, `overlap`.
   - Level 1, reversible and private: `backup` (tier `restore`: commits the workspace's tracked and untracked files
     through a scratch index to `refs/agamemnon/backup/<issue>/<time>` and pushes it as Odysseus; never `git
     stash`), `restore <files>` (tier `restore`: only the incident's `generatedFiles` in the premise, only after a

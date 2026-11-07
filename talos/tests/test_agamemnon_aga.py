@@ -50,6 +50,7 @@ class FakeMerger:
     def __init__(self):
         self.pr = {"number": 12, "merged": False}
         self.failed, self.reran, self.merged = [], [], []
+        self.logs, self.base = {}, None
         self.merge_result = {"state": "ok", "sha": "abc", "merged": "def"}
 
     def find_pr(self, repo, issue):
@@ -64,6 +65,12 @@ class FakeMerger:
 
     def failed_jobs(self, repo, sha):
         return self.failed
+
+    def failed_logs(self, repo, run, tail=150):
+        return self.logs.get(run, {})
+
+    def base_run(self, repo, run, base):
+        return self.base
 
     def rerun(self, repo, runs):
         self.reran.extend(runs)
@@ -230,6 +237,33 @@ class VerbTest(AgaTest):
         out = self.aga("ci_failed", "rerun-ci")
         self.assertEqual(self.merger.reran, ["99"])
         self.undoer().undo(out["action"])         # nothing changed: marked undone
+
+    def test_ci_log_reads_the_failed_jobs_logs(self):
+        self.assertEqual(self.aga("ci_failed", "ci-log")["jobs"], [])
+        self.merger.failed = [{"name": "tests", "url": "u", "run": "99"}]
+        self.merger.logs = {"99": {"tests": "boom"}}
+        out = self.aga("ci_failed", "ci-log")
+        self.assertEqual(out["jobs"], [{"name": "tests", "url": "u", "tail": "boom"}])
+        self.assertEqual(journal.actions(), [])
+
+    def test_base_ci_compares_with_the_base_branch(self):
+        self.merger.failed = [{"name": "tests", "url": "u", "run": "99"}]
+        self.merger.base = {"run": "50", "sha": "b", "conclusion": "success",
+                            "jobs": [{"name": "tests", "conclusion": "success"}]}
+        out = self.aga("ci_failed", "base-ci")
+        self.assertTrue(out["passed"])
+        self.assertEqual(out["also_failing_on_base"], [])
+        self.merger.base = {"run": "51", "sha": "c", "conclusion": "failure",
+                            "jobs": [{"name": "tests", "conclusion": "failure"},
+                                     {"name": "lint", "conclusion": "success"}]}
+        out = self.aga("ci_failed", "base-ci")
+        self.assertFalse(out["passed"])
+        self.assertEqual(out["also_failing_on_base"], ["tests"])
+
+    def test_base_ci_without_a_failed_job_or_base_run(self):
+        out = self.aga("ci_failed", "base-ci")
+        self.assertIsNone(out["run"])
+        self.assertEqual(out["failing_on_head"], [])
 
     def test_wait_for_issue_gives_up_at_the_cap(self):
         out = self.aga("everything", "wait-for", {"what": "8", "minutes": 60})
