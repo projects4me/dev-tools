@@ -39,6 +39,7 @@ Signed in to GitHub **as agent-agamemnon**:
    | Contents | Read and write | merge PRs, update a branch that is behind its base |
    | Pull requests | Read and write | approve and merge PRs |
    | Checks | Read-only | read CI and CodeRabbit check runs |
+   | Actions | Read and write | re-run failed CI jobs (`gh run rerun --failed`) |
    | Commit statuses | Read-only | read commit statuses |
    | Metadata | Read-only | added automatically |
 

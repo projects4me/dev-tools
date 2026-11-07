@@ -531,6 +531,10 @@ and is `enabled: false` until the engineer turns it on.
   - `ok`: `ai merge` approves and merges it as `agent-agamemnon`, pinned to the commit the gate read; the issue is
     set `done` (which frees the issues that depend on it) and a comment names the merge commit.
   - `pending` (CI or CodeRabbit still running): waits, up to `autoMergeWaitMinutes` (60).
+  - `fail` on CI only: re-runs the failed jobs, up to `ciRerunAttempts` (3) times per PR head, waiting a couple of
+    minutes after each; the comment says "attempt n of 3". A re-run command that errors (for example a token without
+    the Actions permission) is counted with its error text; after `ciRerunErrors` (2) errors at the same head, or
+    after the last re-run fails again, the issue goes to the owner (triage first). A new push starts over.
   - `fail`, still pending after the wait, no open PR, or `maxAutoMergesPerDay` (5) already merged today: in_review,
     assigned to the reviewer, with a comment giving the reason.
   - a PR already merged (an earlier pass merged it but setting the issue done failed): the issue is set `done`.

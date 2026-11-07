@@ -65,4 +65,7 @@ class Merger:
         """Re-run the failed jobs of each workflow run id."""
         slug = github.known_repos()[repo]
         for run in sorted(set(runs)):
-            self.gh("run", "rerun", run, "--failed", "--repo", slug)
+            try:
+                self.gh("run", "rerun", run, "--failed", "--repo", slug)
+            except TalosError as e:     # keep gh's own message (a token without the Actions permission says so)
+                raise TalosError(f"gh run rerun {run} --failed in {repo}: {str(e)[-400:]}")

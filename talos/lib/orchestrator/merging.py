@@ -111,32 +111,55 @@ class MergeSweeper:
         return f"held ({why})"
 
     def _ci_failed(self, issue, repo, pr, gate, record):
-        """The gate failed only on CI: re-run the failed job(s) once per PR head and wait; a second failure at the
-        same head goes to the owner with the failing job and its log link."""
-        number, sha = issue["number"], gate.get("sha") or ""
+        """The gate failed only on CI: re-run the failed job(s), up to ciRerunAttempts times per PR head, waiting
+        a grace period after each. Re-runs that error are counted too (ciRerunErrors per head). When the attempts
+        or errors are used up, the issue goes to the owner with the failing job and its log link, or the error."""
+        number, sha, s = issue["number"], gate.get("sha") or "", self.settings
+        record = record or {}
+        same = record.get("ci_rerun_sha") == sha
+        count = (record.get("ci_rerun_count") or 0) if same else 0
+        errors = (record.get("ci_rerun_errors") or 0) if same else 0
         minutes = 0
-        if record and record.get("ci_rerun_at"):
+        if same and record.get("ci_rerun_at"):
             minutes = (datetime.fromisoformat(self.now()) - datetime.fromisoformat(record["ci_rerun_at"])
                        ).total_seconds() / 60
-        step = policy.ci_step((record or {}).get("ci_rerun_sha"), minutes, sha)
+        step = policy.ci_step(sha if same else None, count, minutes, sha, s.ci_rerun_attempts)
         if step == policy.WAIT:
             return "waiting (CI re-run)"
         jobs = self.merger.failed_jobs(repo, sha)
         listed = ", ".join(f"{j['name']} ({j['url']})" if j["url"] else j["name"] for j in jobs) or failing(gate)
         runs = [j["run"] for j in jobs if j["run"]]
+        if errors >= s.ci_rerun_errors:
+            return self._hand_back(issue, pr, f"Re-running the failed CI failed {errors} times: "
+                                   f"{record.get('ci_rerun_error') or 'no error text'}. Failed: {listed}", record)
         if step == policy.HAND_BACK or not runs:
-            why = "CI failed again after one re-run" if step == policy.HAND_BACK else "CI failed and has no job to re-run"
+            why = (f"CI failed again after {count} re-run{'s' if count != 1 else ''}" if step == policy.HAND_BACK
+                   else "CI failed and has no job to re-run")
             return self._hand_back(issue, pr, f"{why}: {listed}", record)
         if self.dry_run:
             log(f"#{number} dry run, would re-run failed CI of PR {repo}#{pr}: {listed}", self.agent.name)
             return "would re-run CI (dry run)"
-        self.merger.rerun(repo, runs)
-        store.note_merge(record["id"], f"re-ran failed CI on {sha[:7]}: {listed}", ci_rerun_sha=sha, at=self.now())
-        log(f"#{number} re-ran failed CI of PR {repo}#{pr}: {listed}", self.agent.name)
+        try:
+            self.merger.rerun(repo, runs)
+        except TalosError as e:
+            error = str(e)
+            store.note_ci_rerun(record["id"], sha, self.now(), f"CI re-run on {sha[:7]} failed: {error}", error)
+            log(f"#{number} re-running failed CI of PR {repo}#{pr} failed ({errors + 1} of "
+                f"{s.ci_rerun_errors}): {error}", self.agent.name)
+            if errors + 1 >= s.ci_rerun_errors:
+                record = {**record, "ci_rerun_error": error}
+                return self._hand_back(issue, pr, f"Re-running the failed CI failed {errors + 1} times: {error}. "
+                                       f"Failed: {listed}", record)
+            return "CI re-run failed"
+        attempt = count + 1
+        store.note_ci_rerun(record["id"], sha, self.now(), f"re-ran failed CI on {sha[:7]}: {listed}")
+        log(f"#{number} re-ran failed CI of PR {repo}#{pr} (attempt {attempt} of {s.ci_rerun_attempts}): {listed}",
+            self.agent.name)
         self._comment(number, f"{self.agent.display_name}: re-running failed CI",
                       f"<p>The merge gate failed only on CI for <code>{html.escape(sha[:7])}</code>: "
-                      f"{html.escape(listed)}. Re-ran the failed job(s) once; if they fail again the issue goes "
-                      f"to the owner.</p>")
+                      f"{html.escape(listed)}. Re-ran the failed job(s), attempt {attempt} of "
+                      f"{s.ci_rerun_attempts}; if they still fail after the last one the issue goes to the "
+                      f"owner.</p>")
         return "re-ran failed CI"
 
     def _wait_record(self, number, repo, pr):

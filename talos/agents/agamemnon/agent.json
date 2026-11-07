@@ -23,6 +23,8 @@
   "autoMergeMilestones": ["aga-v1"],
   "maxAutoMergesPerDay": 5,
   "autoMergeWaitMinutes": 60,
+  "ciRerunAttempts": 3,
+  "ciRerunErrors": 2,
   "agaMaxActionsPerIncident": 5,
   "agaWaitMaxMinutes": 30,
   "agaPollSeconds": 30,
