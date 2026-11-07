@@ -147,6 +147,22 @@ class TriageTest(unittest.TestCase):
         self.assertIn('"verdict": "pressured"', text)
         self.assertIn('"memUsed": 95', text)
 
+    def test_a_ci_handback_puts_the_failed_jobs_and_reruns_in_the_packet(self):
+        self.log_file = self.tmp / "run.json"            # an earlier run's log that mentions a conflict
+        self.log_file.write_text(json.dumps({"session_id": "x", "result": "CONFLICT (content): Merge conflict"}),
+                                 encoding="utf-8")
+        ci = {"head": "abc1234", "failedJobs": [{"name": "Build-and-Test", "url": "u"}], "reruns": 3,
+              "rerunAttempts": 3, "rerunErrors": 0, "lastRerunError": None}
+        self.triage().offer(5, triage.MERGE, None, "CI failed again after 3 re-runs: Build-and-Test (u)", pr=77,
+                            ci=ci)
+        text = self.launched[0][0]
+        self.assertIn("type `ci_failed`", text)
+        self.assertIn("ci-log", text)                    # the premise's steps for the type
+        self.assertIn("file-bug", text)
+        data = json.loads(text.split("```json\n")[1].split("\n```")[0])
+        self.assertEqual(data["ci"], ci)
+        self.assertEqual(data["pr"], 77)
+
     def test_a_docker_read_that_fails_leaves_the_packet_without_it(self):
         t = self.triage()
         t.docker = mock.Mock(side_effect=OSError("boom"))

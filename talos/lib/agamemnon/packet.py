@@ -21,11 +21,13 @@ def own_comments(comments, author=AGENT_NAME):
     return sorted(mine, key=lambda c: str(c["at"] or ""))
 
 
-def build(issue, pr, handback, run, mergecheck, git_state, docker_state, in_flight, comments, incident=None):
+def build(issue, pr, handback, run, mergecheck, git_state, docker_state, in_flight, comments, incident=None,
+          ci=None):
     """The packet. handback is {"reason", "detail"}; run is {"summary", "log"} (the log is cut to its tail);
     mergecheck is `ai mergecheck`'s output (or None without a PR); git_state and docker_state are the workspace's git
     status and Docker's state as the caller read them; in_flight is {issue: changed files}; comments are the issue's
-    comments ({"author", "at", "text"})."""
+    comments ({"author", "at", "text"}); ci is the merge sweep's CI state on a CI handback (the PR head, its failed
+    jobs and the re-runs spent on it), None otherwise."""
     handback, run = handback or {}, run or {}
     return {
         "issue": int(issue),
@@ -36,6 +38,7 @@ def build(issue, pr, handback, run, mergecheck, git_state, docker_state, in_flig
         "mergecheck": mergecheck,
         "git": git_state,
         "docker": docker_state,
+        "ci": ci,
         "inFlight": others_in_flight(in_flight or {}, issue),
         "earlierComments": own_comments(comments),
     }

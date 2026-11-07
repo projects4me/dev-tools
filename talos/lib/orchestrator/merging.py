@@ -119,8 +119,7 @@ class MergeSweeper:
         number, sha, s = issue["number"], gate.get("sha") or "", self.settings
         record = record or {}
         same = record.get("ci_rerun_sha") == sha
-        count = (record.get("ci_rerun_count") or 0) if same else 0
-        errors = (record.get("ci_rerun_errors") or 0) if same else 0
+        count, errors = store.ci_reruns_at(record, sha)
         minutes = 0
         if same and record.get("ci_rerun_at"):
             minutes = (datetime.fromisoformat(self.now()) - datetime.fromisoformat(record["ci_rerun_at"])
@@ -131,13 +130,15 @@ class MergeSweeper:
         jobs = self.merger.failed_jobs(repo, sha)
         listed = ", ".join(f"{j['name']} ({j['url']})" if j["url"] else j["name"] for j in jobs) or failing(gate)
         runs = [j["run"] for j in jobs if j["run"]]
+        ci = ci_state(sha, jobs, count, s.ci_rerun_attempts, errors, record.get("ci_rerun_error"))
         if errors >= s.ci_rerun_errors:
             return self._hand_back(issue, pr, f"Re-running the failed CI failed {errors} times: "
-                                   f"{record.get('ci_rerun_error') or 'no error text'}. Failed: {listed}", record)
+                                   f"{record.get('ci_rerun_error') or 'no error text'}. Failed: {listed}", record,
+                                   ci=ci)
         if step == policy.HAND_BACK or not runs:
             why = (f"CI failed again after {count} re-run{'s' if count != 1 else ''}" if step == policy.HAND_BACK
                    else "CI failed and has no job to re-run")
-            return self._hand_back(issue, pr, f"{why}: {listed}", record)
+            return self._hand_back(issue, pr, f"{why}: {listed}", record, ci=ci)
         if self.dry_run:
             log(f"#{number} dry run, would re-run failed CI of PR {repo}#{pr}: {listed}", self.agent.name)
             return "would re-run CI (dry run)"
@@ -151,7 +152,8 @@ class MergeSweeper:
             if errors + 1 >= s.ci_rerun_errors:
                 record = {**record, "ci_rerun_error": error}
                 return self._hand_back(issue, pr, f"Re-running the failed CI failed {errors + 1} times: {error}. "
-                                       f"Failed: {listed}", record)
+                                       f"Failed: {listed}", record,
+                                       ci={**ci, "rerunErrors": errors + 1, "lastRerunError": error})
             return "CI re-run failed"
         attempt = count + 1
         store.note_ci_rerun(record["id"], sha, self.now(), f"re-ran failed CI on {sha[:7]}: {listed}")
@@ -193,12 +195,13 @@ class MergeSweeper:
                       f"without a review; revert the merge commit if this needs another look.</p>")
         return f"merged PR {repo}#{pr}"
 
-    def _hand_back(self, issue, pr, detail, record=None, triage=True):
+    def _hand_back(self, issue, pr, detail, record=None, triage=True, ci=None):
         """The owner reviews it as usual: in_review, assigned to them, with the reason; first a triage session when
-        the incident is in Agamemnon's premise (the merge record stays open meanwhile)."""
+        the incident is in Agamemnon's premise (the merge record stays open meanwhile). ci: the CI state for the
+        triage packet on a CI handback (ci_state)."""
         number = issue["number"]
         if triage and self.triage and self.triage.enabled():
-            decision = self.triage.offer(number, "merge", None, detail, pr=pr)
+            decision = self.triage.offer(number, "merge", None, detail, pr=pr, ci=ci)
             if decision.taken:
                 return decision.note
             detail += f" (no triage: {decision.note})" if decision.note else ""
@@ -218,6 +221,12 @@ class MergeSweeper:
             self.tracker.comment(number, title, body)
         except TalosError as e:
             log(f"#{number} comment failed: {e}", self.agent.name)
+
+
+def ci_state(head, jobs, reruns, attempts, errors, error):
+    """The CI part of a triage packet: the PR head, its failed jobs ({"name", "url"}) and the re-runs spent on it."""
+    return {"head": head, "failedJobs": [{"name": j["name"], "url": j.get("url") or ""} for j in jobs],
+            "reruns": reruns, "rerunAttempts": attempts, "rerunErrors": errors, "lastRerunError": error or None}
 
 
 def failing(gate, state="fail"):

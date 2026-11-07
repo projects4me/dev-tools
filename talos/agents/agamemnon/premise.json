@@ -20,8 +20,8 @@
       "does": "wait for a free test slot, then retry"
     },
     "ci_failed": {
-      "tiers": ["read", "retry", "handoff"],
-      "does": "re-run the failed job, then hand the issue to Odysseus"
+      "tiers": ["read", "retry", "wait", "handoff", "file", "update", "notify"],
+      "does": "read ci-log and base-ci, then tell the cause apart. Temporary (timeouts, network, registry or GitHub 5xx, rate limits): rerun-ci within the 3 re-run attempts per PR head. Fails on the base branch too: file-bug (or link the open one), then hold-until-done on that bug. Caused by the PR's diff: send the issue to Odysseus with the failing test and a log excerpt"
     },
     "merge_conflict": {
       "tiers": ["read", "restore", "resolve", "handoff"],

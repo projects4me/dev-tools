@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from lib import db, registry, sessions  # noqa: E402
 from lib.agamemnon import holds, journal, premise, tool, undo, verbs, wiring  # noqa: E402
 from lib.agamemnon.verbs import Refused  # noqa: E402
+from lib.orchestrator import state as store  # noqa: E402
 
 WORKER_ID, MY_ID, OWNER = "w1", "a1", "o1"
 ISSUE = 7
@@ -237,6 +238,33 @@ class VerbTest(AgaTest):
         out = self.aga("ci_failed", "rerun-ci")
         self.assertEqual(self.merger.reran, ["99"])
         self.undoer().undo(out["action"])         # nothing changed: marked undone
+
+    def test_rerun_ci_shares_the_sweeps_attempts_per_head(self):
+        self.merger.failed = [{"name": "tests", "run": "99"}]
+        record = store.open_merge("agamemnon", ISSUE, "gaia", 12, "2026-10-31T09:00:00+05:00")
+        store.note_ci_rerun(record["id"], "headsha", "2026-10-31T09:10:00+05:00", "re-ran")
+        store.note_ci_rerun(record["id"], "headsha", "2026-10-31T09:20:00+05:00", "re-ran")
+        out = self.aga("ci_failed", "rerun-ci")     # the third of 3 at this head
+        self.assertEqual(self.merger.reran, ["99"])
+        self.assertEqual(out["rerun"], ["tests"])
+        row = store.find_open_merge("agamemnon", ISSUE, 12)
+        self.assertEqual(row["ci_rerun_count"], 3)
+        self.assertIn("in triage", row["note"])
+        with self.assertRaisesRegex(Refused, "already re-run 3 time"):
+            self.aga("ci_failed", "rerun-ci")
+        self.assertEqual(self.merger.reran, ["99"])
+
+    def test_a_failed_rerun_ci_counts_as_a_rerun_error(self):
+        self.merger.failed = [{"name": "tests", "run": "99"}]
+        record = store.open_merge("agamemnon", ISSUE, "gaia", 12, "2026-10-31T09:00:00+05:00")
+        with mock.patch.object(self.merger, "rerun", side_effect=RuntimeError("not accessible")):
+            with self.assertRaises(RuntimeError):
+                self.aga("ci_failed", "rerun-ci")
+        row = store.find_open_merge("agamemnon", ISSUE, 12)
+        self.assertEqual((row["ci_rerun_count"], row["ci_rerun_errors"]), (0, 1))
+        self.assertEqual(row["ci_rerun_error"], "not accessible")
+        self.assertEqual(store.ci_reruns_at(row, "headsha"), (0, 1))
+        self.assertEqual(store.ci_reruns_at(row, "newhead"), (0, 0))
 
     def test_ci_log_reads_the_failed_jobs_logs(self):
         self.assertEqual(self.aga("ci_failed", "ci-log")["jobs"], [])

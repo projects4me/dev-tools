@@ -21,6 +21,9 @@ class PremiseTests(unittest.TestCase):
         self.assertEqual(p.tiers_for("docker_down"), ("read", "engine", "wait", "retry", "notify"))
         self.assertFalse(p.allows("docker_down", "restore"))
         self.assertEqual(p.tiers_for("docker_pressure"), ("read", "free", "wait", "retry", "notify"))
+        self.assertEqual(p.tiers_for("ci_failed"), ("read", "retry", "wait", "handoff", "file", "update", "notify"))
+        for step in ("ci-log", "base-ci", "rerun-ci", "file-bug", "hold-until-done", "send"):
+            self.assertIn(step, p.incidents["ci_failed"]["does"])
 
     def test_unlisted_type_is_not_handled(self):
         p = premise.load()
@@ -73,6 +76,25 @@ class ClassifierTests(unittest.TestCase):
                 self.assertEqual(classifier.classify(reason, summary, log), expected)
 
 
+    def test_the_merge_sweeps_ci_handbacks_are_ci_failed_whatever_the_run_log_says(self):
+        # the merge sweep's handback texts (orchestrator/merging.py), as they reach the Talos log
+        details = [
+            "CI failed again after 3 re-runs: Build-and-Test (https://github.com/x/actions/runs/99/job/1)",
+            "CI failed again after 1 re-run: build",
+            "CI failed and has no job to re-run: ci: failed: build",
+            "Re-running the failed CI failed 2 times: command failed (1): bash agamemnon gh run rerun 42328011611 "
+            "--failed --repo Projects4Me/gaia: run 42328011611 cannot be rerun; Resource not accessible by personal "
+            "access token. Failed: Build-and-Test",
+        ]
+        stale_log = "error during connect: open //./pipe/dockerDesktopLinuxEngine\nMerge conflict in a.py"
+        for detail in details:
+            with self.subTest(detail=detail):
+                self.assertEqual(classifier.classify(None, "", stale_log, detail=detail), "ci_failed")
+        # any other handback text still goes through the rules with the run
+        self.assertEqual(classifier.classify(None, "", stale_log, detail="no open PR"), "docker_down")
+        self.assertEqual(classifier.classify(None, "", "", detail="merge conflict: PR gaia#7"), "merge_conflict")
+
+
 class PacketTests(unittest.TestCase):
     def test_build(self):
         comments = [{"author": "Agent Agamemnon", "at": "2", "text": "b"}, {"author": "Someone", "at": "1", "text": "x"},
@@ -87,7 +109,14 @@ class PacketTests(unittest.TestCase):
         self.assertEqual(len(p["run"]["logTail"].splitlines()), packet.LOG_TAIL_LINES)
         self.assertEqual(p["inFlight"], [{"issue": 5, "files": ["b", "z"]}])
         self.assertEqual([c["text"] for c in p["earlierComments"]], ["a", "b"])
+        self.assertIsNone(p["ci"])
         json.dumps(p)
+
+    def test_build_carries_the_ci_state(self):
+        ci = {"head": "abc", "failedJobs": [{"name": "tests", "url": "u"}], "reruns": 3, "rerunAttempts": 3,
+              "rerunErrors": 0, "lastRerunError": None}
+        p = packet.build(5, 77, None, None, None, None, None, None, None, incident="ci_failed", ci=ci)
+        self.assertEqual(p["ci"], ci)
 
     def test_build_without_pr_or_run(self):
         p = packet.build("7", None, None, None, None, None, None, None, None)

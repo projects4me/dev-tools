@@ -511,6 +511,20 @@ class AutoMergeTest(SweepTest):
         self.assertIn("failed again after 3 re-runs", tracker.comments[-1][2])
         self.assertIn("https://github.com/x/actions/runs/99/job/1", tracker.comments[-1][2])
 
+    def test_a_ci_handback_gives_triage_the_failed_jobs_and_the_reruns(self):
+        tracker = FakeTracker([self.clean()])
+        merger = FakeMerger(gate("fail", ("ci", "failed: build")))
+        o = self.merging(tracker, merger, ci_rerun_attempts=1)
+        o.merges.triage = mock.Mock(**{"enabled.return_value": True, "offer.return_value": mock.Mock(taken=True)})
+        o.sweep()
+        self.sweep_ci(o, 5)
+        args, kwargs = o.merges.triage.offer.call_args
+        self.assertTrue(args[3].startswith("CI failed again after 1 re-run:"))
+        self.assertEqual(kwargs["ci"], {"head": gate("fail")["sha"], "reruns": 1, "rerunAttempts": 1,
+                                        "rerunErrors": 0, "lastRerunError": None,
+                                        "failedJobs": [{"name": "Build-and-Test",
+                                                        "url": "https://github.com/x/actions/runs/99/job/1"}]})
+
     def test_one_rerun_when_the_attempts_are_one(self):
         tracker = FakeTracker([self.clean()])
         merger = FakeMerger(gate("fail", ("ci", "failed: build")))

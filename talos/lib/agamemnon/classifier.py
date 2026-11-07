@@ -24,9 +24,18 @@ RULES = (
 )
 
 
-def classify(reason, summary, log_tail):
-    """The incident type for a handback, or OTHER."""
-    text = f"{summary or ''}\n{log_tail or ''}".lower()
+# The merge sweep's CI handbacks (orchestrator/merging.py `_ci_failed`), read from the handback's own text first: the
+# worker's last run log, read with it, may mention Docker or a conflict from an earlier step and must not win.
+CI_HANDBACKS = (r"^ci failed again after \d+ re-?runs?\b", r"^ci failed and has no job to re-?run\b",
+                r"^re-running the failed ci failed \d+ times?\b")
+
+
+def classify(reason, summary, log_tail, detail=None):
+    """The incident type for a handback, or OTHER. detail: the handback's own text, read before the run's."""
+    detail = str(detail or "").strip().lower()
+    if any(re.search(p, detail) for p in CI_HANDBACKS):
+        return "ci_failed"
+    text = f"{detail}\n{summary or ''}\n{log_tail or ''}".lower()
     reason = str(reason or "").strip().lower()
     for incident, reasons, patterns in RULES:
         if reason in reasons or any(re.search(p, text) for p in patterns):

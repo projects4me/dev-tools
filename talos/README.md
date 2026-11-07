@@ -560,9 +560,14 @@ and is `enabled: false` until the engineer turns it on.
 - **Premise and incident packet** (`lib/agamemnon/`, groundwork for Agamemnon as an AI agent): `agents/agamemnon/premise.json`
   lists the incident types it may handle (`test_contention`, `ci_failed`, `merge_conflict`, `dirty_generated`,
   `docker_down`, `docker_pressure`, `handback_failed`), each with its allowed tool tiers; anything not listed goes to the owner. Widening it
-  is a config change. `classifier.classify(reason, summary, log_tail)` maps a handback to an incident type or `other`;
+  is a config change. `classifier.classify(reason, summary, log_tail, detail)` maps a handback to an incident type or
+  `other`; the merge sweep's CI handbacks ("CI failed again after N re-runs", "CI failed and has no job to re-run",
+  "Re-running the failed CI failed N times") are `ci_failed` from their own text, whatever the worker's run log says.
   `packet.build(...)` assembles the JSON packet the agent is given (issue, PR, handback, run summary and log tail,
-  mergecheck, git and Docker state, the other in-flight issues' files, its earlier comments).
+  mergecheck, git and Docker state, the other in-flight issues' files, its earlier comments, and on a CI handback
+  `ci`: the PR head, the failed jobs' names and URLs, the re-runs spent of the attempts and any re-run error).
+  `ci_failed` reads `ci-log` and `base-ci`, then re-runs a temporary failure, files (or links) a bug and holds the
+  issue when the base branch fails too, or sends a failure the PR caused to the worker (role.md, CI failures).
 - **Triage sessions** (`lib/agamemnon/triage.py`, on with `agaTriage`, live from the start: no shadow mode). Where
   the orchestrator would leave an issue to the owner (a handback not restarted automatically, other than a question;
   an automatic merge it hands back, except while paused; a merge conflict, before the worker's attempt and once its
@@ -591,7 +596,8 @@ and is `enabled: false` until the engineer turns it on.
   - Level 1, reversible and private: `backup` (tier `restore`: commits the workspace's tracked and untracked files
     through a scratch index to `refs/agamemnon/backup/<issue>/<time>` and pushes it as Odysseus; never `git
     stash`), `restore <files>` (tier `restore`: only the incident's `generatedFiles` in the premise, only after a
-    backup in the same incident), `retry` and `rerun-ci` (tier `retry`), `wait-for <issue>|slot` (tier `wait`, at
+    backup in the same incident), `retry` and `rerun-ci` (tier `retry`; the re-runs at a PR head share the merge sweep's `ciRerunAttempts` and
+    are counted on its record), `wait-for <issue>|slot` (tier `wait`, at
     most `agaWaitMaxMinutes`, polling every `agaPollSeconds`), `hold-until-tomorrow` (tier `wait`: assigned to
     Agamemnon until `agaHoldUntilHour` (6:00) the next day, when the orchestrator's sweep gives it to the worker;
     not for in_review issues), `send --notes` (tier `handoff`: a comment, then assigned to the worker; for a
