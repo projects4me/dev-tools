@@ -2,6 +2,7 @@
 
 import fnmatch
 import re
+from datetime import datetime
 
 from ..dependency_gate import DONE_STATUSES, unmet_dependencies
 
@@ -64,6 +65,57 @@ def restart_skip_reason(issue, state, prefix, projects, owners, worker_id, retry
         return f"restarted {max_retries} time(s) already"
     if reason == "branch_checked_out" and branch_holder:
         return f"its branch is still checked out in {branch_holder}"
+    return None
+
+
+RUN_IN_FLIGHT = "a run is in flight"          # stranded_skip_reason: the last check before the state checks
+STRANDED_STATUSES = ("new", "pending")      # the statuses the worker acts on
+
+
+def _moment(value):
+    """An ISO-like timestamp as an aware datetime (naive ones are local time), or None when it can't be read."""
+    try:
+        moment = datetime.fromisoformat(str(value).strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return moment if moment.tzinfo else moment.astimezone()
+
+
+def last_activity(*moments):
+    """The latest readable moment of the worker's last sign of life on an issue, or None."""
+    found = [m for m in (_moment(v) for v in moments if v) if m]
+    return max(found) if found else None
+
+
+def stranded_skip_reason(issue, state, assigned_at, prefix, projects, worker_id, dependency_statuses, now, minutes,
+                         done_statuses=DONE_STATUSES):
+    """Why an issue assigned to the worker is not stranded, or None when it is: ready (status new or pending, every
+    "Depends on" done) and the worker has shown no sign of it for `minutes` (running, started, ended, handed back,
+    assigned to it or changed in Gaia). state is the worker's Talos state for the issue; a run in flight or no
+    readable time at all is never stranded."""
+    if not in_scope(issue, prefix, projects):
+        return f"not in a {prefix} milestone of the worker's projects"
+    if issue.get("assignee") != worker_id:
+        return "not assigned to the worker"
+    if _lower(issue.get("status")) not in STRANDED_STATUSES:
+        return f"status '{issue.get('status')}' is not new or pending"
+    if _lower(issue.get("type")) in NOT_FED_TYPES:
+        return "an epic"
+    waiting = unmet_dependencies(issue.get("dependsOn") or [], dependency_statuses or {}, done_statuses)
+    if waiting:
+        return "waiting on " + ", ".join(f"#{n}" for n in waiting)
+    state = state or {}
+    if state.get("running"):
+        return RUN_IN_FLIGHT
+    if state.get("pending_status"):
+        return "a handback is waiting to be retried"
+    seen = last_activity(state.get("started_at"), state.get("last_ended_at"), state.get("handoff_at"), assigned_at,
+                         issue.get("modified"))
+    if seen is None:
+        return "no time to measure from"
+    idle = (_moment(now) - seen).total_seconds() / 60
+    if idle < float(minutes):
+        return f"the worker saw it {idle:.0f} minute(s) ago (below {float(minutes):g})"
     return None
 
 

@@ -10,6 +10,7 @@
   "owners": [],
   "maxInFlight": 0,
   "sweepMinutes": 5,
+  "strandedMinutes": 15,
   "debounceSeconds": 5,
   "autoRetryReasons": [
     "turn_budget",

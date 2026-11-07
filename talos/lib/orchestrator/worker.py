@@ -109,17 +109,20 @@ class Orchestrator:
             issues = self._issues()
             triaged = self._triage_handbacks(issues)
             merged += f"triage: {triaged}; " if triaged else ""
-        in_flight = self._in_flight()
+        issues = self._issues() if issues is None else issues
+        stranded = policy.rank([i for i in issues if self._stranded_skip(i) is None])
+        # a stranded issue is assigned to the worker but not being worked, so it holds no slot until it is given back
+        in_flight = max(0, self._in_flight() - len(stranded))
         slots = policy.free_slots(self.max_in_flight, in_flight)
         if not slots:
             return f"{merged}no free slot ({in_flight} of {self.max_in_flight} in flight)", []
-        issues = self._issues() if issues is None else issues
         restarts = policy.rank([i for i in issues if self._restart_skip(i) is None])
         news = policy.rank([i for i in issues if self._new_skip(i) is None])
         if self.overlap:
             self.overlap.begin(issues, [i["number"] for i in news])
         done, held = [], []
-        for issue, kind in [(i, "restart") for i in restarts] + [(i, "new") for i in news]:
+        for issue, kind in [(i, "restart") for i in restarts] + [(i, "stranded") for i in stranded] + \
+                [(i, "new") for i in news]:
             if len(done) >= slots:
                 break
             if kind == "new" and self.overlap and self.overlap.hold_reason(issue):
@@ -132,6 +135,8 @@ class Orchestrator:
         if self.overlap:
             self.overlap.end()
         what = ", ".join(f"#{n} ({kind})" for n, kind in done) or "nothing ready"
+        left = [i["number"] for i in stranded if (i["number"], "stranded") not in done]
+        what += f"; stranded, no free slot: {', '.join(f'#{n}' for n in left)}" if left else ""
         what += f"; held for overlapping files: {', '.join(f'#{n}' for n in held)}" if held else ""
         return (f"{merged}{len(done)} of {slots} free slot(s) filled: {what}" + (" (dry run)" if self.dry_run else ""),
                 done)
@@ -227,6 +232,26 @@ class Orchestrator:
         return policy.new_skip_reason(issue, s.milestone_prefix, self.projects, self.owners, statuses,
                                       self.worker.dependency_done_statuses)
 
+    def _stranded_skip(self, issue):
+        """policy.stranded_skip_reason, reading the dependencies' statuses and the worker's state only for issues that
+        pass the cheap checks."""
+        s = self.settings
+        args = (s.milestone_prefix, self.projects, self.worker_id)
+        cheap = policy.stranded_skip_reason({**issue, "dependsOn": []}, {"running": True}, None, *args, {},
+                                            self.now(), s.stranded_minutes, self.worker.dependency_done_statuses)
+        if cheap != policy.RUN_IN_FLIGHT:
+            return cheap        # the placeholder state only gets the issue past the state checks
+        statuses = {}
+        if issue.get("dependsOn"):
+            try:
+                statuses = self.tracker.statuses_of(issue["dependsOn"])
+            except TalosError as e:
+                return f"dependencies unreadable: {e}"
+        return policy.stranded_skip_reason(
+            issue, self.worker_state(self.worker.name, issue["number"]),
+            store.assigned_at(self.agent.name, issue["number"]), *args, statuses, self.now(), s.stranded_minutes,
+            self.worker.dependency_done_statuses)
+
     def _restart_skip(self, issue):
         """policy.restart_skip_reason with the worker's state for the issue and, for branch_checked_out, where the
         branch is still checked out."""
@@ -263,7 +288,7 @@ class Orchestrator:
         except TalosError as e:
             log(f"#{number} not assigned: {e}", self.agent.name)
             return False
-        skip = self._restart_skip(issue) if kind == "restart" else self._new_skip(issue)
+        skip = {"restart": self._restart_skip, "stranded": self._stranded_skip}.get(kind, self._new_skip)(issue)
         if skip:
             log(f"#{number} not assigned on re-check: {skip}", self.agent.name)
             return False
@@ -273,7 +298,10 @@ class Orchestrator:
             log(f"#{number} dry run, would assign to {self.worker.display_name} ({kind})", self.agent.name)
             return True
         try:
-            self.tracker.assign(number, self.worker_id)
+            if kind == "stranded":
+                self._give_back(number)
+            else:
+                self.tracker.assign(number, self.worker_id)
         except TalosError as e:
             log(f"#{number} assignment failed: {e}", self.agent.name)
             return False
@@ -282,14 +310,27 @@ class Orchestrator:
         store.record_assignment(self.agent.name, number, self.worker.name, self.now())
         log(f"#{number} assigned to {self.worker.display_name} ({kind})", self.agent.name)
         try:
-            self.tracker.comment(number, f"{self.agent.display_name}: assigned to {self.worker.display_name}",
-                                 self._why(issue, kind, retries))
+            title = "picked up a stranded issue" if kind == "stranded" else f"assigned to {self.worker.display_name}"
+            self.tracker.comment(number, f"{self.agent.display_name}: {title}", self._why(issue, kind, retries))
         except TalosError as e:
             log(f"#{number} comment failed: {e}", self.agent.name)
         return True
 
+    def _give_back(self, number):
+        """Give a stranded issue to the worker again, the way `aga retry` assigns it (tracker.assign). It is assigned
+        to the worker already, which Gaia does not report as a change, so it goes through the first owner first."""
+        if not self.owners:
+            raise TalosError("no owner to hand the issue through")
+        self.tracker.assign(number, self.owners[0])
+        self.tracker.assign(number, self.worker_id)
+
     def _why(self, issue, kind, retries):
         milestone = html.escape(str(issue.get("milestone") or ""))
+        if kind == "stranded":
+            return (f"<p>{html.escape(self.worker.display_name)} had this issue (status "
+                    f"{html.escape(str(issue.get('status')))}, every \"Depends on\" issue done) but nothing queued, "
+                    f"running or held for it in the last {self.settings.stranded_minutes:g} minutes, so it is "
+                    f"given back.</p>")
         if kind == "restart":
             st = self.worker_state(self.worker.name, issue["number"])
             reason = html.escape(str(st.get("handoff_reason") or ""))

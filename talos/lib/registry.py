@@ -45,6 +45,7 @@ class Orchestration:
     worker: str                         # the issues agent it feeds (e.g. "odysseus")
     milestone_prefix: str = "aga-"      # only milestones whose name starts with this (any case)
     owners: list = field(default_factory=list)   # Gaia user ids whose issues it may assign (empty = worker's handoffTo)
+    stranded_minutes: float = 15        # a ready issue assigned to the worker, idle this long, is given back to it
     max_in_flight: int = 0              # issues assigned to the worker at once (0 = the worker's maxParallel)
     sweep_minutes: float = 5            # periodic sweep, besides the event-driven ones
     debounce_seconds: float = 5         # wait after a Hermes event before sweeping, so a burst gives one sweep
@@ -321,16 +322,19 @@ def _load_orchestrator(path, raw):
         merge_wait = float(raw.get("autoMergeWaitMinutes", 60))
         aga_wait = float(raw.get("agaWaitMaxMinutes", 30))
         aga_poll = float(raw.get("agaPollSeconds", 30))
+        stranded = float(raw.get("strandedMinutes", 15))
         aga_cost = float(raw.get("agaMaxCostUsd", 2))
         aga_daily = float(raw.get("agaDailyCostUsd", 10))
     except (TypeError, ValueError):
-        raise TalosError(f"{path}: sweepMinutes, debounceSeconds, autoMergeWaitMinutes, agaWaitMaxMinutes, "
+        raise TalosError(f"{path}: sweepMinutes, debounceSeconds, strandedMinutes, autoMergeWaitMinutes, agaWaitMaxMinutes, "
                          f"agaPollSeconds, agaMaxCostUsd and agaDailyCostUsd must be numbers")
     if aga_cost <= 0 or aga_daily < 0:
         raise TalosError(f"{path}: agaMaxCostUsd must be above 0 and agaDailyCostUsd not below 0")
     aga_models = raw.get("agaModel", dict(AGA_MODELS))
     if not isinstance(aga_models, dict) or not all(isinstance(m, str) and m.strip() for m in aga_models.values()):
         raise TalosError(f"{path}: agaModel must map incident types (and \"default\") to model names")
+    if stranded < 0:
+        raise TalosError(f"{path}: strandedMinutes may not be below 0")
     if sweep <= 0 or debounce < 0 or merge_wait < 0:
         raise TalosError(f"{path}: sweepMinutes must be above 0, debounceSeconds and autoMergeWaitMinutes not below 0")
     if aga_wait < 0 or aga_poll <= 0 or numbers["agaHoldUntilHour"] > 23:
@@ -343,6 +347,7 @@ def _load_orchestrator(path, raw):
         max_in_flight=numbers["maxInFlight"],
         sweep_minutes=sweep,
         debounce_seconds=debounce,
+        stranded_minutes=stranded,
         auto_retry_reasons=tuple(reasons),
         max_auto_retries=numbers["maxAutoRetries"],
         fail_streak_limit=numbers["failStreakLimit"],
