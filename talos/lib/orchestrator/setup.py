@@ -18,6 +18,7 @@ from .keeper import BranchKeeper
 from .merge import Merger
 from .merging import MergeSweeper
 from .overlap import IssueFiles, OverlapGate
+from .rabbit import RabbitBudget
 from .worker import Orchestrator, _now
 
 
@@ -88,7 +89,8 @@ def start(agent, cfg, dry_run, claude=None):
     human = HumanMergeSweeper(agent, worker, tracker, github.agamemnon_gh, ai_config["agentLogin"],
                               ai_config.get("mergerLogin", "agent-agamemnon"), owners, dry_run=dry_run)
     keeper = BranchKeeper(agent, worker, tracker, github.agamemnon_gh, worker_id, me, owners,
-                          lambda repo, issue: workspaces.branch_holder(WORKSPACE, repo, issue), dry_run=dry_run)
+                          lambda repo, issue: workspaces.branch_holder(WORKSPACE, repo, issue), dry_run=dry_run,
+                          rabbit=RabbitBudget(tracker.child_env))
     overlap = OverlapGate(agent, worker, tracker, IssueFiles(tracker.child_env), dry_run=dry_run)
     holds = lambda: release_due(tracker, worker_id, me, _now(), agent.name, dry_run,    # noqa: E731
                                 lambda: wiring.docker_ok(agent), owners[0] if owners else None,

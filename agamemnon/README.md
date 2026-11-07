@@ -49,3 +49,10 @@ Signed in to GitHub **as agent-agamemnon**:
 
 **Rotation / revocation:** generate a new token and replace the line; revoking it stops Agamemnon from approving
 and merging without touching anyone else's credentials.
+
+## CodeRabbit budget
+
+CodeRabbit's auto review is off, so every commit Agamemnon pushes (an updated branch, a resolved conflict) needs a
+trigger from the shared daily budget (`ai rabbit budget` / `ai rabbit request`). At the limit it neither updates nor
+resolves: a conflict goes to the owner as in_review with "merge conflict, CodeRabbit limit reached: please resolve and
+review by hand". Reviews the owner asks for on GitHub are not counted.

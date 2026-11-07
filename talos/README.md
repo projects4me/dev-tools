@@ -564,6 +564,12 @@ and is `enabled: false` until the engineer turns it on.
     `awaiting_bot_review` so CodeRabbit reviews the new head. Up to `maxConflictAttempts` (1) per issue; then the
     owner is told once per PR head (an issue waiting to be merged automatically goes back to them). `talos reset`
     allows another attempt.
+  - *CodeRabbit budget* (`lib/orchestrator/rabbit.py`): auto review is off, so before an update or a resolution the
+    keeper reads `ai rabbit budget`; at the limit it skips the update (logged once per PR per day) and hands a
+    conflict to the owner (in_review, "merge conflict, CodeRabbit limit reached: please resolve and review by hand").
+    After an update it runs `ai rabbit request <repo> <pr> --source update-branch --rereview --issue N`; a triage
+    resolution pushed by `aga resolve-conflict` requests with `--source conflict`. A failing `ai` command hands the
+    issue to the owner, logged. The owner's own GitHub activity is not counted.
   An automatic merge whose gate fails only on mergeability waits for this instead of going to the reviewer.
 - **Premise and incident packet** (`lib/agamemnon/`, groundwork for Agamemnon as an AI agent): `agents/agamemnon/premise.json`
   lists the incident types it may handle (`test_contention`, `ci_failed`, `merge_conflict`, `dirty_generated`,
