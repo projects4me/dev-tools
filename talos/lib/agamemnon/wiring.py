@@ -12,10 +12,11 @@ from .. import db, docker_engine, docker_free, docker_state, sessions, workspace
 from ..ai_cli import run_ai
 from ..config import LOCAL_DIR, WORKSPACE, TalosError
 from ..orchestrator import github
+from ..orchestrator import state as store
 from ..orchestrator.merge import Merger
 from ..registry import load_agents
 from ..tracker import Tracker, read_env_file
-from . import premise
+from . import branch_update, premise
 from .tool import PUSH_REMOTE, Ports, Settings
 
 AGENT = "agamemnon"
@@ -108,6 +109,24 @@ def stale_containers(agent, tracker):
     return lambda: docker_free.plan(WORKSPACE, sessions.all_entries(), tracker, testenv, agent.docker_stale_hours)
 
 
+def update_pr(worker, tracker, merger, gh, agent_name):
+    """update_pr(issue): merge the base into the issue's open PR on GitHub and start its CI re-run counts over;
+    branch_update.UPDATED or CONFLICT. TalosError when it has no open PR or GitHub fails."""
+    def update(issue):
+        repo = worker.repo_for(tracker.issue(issue).get("project"))
+        pr = merger.find_pr(repo, issue) if repo else None
+        if not pr or pr.get("merged"):
+            raise TalosError(f"#{issue} has no open PR to update")
+        slug = workspaces.ai_common().REPOS[repo]
+        head = gh("pr", "view", str(pr["number"]), "--repo", slug, "--json", "headRefOid",
+                  "--jq", ".headRefOid").strip()
+        result = branch_update.request(gh, slug, pr["number"], head)
+        if result == branch_update.UPDATED:
+            store.reset_ci_rerun(agent_name, issue, pr["number"])
+        return result
+    return update
+
+
 def docker_ok(agent):
     """Whether Docker's verdict is ok now (the Docker holds' release condition)."""
     state = docker_state.read()
@@ -134,7 +153,7 @@ def build(agent_name=AGENT):
                         agent_name=agent.name, display_name=agent.display_name, orchestration=agent.orchestration,
                         premise=premise.load(), workspace_root=WORKSPACE,
                         docker_thresholds=(agent.docker_memory_high_percent, agent.docker_memory_ok_percent),
-                        docker_hold_max_hours=agent.docker_hold_max_hours)
+                        docker_hold_max_hours=agent.docker_hold_max_hours, hold_max_hours=agent.hold_max_hours)
     ports = Ports(tracker=tracker, merger=Merger(tracker.child_env, github.agamemnon_gh), gh=github.agamemnon_gh,
                   git=git, push=push, worker_state=lambda issue: sessions.get(worker.name, issue),
                   run_log=run_log(worker.name), in_flight=in_flight(worker.name), free_slot=free_slot,

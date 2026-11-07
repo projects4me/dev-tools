@@ -134,6 +134,18 @@ def note_ci_rerun(record_id, head, at, text, error=None):
         conn.close()
 
 
+def reset_ci_rerun(agent, issue, pr):
+    """Start the PR's CI re-run counts over (its branch got new commits), for its merge record still waiting."""
+    conn = db.connect()
+    try:
+        with conn:
+            conn.execute("UPDATE auto_merges SET ci_rerun_sha = NULL, ci_rerun_at = NULL, ci_rerun_count = 0, "
+                         "ci_rerun_errors = 0, ci_rerun_error = NULL "
+                         "WHERE agent = ? AND issue = ? AND pr = ? AND ended_at IS NULL", (agent, issue, pr))
+    finally:
+        conn.close()
+
+
 def close_merge(record_id, at, outcome, merge_sha=None, detail=None):
     conn = db.connect()
     try:

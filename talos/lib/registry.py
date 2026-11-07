@@ -131,6 +131,7 @@ class Agent:
     docker_check_seconds: float = 30         # the dispatcher re-reads Docker at most this often
     docker_start_timeout_seconds: float = 180   # how long a start/restart waits for the daemon to answer
     docker_hold_max_hours: float = 72        # `aga hold-until-docker` hands the issue to the owner after this
+    hold_max_hours: float = 72               # `aga hold-until-done` hands the issue to the owner after this
 
     def action_for(self, status):
         return self.actions.get(status)
@@ -280,6 +281,7 @@ def load_agent(folder):
         dispatch=dispatch,
         extra={k: raw[k] for k in ("knowledgeMap", "ideaSource") if k in raw},
         gaia_agent=gaia_agent,
+        hold_max_hours=float(raw.get("holdMaxHours", 72)),
         **docker_settings(raw),
     )
 

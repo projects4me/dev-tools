@@ -198,5 +198,87 @@ class DockerHoldReleaseTest(base.AgaTest):
         self.assertEqual(self.tracker.assigned, [])
 
 
+class DoneHoldTest(base.AgaTest):
+    NOW = "2026-10-31T12:00:00+05:00"
+
+    def setUp(self):
+        super().setUp()
+        self.tracker.issues[ISSUE].update(status="in_review", assignee=MY_ID)
+        self.tracker.issues[40] = {"number": 40, "status": "in_progress", "assignee": WORKER_ID}
+        self.settings.hold_max_hours = 72
+        self.updated, self.result = [], ["updated"]
+        self.update = lambda n: (self.updated.append(n), self.result[0])[1]
+
+    def hold(self):
+        return self.aga("everything", "hold-until-done", {"blocker": "40"})
+
+    def release(self, now=None):
+        return holds.release_due(self.tracker, WORKER_ID, MY_ID, now or self.NOW, "a", owner=OWNER,
+                                 update_pr=self.update, done_statuses=("done", "closed"))
+
+    def test_hold_keeps_the_issue_and_undo_releases(self):
+        out = self.hold()
+        self.assertEqual(self.tracker.assigned, [])
+        self.assertEqual(out["heldUntil"], "2026-11-03T10:00:00+05:00")
+        self.assertEqual(journal.active_hold(ISSUE)["condition"], "done:40")
+        self.undoer().undo(out["action"])
+        self.assertIsNone(journal.active_hold(ISSUE))
+        self.assertEqual(self.tracker.assigned, [(ISSUE, MY_ID)])
+
+    def test_hold_refusals(self):
+        with self.assertRaisesRegex(Refused, "another issue"):
+            self.aga("everything", "hold-until-done")
+        self.tracker.issues[ISSUE]["assignee"] = OWNER
+        with self.assertRaisesRegex(Refused, "not with"):
+            self.hold()
+        self.tracker.issues[ISSUE]["assignee"] = MY_ID
+        self.hold()
+        with self.assertRaisesRegex(Refused, "already held"):
+            self.hold()
+
+    def test_waits_while_the_blocker_is_open(self):
+        self.hold()
+        self.assertEqual(self.release(), "")
+        self.assertEqual(self.updated, [])
+
+    def test_done_updates_the_branch_once_and_comments(self):
+        self.hold()
+        self.tracker.issues[40]["status"] = "done"
+        self.assertIn("#40 is done", self.release())
+        self.assertEqual(self.release(), "")
+        self.assertEqual(self.updated, [ISSUE])
+        self.assertIn("CI runs again", self.tracker.comments[-1][2])
+        self.assertIsNone(journal.active_hold(ISSUE))
+        self.assertEqual(self.tracker.assigned, [])
+
+    def test_conflict_is_left_to_the_conflict_flow(self):
+        self.hold()
+        self.tracker.issues[40]["status"] = "done"
+        self.result[0] = "conflict"
+        self.assertIn("conflicts", self.release())
+        self.assertIsNone(journal.active_hold(ISSUE))
+
+    def test_wont_fix_goes_to_the_owner(self):
+        self.hold()
+        self.tracker.issues[40]["status"] = "won't fix"
+        self.assertIn("given to the owner", self.release())
+        self.assertEqual(self.tracker.issues[ISSUE]["assignee"], OWNER)
+        self.assertEqual(self.updated, [])
+
+    def test_72h_handover(self):
+        self.hold()
+        self.assertEqual(self.release("2026-11-03T09:00:00+05:00"), "")
+        self.assertIn("too long", self.release("2026-11-03T10:00:00+05:00"))
+        self.assertEqual(self.tracker.issues[ISSUE]["assignee"], OWNER)
+
+    def test_reset_ci_rerun_starts_the_counts_over(self):
+        from lib.orchestrator import state as store
+        rid = store.open_merge("agamemnon", ISSUE, "gaia", 12, "2026-10-31T09:00:00+05:00")
+        store.note_ci_rerun(rid["id"], "abc", "2026-10-31T09:30:00+05:00", "re-ran")
+        store.reset_ci_rerun("agamemnon", ISSUE, 12)
+        record = store.find_open_merge("agamemnon", ISSUE, 12)
+        self.assertEqual((record["ci_rerun_count"], record["ci_rerun_sha"]), (0, None))
+
+
 if __name__ == "__main__":
     unittest.main()

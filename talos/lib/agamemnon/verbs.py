@@ -47,6 +47,8 @@ VERBS = {v.name: v for v in (
     Verb("wait-for", "wait", PRIVATE, "wait until another issue is done or a test slot is free"),
     Verb("hold-until-tomorrow", "wait", PRIVATE, "keep the issue until tomorrow, then give it back to the worker"),
     Verb("hold-until-docker", "wait", PRIVATE, "keep the issue until Docker is ok, then give it back to the worker"),
+    Verb("hold-until-done", "wait", PRIVATE, "keep an in_review issue until another issue is done, then merge the "
+         "base into its PR and let CI run again"),
     Verb("start-docker", "engine", PRIVATE, "start the Docker engine (refused when the daemon is already up)"),
     Verb("restart-docker", "engine", PRIVATE, "restart the Docker engine (refused while other runs are in flight, "
          "unless Docker is down)"),

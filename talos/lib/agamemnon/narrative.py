@@ -13,6 +13,8 @@ NEXT = {
     "hold-until-tomorrow": "held by {me} until {until}, then given back to {worker}",
     "hold-until-docker": "held by {me} until Docker is ok, then given back to {worker}; the owner gets it if Docker "
                          "is not back by {until}",
+    "hold-until-done": "held by {me} until the issue it waits for is done, then the base is merged into its PR and "
+                       "CI runs again; the owner gets it if that is not done by {until}",
     "start-docker": "{docker}",
     "restart-docker": "{docker}",
     "stop-stale-containers": "the freed memory is available to the runs waiting for Docker; the next `ai test` of a "
