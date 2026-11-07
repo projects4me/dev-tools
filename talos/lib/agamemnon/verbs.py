@@ -34,6 +34,9 @@ VERBS = {v.name: v for v in (
     Verb("logs", "read", READ, "the tail of the issue's latest run log"),
     Verb("diff", "read", READ, "the workspace's uncommitted changes"),
     Verb("mergecheck", "read", READ, "the merge gate on the issue's PR"),
+    Verb("ci-log", "read", READ, "the failed CI jobs on the PR's head: name, URL and the tail of their log"),
+    Verb("base-ci", "read", READ, "the latest completed CI run on the PR's base branch, and whether the PR's failed "
+         "jobs fail there too"),
     Verb("workspace", "read", READ, "the workspace's branch, HEAD and git status"),
     Verb("overlap", "read", READ, "files this issue's branch shares with the other in-flight issues"),
     Verb("docker", "read", READ, "Docker's state (daemon, memory, containers) and its verdict: ok, pressured or down"),

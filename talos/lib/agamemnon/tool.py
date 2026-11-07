@@ -26,6 +26,7 @@ REVIEW_STATUS = "in_review"
 CONFLICT_INCIDENT = "merge_conflict"
 CONFLICT_ACTION = "merge_conflict"      # the worker's action for a conflict (orchestrator/keeper.py)
 TEST_LINES = 40
+CI_LOG_LINES = 150
 # who the backup commits are by (Agamemnon has no git identity; the commit is never on a branch)
 BACKUP_AUTHOR = {"GIT_AUTHOR_NAME": "Agent Agamemnon", "GIT_AUTHOR_EMAIL": "agent.agamemnon@projects4.me",
                  "GIT_COMMITTER_NAME": "Agent Agamemnon", "GIT_COMMITTER_EMAIL": "agent.agamemnon@projects4.me"}
@@ -49,7 +50,7 @@ class Settings:
 @dataclass
 class Ports:
     tracker: object                     # Gaia as Agamemnon: issue, assign, comment, status_of
-    merger: object                      # orchestrator.merge.Merger: find_pr, check, merge, failed_jobs, rerun
+    merger: object                      # orchestrator.merge.Merger: find_pr, check, merge, failed_jobs, failed_logs, base_run, rerun
     gh: Callable                        # gh(*args) -> stdout, as Agamemnon
     git: Callable                       # git(cwd, *args, env=None, check=True) -> stdout (None when check=False fails)
     push: Callable                      # push(cwd, *refspecs): git push to the odysseus remote as Agent Odysseus
@@ -195,6 +196,30 @@ class Aga:
     def _mergecheck(self, args):
         pr = self.open_pr()
         return {"issue": self.number, "pr": pr["number"], "gate": self.p.merger.check(self.repo(), pr["number"])}
+
+    def _ci_log(self, args):
+        pr = self.open_pr()
+        jobs = self.p.merger.failed_jobs(self.repo(), self.pr_head(pr))
+        logs = {run: self.p.merger.failed_logs(self.repo(), run, CI_LOG_LINES)
+                for run in sorted({j["run"] for j in jobs if j["run"]})}
+        return {"issue": self.number, "pr": pr["number"],
+                "jobs": [{"name": j["name"], "url": j["url"], "tail": logs.get(j["run"], {}).get(j["name"])}
+                         for j in jobs]}
+
+    def _base_ci(self, args):
+        pr = self.open_pr()
+        failed = self.p.merger.failed_jobs(self.repo(), self.pr_head(pr))
+        base = workspaces.base_branch(self.repo())
+        runs = sorted({j["run"] for j in failed if j["run"]})
+        latest = self.p.merger.base_run(self.repo(), runs[0], base) if runs else None
+        if not latest:
+            return {"issue": self.number, "pr": pr["number"], "base": base, "run": None,
+                    "failing_on_head": [j["name"] for j in failed]}
+        on_base = {j["name"]: j["conclusion"] for j in latest["jobs"]}
+        broken = {name for name, c in on_base.items() if c not in ("success", "neutral", "skipped")}
+        return {"issue": self.number, "pr": pr["number"], "base": base, "run": latest["run"], "sha": latest["sha"],
+                "passed": latest["conclusion"] == "success", "failing_on_base": sorted(broken),
+                "also_failing_on_base": sorted(broken & {j["name"] for j in failed})}
 
     def _workspace(self, args):
         folder = self.folder()

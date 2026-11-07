@@ -69,3 +69,31 @@ class Merger:
                 self.gh("run", "rerun", run, "--failed", "--repo", slug)
             except TalosError as e:     # keep gh's own message (a token without the Actions permission says so)
                 raise TalosError(f"gh run rerun {run} --failed in {repo}: {str(e)[-400:]}")
+
+    def failed_logs(self, repo, run, tail=150):
+        """The tail of the failed steps' log of a workflow run, per job: {job name: last `tail` lines}. gh masks
+        secrets in the log itself."""
+        slug = github.known_repos()[repo]
+        out = self.gh("run", "view", str(run), "--repo", slug, "--log-failed")
+        lines = {}
+        for line in (out or "").splitlines():
+            job, _, rest = line.partition("\t")      # "<job>\t<step>\t<time> <text>"
+            lines.setdefault(job, []).append(rest.partition("\t")[2] or rest)
+        return {job: "\n".join(rows[-tail:]) for job, rows in lines.items()}
+
+    def base_run(self, repo, run, base):
+        """The latest completed run of the same workflow on the base branch:
+        {"run", "sha", "conclusion", "jobs": [{"name", "conclusion"}]}, or None when there is none."""
+        slug = github.known_repos()[repo]
+        workflow = self.gh("api", f"repos/{slug}/actions/runs/{run}", "--jq", ".workflow_id").strip()
+        out = self.gh("api", f"repos/{slug}/actions/workflows/{workflow}/runs?branch={base}&status=completed"
+                      "&per_page=1", "--jq", "[.workflow_runs[] | {run: .id, sha: .head_sha, conclusion}]")
+        try:
+            runs = json.loads(out or "[]")
+            if not runs:
+                return None
+            jobs = self.gh("api", f"repos/{slug}/actions/runs/{runs[0]['run']}/jobs?per_page=100", "--jq",
+                           "[.jobs[] | {name, conclusion}]")
+            return {**runs[0], "jobs": json.loads(jobs or "[]")}
+        except ValueError:
+            raise TalosError(f"gh api runs of workflow {workflow} on {base} in {repo}: {(out or '')[-300:]}")
