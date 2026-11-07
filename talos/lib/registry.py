@@ -63,6 +63,7 @@ class Orchestration:
     aga_wait_max_minutes: float = 30    # the longest `aga wait-for` waits
     aga_poll_seconds: float = 30        # how often `aga wait-for` looks again
     aga_hold_until_hour: int = 6        # `aga hold-until-tomorrow` gives the issue back at this hour (local time)
+    aga_file_bugs_per_day: int = 3      # Bugs `aga file-bug` files in a day (links to an open one don't count)
     aga_triage: bool = False            # run a triage session for incidents in the premise instead of telling the owner
     aga_models: dict = field(default_factory=lambda: dict(AGA_MODELS))   # incident type (or "default") -> model
     aga_max_turns: int = 40             # turns per triage session
@@ -311,6 +312,7 @@ def _load_orchestrator(path, raw):
                                 ("maxAutoMergesPerDay", 5, 0), ("ciRerunAttempts", 3, 0), ("ciRerunErrors", 2, 1),
                                 ("maxConflictAttempts", 1, 0),
                                 ("agaMaxActionsPerIncident", 5, 0), ("agaHoldUntilHour", 6, 0),
+                                ("agaFileBugsPerDay", 3, 0),
                                 ("agaMaxTurns", 40, 1), ("agaSessionsPerIncidentType", 1, 0)):
         try:
             numbers[key] = int(raw.get(key, default))
@@ -364,6 +366,7 @@ def _load_orchestrator(path, raw):
         aga_wait_max_minutes=aga_wait,
         aga_poll_seconds=aga_poll,
         aga_hold_until_hour=numbers["agaHoldUntilHour"],
+        aga_file_bugs_per_day=numbers["agaFileBugsPerDay"],
         aga_triage=bool(raw.get("agaTriage", False)),
         aga_models={**AGA_MODELS, **{str(k): v.strip() for k, v in aga_models.items()}},
         aga_max_turns=numbers["agaMaxTurns"],

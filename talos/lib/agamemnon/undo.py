@@ -6,7 +6,7 @@ from datetime import datetime
 
 from .. import workspaces
 from ..config import TalosError
-from . import journal
+from . import bugs, journal
 from .tool import PUSH_REMOTE
 
 
@@ -93,6 +93,17 @@ class Undoer:
         self.p.tracker.assign(op["issue"], op["assignee"])
         journal.release_hold(op["issue"], self.now())
         return f"#{op['issue']} released and assigned back to {op['assignee'] or 'nobody'}"
+
+    def _wont_fix(self, action, op):
+        status = self.p.tracker.status_of(op["bug"])
+        if bugs.is_closed(status, self.s.worker.dependency_done_statuses):
+            raise UndoRefused(f"action {action['id']}: #{op['bug']} is {status} already")
+        # the comment first: once the status is won't fix a retry is refused, so a failure must come before it
+        self.p.tracker.comment(op["bug"], f"{self.s.display_name}: won't fix",
+                               f"<p>Undo of journal action {action['id']}: this bug for #{op['issue']} was filed in "
+                               f"error, so it is set to won't fix.</p>")
+        self.p.tracker.set_status(op["bug"], bugs.WONT_FIX)
+        return f"#{op['bug']} set to won't fix"
 
     def _delete_ref(self, action, op):
         folder = self._folder(op["issue"])

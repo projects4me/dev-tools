@@ -23,6 +23,8 @@ NEXT = {
     "update-branch": "waiting on CI to run on the updated branch",
     "push-merge": "waiting on CI to run on the pushed merge",
     "merge": "the PR is merged; nothing is waiting",
+    "file-bug": "{bug} tracks the failure, which is on the base branch too; once it is fixed the base is merged "
+                "into this PR and CI runs again",
 }
 
 
@@ -38,7 +40,10 @@ def _next(verb, result, settings):
                                          if result.get("stackMissing") else "")
               if result.get("ok") else f"Docker did not come back ({result.get('error') or 'no reason given'}); "
                                        f"Agamemnon retries or sends the issue to the owner")
-    return NEXT[verb].format(worker=worker, me=me, until=result.get("heldUntil"), docker=docker)
+    bug = ((f"Bug #{result.get('bug')}" + (f" ({result['url']})" if result.get("url") else "")
+            + (", filed earlier for the same signature," if result.get("linked") else f", filed for {worker},"))
+           if verb == "file-bug" else "")
+    return NEXT[verb].format(worker=worker, me=me, until=result.get("heldUntil"), docker=docker, bug=bug)
 
 
 def _what(verb, args):

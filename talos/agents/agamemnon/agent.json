@@ -30,6 +30,7 @@
   "agaWaitMaxMinutes": 30,
   "agaPollSeconds": 30,
   "agaHoldUntilHour": 6,
+  "agaFileBugsPerDay": 3,
   "agaTriage": true,
   "agaModel": {"default": "sonnet", "merge_conflict": "opus"},
   "agaMaxTurns": 40,

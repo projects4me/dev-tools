@@ -613,6 +613,17 @@ and is `enabled: false` until the engineer turns it on.
     never a rebase; a committed merge pushed only as a fast-forward), `merge` (tier `merge`: through `ai merge` and
     its gate, only for `autoMergeMilestones`, within `maxAutoMergesPerDay` together with the automatic merges).
     The premise grants `update` and `merge` to no incident type yet.
+    `file-bug --title --signature '<job>: <test>' --body` (tier `file`, granted to no incident type yet): for a CI
+    failure that is already on the base branch, a Bug in the blocked issue's project and milestone, priority high,
+    complexity complex (the root cause is unknown), assigned to the worker; its description opens with "Filed by Agent Agamemnon: blocks #N", then the signature,
+    the body (what fails, the log excerpt, the blocked issue), the base commit, and ends with the acceptance
+    criterion (the job passes on the base branch). The action's comment on the blocked issue links it. `base-ci` is
+    read again first, and the verb is refused unless the signature's job (`<job>` as `base-ci` names it, the part
+    before the `:`) fails on the base branch too; only the job is checked, not the `<test>` part. An open bug the
+    journal shows Agamemnon filed for the same signature in the same project is linked instead of filing another (journaled, nothing to undo). Refused when `agaFileBugsPerDay`
+    (agent.json, default 3) bugs were filed today (links don't count). Undo sets the bug to won't fix with a
+    comment (refused once it is done or won't fix); nothing on GitHub changes. Holding the blocked issue until the
+    bug is done is `hold-until-done`.
     `resolve-conflict` (tier `resolve`, granted to `merge_conflict`): in the issue's own workspace (on its branch,
     clean, at the PR's head, no run in flight, after a `backup` in the same incident) it merges `origin/<base>`
     (never a rebase) as Odysseus. Code, not the model, decides (`lib/agamemnon/conflicts.py`): every conflicting

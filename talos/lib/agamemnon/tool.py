@@ -15,7 +15,7 @@ from typing import Callable
 
 from .. import docker_state, workspaces
 from ..orchestrator import state as orchestrator_state
-from . import conflicts, journal, narrative, verbs
+from . import bugs, conflicts, journal, narrative, verbs
 from .verbs import Refused
 
 LOG_LINES = 80
@@ -50,7 +50,7 @@ class Settings:
 
 @dataclass
 class Ports:
-    tracker: object                     # Gaia as Agamemnon: issue, assign, comment, status_of
+    tracker: object                     # Gaia as Agamemnon: issue, assign, comment, status_of, create_issue, set_status
     merger: object                      # orchestrator.merge.Merger: find_pr, check, merge, failed_jobs, failed_logs, base_run, rerun
     gh: Callable                        # gh(*args) -> stdout, as Agamemnon
     git: Callable                       # git(cwd, *args, env=None, check=True) -> stdout (None when check=False fails)
@@ -208,6 +208,9 @@ class Aga:
                          for j in jobs]}
 
     def _base_ci(self, args):
+        return self._read_base_ci()
+
+    def _read_base_ci(self):
         pr = self.open_pr()
         failed = self.p.merger.failed_jobs(self.repo(), self.pr_head(pr))
         base = workspaces.base_branch(self.repo())
@@ -616,6 +619,44 @@ class Aga:
                 f.write(result.text)
             self.p.git(folder, "add", "--", result.path)
         return resolved
+
+    def _file_bug(self, args):
+        """A Bug for a failed CI job that fails on the base branch too, in the blocked issue's project and milestone,
+        for the worker. base-ci is read again here, so the bug is filed only for what the base branch shows now. An
+        open bug filed earlier for the same signature is linked instead of filing another."""
+        title, body = str(args.get("title") or "").strip(), str(args.get("body") or "").strip()
+        signature = bugs.normalize(args.get("signature"))
+        if not title or not signature or not body:
+            raise Refused("file-bug needs --title, --signature (the failing job and test) and --body")
+        base = self._read_base_ci()
+        job = bugs.job_of(signature, base.get("also_failing_on_base") or [])
+        if not job:
+            raise Refused(f"base-ci does not show the job of '{signature}' failing on {base['base']} too (failing "
+                          f"there and on the PR: {', '.join(base.get('also_failing_on_base') or []) or 'none'}): "
+                          f"that is the PR's own failure, not a bug on the base branch")
+        filed = journal.actions_of(bugs.FILE_BUG)
+        project = self.issue.get("project")
+        state = {"signature": signature, "job": job, "baseSha": base.get("sha"), "project": project}
+        done = self.s.worker.dependency_done_statuses
+        existing = next((b for b in bugs.candidates(filed, signature, project)
+                         if not bugs.is_closed(self.p.tracker.status_of(b), done)), None)
+        if existing:
+            return Act({"issue": self.number, "bug": existing, "linked": True}, state,
+                       {**state, "bug": existing, "created": False}, {"op": "none"},
+                       f"nothing to undo: #{existing} was filed earlier and only linked here")
+        today = self.p.now().strftime("%Y-%m-%d")
+        count = bugs.filed_on(filed, today)
+        if count >= self.s.orchestration.aga_file_bugs_per_day:
+            raise Refused(f"{count} bug(s) filed today already, the most allowed (agaFileBugsPerDay)")
+        created = self.p.tracker.create_issue(
+            project, title,
+            bugs.description(self.s.display_name, self.number, signature, job, body, base["base"], base.get("sha")),
+            bugs.BUG_TYPE, bugs.BUG_PRIORITY, bugs.BUG_COMPLEXITY, self.s.worker_id, self.issue.get("milestone"))
+        bug = int(created["issueNumber"])
+        return Act({"issue": self.number, "bug": bug, "url": created.get("url"), "linked": False}, state,
+                   {**state, "bug": bug, "created": True},
+                   {"op": "wont_fix", "issue": self.number, "bug": bug},
+                   f"talos agamemnon undo <id> sets #{bug} to won't fix with a comment")
 
     def _merge(self, args):
         o = self.s.orchestration

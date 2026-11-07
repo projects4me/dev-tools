@@ -60,6 +60,8 @@ VERBS = {v.name: v for v in (
     Verb("resolve-conflict", "resolve", VISIBLE, "merge the base into the branch in the workspace, resolve only "
          "additive conflicts, test, push as Odysseus, back to CodeRabbit (needs a backup in this incident)"),
     Verb("merge", "merge", VISIBLE, "merge the PR through the merge gate"),
+    Verb("file-bug", "file", VISIBLE, "file a Bug for a failed CI job that also fails on the base branch, assigned "
+         "to the worker (or link the open one already filed for the signature)"),
 )}
 
 
