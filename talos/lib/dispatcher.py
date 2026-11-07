@@ -72,7 +72,7 @@ class Dispatcher:
             check_seconds=agent.docker_check_seconds, auto_start=agent.docker_auto_start,
             start=lambda: log(docker_engine.describe(docker_engine.for_agent(agent, "start")), agent.name),
             on_change=self._write_docker_hold, free=docker_free, log=lambda text: log(text, agent.name))
-        self._deps = DependencyGate(agent.dependency_done_statuses)   # issues waiting on "Depends on" issues
+        self._deps = DependencyGate(agent.dependency_done_statuses, agent.name)   # issues waiting on "Depends on" issues
         self._releases = queue.Queue()      # changed issue numbers (None = unknown) for the release worker
         # the CodeRabbit loop; merge_route(issue) names an orchestrator that merges a clean PR itself (or None)
         self.bot_review = bot_review.Watcher(agent, self.user_id, tracker, self.submit, route=merge_route,
@@ -251,7 +251,7 @@ class Dispatcher:
                 self.agent.name)
             return "held"
         override = sessions.get(self.agent.name, number).get("next_action") or None
-        decision = policy.decide(issue, self.agent, self.user_id, require_allowed_modifier=reconcile,
+        decision = policy.decide(issue, self.agent, self.user_id, require_allowed_modifier=reconcile and not self._deps.is_held(number),
                                  dependency_statuses=statuses, done_statuses=self._deps.done_statuses,
                                  action_override=override)
         if review and (decision.waiting_on or not decision.run):

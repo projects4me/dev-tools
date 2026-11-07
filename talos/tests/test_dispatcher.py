@@ -583,6 +583,49 @@ class DispatcherTest(unittest.TestCase):
         self.assertFalse(d._deps.is_held(42))
         self.assertIn("left the held set", log.call_args[0][0])
 
+    def test_issue_held_by_the_worker_stays_held_on_reconcile_and_is_released(self):
+        tracker = StubTracker(make_issue(dependsOn=[7]))
+        tracker.dependencies = {7: "in_review"}
+        d, queued = self.held_dispatcher(tracker)
+        d.handle(42)
+        tracker._issue["modifiedUser"] = AGENT_ID           # the "waiting on" comment made the agent the modifier
+        self.assertEqual(d.handle(42, reconcile=True), "held")
+        self.assertTrue(d._deps.is_held(42))
+        tracker.dependencies = {7: "done"}
+        d.release_held("reconnect")
+        self.assertEqual(queued, [42])
+
+    def test_held_set_survives_a_new_dispatcher(self):
+        tracker = StubTracker(make_issue(dependsOn=[7]))
+        tracker.dependencies = {7: "in_review"}
+        d, _ = self.held_dispatcher(tracker)
+        d.handle(42)
+        tracker._issue["modifiedUser"] = AGENT_ID
+        d2, queued = self.held_dispatcher(tracker)
+        self.assertTrue(d2._deps.is_held(42))
+        self.assertEqual(d2.handle(42, reconcile=True), "held")
+        self.assertEqual(len(tracker.comments), 1)          # the waiting set is not commented again
+        tracker.dependencies = {7: "done"}
+        d2.release_held("reconnect")
+        self.assertEqual(queued, [42])
+
+    def test_released_issue_leaves_the_saved_held_set(self):
+        tracker = StubTracker(make_issue(dependsOn=[7]))
+        tracker.dependencies = {7: "in_review"}
+        d, _ = self.held_dispatcher(tracker)
+        d.handle(42)
+        tracker._issue["assignee"] = "someone-else"
+        d.handle(42)
+        d2, _ = self.held_dispatcher(tracker)
+        self.assertFalse(d2._deps.is_held(42))
+
+    def test_unknown_issue_last_changed_by_a_stranger_is_still_skipped_on_reconcile(self):
+        tracker = StubTracker(make_issue(dependsOn=[7], modifiedUser="stranger"))
+        tracker.dependencies = {7: "in_review"}
+        d, _ = self.held_dispatcher(tracker)
+        self.assertIsNone(d.handle(42, reconcile=True))
+        self.assertFalse(d._deps.is_held(42))
+
     def test_dependency_done_at_start_runs_normally(self):
         tracker_issue = make_issue(dependsOn=[7])
         outcome, tracker = self.dispatch_with_dependencies(tracker_issue, {7: "done"})

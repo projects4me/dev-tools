@@ -3,6 +3,8 @@
 import re
 import threading
 
+from . import dependency_holds
+
 DONE_STATUSES = ("done", "closed")   # a dependency in one of these is finished and merged (agent.json can override)
 
 DEPENDS_LINE = re.compile(r"Depends\s+on\s*:?\s*([^\n]*)", re.IGNORECASE)
@@ -33,11 +35,18 @@ class DependencyGate:
 
     Thread-safe: the workers hold and clear, the release worker reads."""
 
-    def __init__(self, done_statuses=DONE_STATUSES):
+    def __init__(self, done_statuses=DONE_STATUSES, agent=None):
+        """With an agent name the held set is saved in talos.db and loaded here, so it survives a restart."""
         self.done_statuses = tuple(done_statuses)
+        self.agent = agent
         self._lock = threading.Lock()
         self._held = {}        # issue number -> (reconcile flag, dependencies, readable)
         self._notified = {}    # issue number -> waiting-on numbers last commented, so it isn't repeated
+        if agent:
+            for number, (deps, waiting) in dependency_holds.load(agent).items():
+                self._held[number] = (False, deps, waiting is not None)   # accepted before: no modifier check
+                if waiting is not None:
+                    self._notified[number] = waiting
 
     def unmet(self, dependencies, statuses):
         return unmet_dependencies(dependencies, statuses, self.done_statuses)
@@ -48,16 +57,25 @@ class DependencyGate:
         with self._lock:
             self._held[number] = (reconcile, tuple(dependencies), waiting_on is not None)
             if waiting_on is None:
+                self._save(number, dependencies, None)
                 return False
             first = self._notified.get(number) != waiting_on
             self._notified[number] = waiting_on
+            self._save(number, dependencies, waiting_on)
             return first
 
     def clear(self, number):
         """Forget the issue; True when it was held."""
         with self._lock:
             self._notified.pop(number, None)
-            return self._held.pop(number, None) is not None
+            was_held = self._held.pop(number, None) is not None
+            if was_held and self.agent:
+                dependency_holds.remove(self.agent, number)
+            return was_held
+
+    def _save(self, number, dependencies, waiting_on):
+        if self.agent:
+            dependency_holds.save(self.agent, number, dependencies, waiting_on)
 
     def any_held(self):
         with self._lock:
