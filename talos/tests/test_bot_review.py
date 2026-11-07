@@ -62,6 +62,13 @@ class BotReviewTest(unittest.TestCase):
         self.prompts, self.resumed = [], []
         self.handoffs = []
         self.submitted = []
+        self.full, self.requests, self.request_error = False, [], None
+
+    def fake_request(self, repo, pr, source, issue):
+        self.requests.append((repo, pr, source, issue))
+        if self.request_error:
+            raise bot_review.TalosError(self.request_error)
+        return not self.full
 
     def tearDown(self):
         for p in self.patches:
@@ -78,7 +85,8 @@ class BotReviewTest(unittest.TestCase):
         d = dispatcher_mod.Dispatcher(self.agent(**agent_overrides), self.tracker, "claude")
         d.submit = lambda number, source, reconcile=False: self.submitted.append(number) or True
         d.bot_review = bot_review.Watcher(d.agent, AGENT_ID, self.tracker, d.submit, rabbit=rabbit,
-                                          handoff=self.fake_handoff, now=self.clock)
+                                          handoff=self.fake_handoff, now=self.clock,
+                                          full=lambda: self.full, request=self.fake_request)
         return d
 
     def fake_handoff(self, number):
@@ -191,6 +199,68 @@ class BotReviewTest(unittest.TestCase):
         self.assertEqual(self.handoffs, [42])
         self.assertEqual(rabbit.calls, [("gaia", 77), ("gaia", 77)])
         self.assertEqual(bot_review.get("odysseus", 42), {})
+
+    def test_round_skipped_at_the_limit(self):
+        d = self.dispatcher(Rabbit("findings"))
+        self.ship(d)
+        self.full = True
+        d.bot_review.check()
+        self.assertEqual((self.submitted, self.handoffs), ([], [42]))
+        self.assertEqual(self.tracker.comments, [f"{d.agent.display_name}: no CodeRabbit re-review"])
+        self.assertEqual(bot_review.get("odysseus", 42), {})
+
+    def test_budget_failure_hands_off(self):
+        def broken():
+            raise bot_review.TalosError("ai down")
+        d = self.dispatcher(Rabbit("findings"))
+        d.bot_review.full = broken
+        self.ship(d)
+        d.bot_review.check()
+        self.assertEqual((self.submitted, self.handoffs), ([], [42]))
+
+    def test_review_requested_after_a_round(self):
+        d = self.dispatcher(Rabbit("findings", "clean"))
+        self.ship(d)
+        self.assertEqual(self.requests, [])             # the first review is the PR-opened trigger's
+        d.bot_review.check()
+        self.assertEqual(self.run_with(d, [awaiting()]), policy.AWAITING_BOT_REVIEW)
+        self.assertEqual(self.requests, [("gaia", 77, "bot-round", 42)])
+        self.assertEqual(bot_review.get("odysseus", 42)["phase"], bot_review.WAITING)
+        self.assertEqual(self.handoffs, [])
+
+    def test_human_answer_after_a_round_hands_off(self):
+        d = self.dispatcher(Rabbit("findings"))
+        self.ship(d)
+        d.bot_review.check()
+        self.full = True
+        self.run_with(d, [awaiting()])
+        self.assertEqual(self.handoffs, [42])
+        self.assertEqual(len(self.tracker.comments), 1)
+        self.assertEqual(bot_review.get("odysseus", 42), {})
+
+    def test_request_failure_after_a_round_hands_off(self):
+        d = self.dispatcher(Rabbit("findings"))
+        self.ship(d)
+        d.bot_review.check()
+        self.request_error = "ai down"
+        self.run_with(d, [awaiting()])
+        self.assertEqual(self.handoffs, [42])
+        self.assertEqual(bot_review.get("odysseus", 42), {})
+
+    def test_reenter_at_the_limit_stays_with_the_reviewer(self):
+        d = self.dispatcher(Rabbit("clean"), issue=make_issue(status="in_review", assignee=REVIEWER))
+        handed = []
+        self.tracker.hand_off = lambda number, status, assignee: handed.append(number)
+        w = d.bot_review
+        w.find_pr = lambda repo, number: {"number": 77, "merged": False}
+        w.route = lambda issue: ("60", "Agent Agamemnon")
+        self.full = True
+        self.assertFalse(w.reenter({"number": 42, "status": "in_review"}, "gaia"))
+        self.assertEqual((handed, self.requests, len(self.tracker.comments)), ([], [("gaia", 77, "reenter", 42)], 1))
+        self.assertEqual(bot_review.get("odysseus", 42), {})
+        self.full, self.request_error = False, "ai down"
+        self.assertFalse(w.reenter({"number": 42, "status": "in_review"}, "gaia"))
+        self.assertEqual(handed, [])
 
     def test_round_cap_hands_off_with_findings_open(self):
         d = self.dispatcher(Rabbit("findings"), bot_review_rounds=2)
@@ -372,6 +442,27 @@ class AiRabbitTest(unittest.TestCase):
         with mock.patch.object(ai_cli.subprocess, "run", return_value=done):
             with self.assertRaises(bot_review.TalosError):
                 bot_review.ai_rabbit({}, "gaia", 77)
+
+
+class AiRabbitRequestTest(unittest.TestCase):
+    def run_ai(self, stdout):
+        done = mock.Mock(returncode=0, stdout=stdout, stderr="")
+        return mock.patch.object(ai_cli.subprocess, "run", return_value=done)
+
+    def test_full_budget(self):
+        with self.run_ai('{"used": 9, "tier": "full"}\n') as run:
+            self.assertTrue(bot_review.ai_rabbit_full({}))
+        self.assertEqual(run.call_args[0][0][1:], [str(ai_cli.AI), "rabbit", "budget", "--json"])
+        with self.run_ai('{"tier": "large"}\n'):
+            self.assertFalse(bot_review.ai_rabbit_full({}))
+
+    def test_request_decision(self):
+        with self.run_ai('{"decision": "coderabbit"}\n') as run:
+            self.assertTrue(bot_review.ai_rabbit_request({}, "gaia", 77, "bot-round", 42))
+        self.assertEqual(run.call_args[0][0][3:], ["request", "gaia", "77", "--source", "bot-round", "--rereview",
+                                                   "--issue", "42", "--json"])
+        with self.run_ai('{"decision": "human"}\n'):
+            self.assertFalse(bot_review.ai_rabbit_request({}, "gaia", 77, "reenter", 42))
 
 
 if __name__ == "__main__":

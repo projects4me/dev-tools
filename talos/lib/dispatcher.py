@@ -596,6 +596,8 @@ class Dispatcher:
         number = issue["number"]
         bot_review.wait(self.agent.name, number, repo, pr, issue["status"], self.bot_review.deadline())
         rounds = bot_review.get(self.agent.name, number).get("rounds") or 0
+        if rounds and not self.bot_review.after_round(number, repo, pr):
+            return policy.AWAITING_BOT_REVIEW       # handed to the reviewer: nothing to wait for
         log(f"#{number} waiting for CodeRabbit on {repo} PR {pr} ({rounds}/{self.bot_review.cap} bot rounds run)",
             self.agent.name)
         return policy.AWAITING_BOT_REVIEW

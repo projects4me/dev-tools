@@ -307,6 +307,13 @@ PR pushed -> wait for the CodeRabbit check run on the head SHA (the `CodeRabbit`
   the log and an issue comment.
 - A bot round is a queued run that resumes the session while its cache is warm, like other actions, and counts
   toward `maxIterations`. It answers only CodeRabbit's open threads and doesn't touch the tracker.
+- CodeRabbit's auto review is off, so each follow-up review is asked for: after a bot round pushes, Talos runs
+  `ai rabbit request <repo> <pr> --source bot-round --rereview --issue N` (one trigger comment per push), and when
+  an addressed re-review goes back into the loop, the same with `--source reenter`. Before it queues a round it reads
+  `ai rabbit budget`: at the daily limit (tier `full`) the round isn't run. When the budget answers `human`, or the
+  `ai` command fails, nothing waits for a review that was never requested: Talos comments `CodeRabbit limit reached:
+  open CodeRabbit findings left for you.` (or says the request failed) and hands the issue to the reviewer, never
+  to the merger (a re-entry stays with the reviewer).
 - At `botReviewRounds` (default 3) the issue is handed off with the bot threads still open on the PR; still
   `pending` after `botReviewWaitMinutes` (default 20, per round) it is handed off too.
 - The wait is kept in `state/talos.db` (`bot_reviews`), so a restart picks it up; a round that was queued but
