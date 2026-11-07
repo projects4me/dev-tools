@@ -44,6 +44,7 @@ class Settings:
     workspace_root: Path                # the workspace that holds .runs/issue-N
     docker_thresholds: tuple = (docker_state.DEFAULT_HIGH, docker_state.DEFAULT_OK)    # pressured at / ok below, %
     docker_hold_max_hours: float = 72   # `hold-until-docker` hands the issue to the owner after this
+    hold_max_hours: float = 72          # `hold-until-done` hands the issue to the owner after this
 
 
 @dataclass
@@ -377,6 +378,28 @@ class Aga:
         return Act({"issue": self.number, "heldUntil": latest, "condition": journal.DOCKER}, before, after,
                    {"op": "release_hold", "issue": self.number, "assignee": before["assignee"]},
                    "talos agamemnon undo <id> releases the hold and gives the issue back to whom it was assigned to")
+
+    def _hold_until_done(self, args):
+        """The blocked issue stays with Agamemnon (in review, with its open PR): only the journal hold is new."""
+        blocker = str(args.get("blocker") or "").strip().lstrip("#")
+        if not blocker.isdigit() or int(blocker) == self.number:
+            raise Refused("hold-until-done needs the number of another issue to wait for")
+        before = self.issue_state()
+        if before["running"]:
+            raise Refused(f"#{self.number} has a run in flight")
+        if journal.active_hold(self.number):
+            raise Refused(f"#{self.number} is already held")
+        if str(before["assignee"] or "") != str(self.s.my_id):
+            raise Refused(f"#{self.number} is not with {self.s.display_name}: the release merges the base into its "
+                          f"PR only for an issue it holds")
+        pr = self.open_pr()
+        latest = stamp(self.p.now() + timedelta(hours=self.s.hold_max_hours))
+        journal.hold(self.number, latest, before["assignee"], f"{journal.DONE}{int(blocker)}")
+        after = {**before, "heldUntil": latest}
+        return Act({"issue": self.number, "pr": pr["number"], "heldUntil": latest,
+                    "condition": f"issue {int(blocker)} done"}, before, after,
+                   {"op": "release_hold", "issue": self.number, "assignee": before["assignee"]},
+                   "talos agamemnon undo <id> releases the hold; the issue stays with whom it was assigned to")
 
     # -- docker ----------------------------------------------------------------------------
 

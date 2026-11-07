@@ -3,7 +3,7 @@
 import dataclasses
 
 from .. import policy, runner, workspaces
-from ..agamemnon import premise, wiring
+from ..agamemnon import journal, premise, wiring
 from ..agamemnon.holds import release_due
 from ..agamemnon.triage import Triage, launcher
 from ..config import WORKSPACE, TalosError, log
@@ -82,12 +82,15 @@ def start(agent, cfg, dry_run, claude=None):
             f"add it to acceptAssignmentsFrom in its agent.local.json", agent.name)
     owners = [str(o) for o in (agent.orchestration.owners or [worker.handoff_to]) if o]
     merges = MergeSweeper(agent, worker, tracker, Merger(tracker.child_env, github.agamemnon_gh), me, owners,
-                          dry_run=dry_run)
+                          dry_run=dry_run, is_held=lambda number: bool(journal.active_hold(number)))
     keeper = BranchKeeper(agent, worker, tracker, github.agamemnon_gh, worker_id, me, owners,
                           lambda repo, issue: workspaces.branch_holder(WORKSPACE, repo, issue), dry_run=dry_run)
     overlap = OverlapGate(agent, worker, tracker, IssueFiles(tracker.child_env), dry_run=dry_run)
     holds = lambda: release_due(tracker, worker_id, me, _now(), agent.name, dry_run,    # noqa: E731
-                                lambda: wiring.docker_ok(agent), owners[0] if owners else None)
+                                lambda: wiring.docker_ok(agent), owners[0] if owners else None,
+                                wiring.update_pr(worker, tracker, Merger(tracker.child_env, github.agamemnon_gh),
+                                                 github.agamemnon_gh, agent.name),
+                                worker.dependency_done_statuses)
     triage = _triage(agent, worker, tracker, me, owners, claude, dry_run)
     merges.triage = keeper.triage = triage
     orchestrator = Orchestrator(agent, worker, tracker, worker_id, dry_run=dry_run, merges=merges, keeper=keeper,

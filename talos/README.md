@@ -599,7 +599,11 @@ and is `enabled: false` until the engineer turns it on.
     containers not running; `start-docker` is refused when the daemon is up, `restart-docker` while another issue has
     a run in flight unless Docker is `down`), `stop-stale-containers` (tier `free`: `docker_free`'s rule, no run in
     flight and deferred, won't fix or unchanged for `docker.staleHours`; cannot be undone, the next `ai test` starts
-    the containers again) and `hold-until-docker` (tier `wait`: as `hold-until-tomorrow`, but the issue is given to
+    the containers again) and `hold-until-done <issue>` (tier `wait`: the in_review issue stays with Agamemnon, with its open PR, and the merge
+    sweep skips it; when `<issue>` is done (the worker's `dependencyDoneStatuses`) the base is merged into the PR on
+    GitHub (a conflict goes to the conflict flow), its CI re-run count starts over and a comment says so, and the merge
+    sweep takes it again. Deferred or won't fix, or not done after `holdMaxHours` (agent.json, default 72): the owner
+    gets it with a comment. Undo releases the hold) and `hold-until-docker` (tier `wait`: as `hold-until-tomorrow`, but the issue is given to
     the worker when Docker is `ok`, one Docker-held issue per sweep, oldest first. A hold ends without giving the
     issue back when it was moved to deferred or won't fix, and the owner gets it with a comment after
     `docker.holdMaxHours` (default 72). Undo releases it). The premise grants these tiers to no incident type yet.

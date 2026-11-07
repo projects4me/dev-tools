@@ -22,7 +22,7 @@ class MergeSweeper:
     """Merges as one orchestrator agent (kind orchestrator) for its worker (kind issues)."""
 
     def __init__(self, agent, worker, tracker, merger, my_id, owners, now=_now, dry_run=False,
-                 worker_state=sessions.get, triage=None):
+                 worker_state=sessions.get, triage=None, is_held=None):
         self.agent, self.worker, self.tracker = agent, worker, tracker
         self.settings = agent.orchestration
         self.merger = merger            # merge.Merger: find PRs, run the merge gate, merge
@@ -31,6 +31,7 @@ class MergeSweeper:
         self.now, self.dry_run = now, dry_run
         self.worker_state = worker_state    # the worker's Talos state per issue (conflict_noted: the keeper gave up)
         self.projects = list(worker.projects)
+        self.is_held = is_held or (lambda number: False)   # an issue Agamemnon holds is not merged yet
         self.triage = triage                # agamemnon.triage.Triage: looks before the owner does (None = off)
 
     def enabled(self):
@@ -46,7 +47,8 @@ class MergeSweeper:
         for milestone in milestones:
             for project in self.projects:
                 for issue in self.tracker.issues_in(project, milestone):
-                    if policy.is_merge_candidate(issue, milestones, self.projects, self.my_id):
+                    if (policy.is_merge_candidate(issue, milestones, self.projects, self.my_id)
+                            and not self.is_held(issue["number"])):
                         found[issue["number"]] = issue
         notes = []
         for number in sorted(found):

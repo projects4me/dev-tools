@@ -30,6 +30,8 @@ def build_parser():
         elif verb.name == "wait-for":
             sp.add_argument("what", help="an issue number, or 'slot' for a free Gaia test slot")
             sp.add_argument("--minutes", type=float, help="the longest wait (capped by agaWaitMaxMinutes)")
+        elif verb.name == "hold-until-done":
+            sp.add_argument("blocker", help="the issue number whose being done releases the hold")
         elif verb.name == "send":
             sp.add_argument("--notes", required=True, help="what the worker should do (posted as a comment)")
     return p
