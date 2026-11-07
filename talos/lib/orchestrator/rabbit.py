@@ -17,13 +17,19 @@ class RabbitBudget:
 
     def at_limit(self):
         """True when the daily limit is reached and no agent push gets a review."""
-        return ai_json(self.env(), "rabbit", "budget").get("tier") == FULL
+        return self.budget().get("tier") == FULL
 
-    def request(self, repo, pr, source, issue):
-        """Ask for the review of the new head as a re-review; the budget's decision ("coderabbit", "human" or
-        "absent" when the repo has no CodeRabbit)."""
-        result = ai_json(self.env(), "rabbit", "request", repo, str(pr), "--source", source, "--rereview",
-                         "--issue", str(issue))
+    def budget(self):
+        """The budget as `ai rabbit budget --json` prints it: used, limit, tier, nextSlot and the deferred PRs."""
+        return ai_json(self.env(), "rabbit", "budget")
+
+    def request(self, repo, pr, source, issue, files=None, rereview=True):
+        """Ask for the review of the PR, as a re-review of a new head unless `rereview` is False (then `files`, its
+        hand-written file count, counts against the tier); the budget's decision ("coderabbit", "human" or "absent"
+        when the repo has no CodeRabbit)."""
+        args = ["--files", str(files)] if files is not None else []
+        result = ai_json(self.env(), "rabbit", "request", repo, str(pr), "--source", source,
+                         *(["--rereview"] if rereview else []), *args, "--issue", str(issue))
         if "decision" not in result:
             raise TalosError(f"ai rabbit request {repo} {pr}: no decision in {result}")
         return result["decision"]
