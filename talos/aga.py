@@ -32,6 +32,12 @@ def build_parser():
             sp.add_argument("--minutes", type=float, help="the longest wait (capped by agaWaitMaxMinutes)")
         elif verb.name == "hold-until-done":
             sp.add_argument("blocker", help="the issue number whose being done releases the hold")
+        elif verb.name == "file-bug":
+            sp.add_argument("--title", required=True, help="the bug's subject")
+            sp.add_argument("--signature", required=True,
+                            help="'<job>: <test>': the failed job (as base-ci names it) and the test")
+            sp.add_argument("--body", required=True, help="what fails, the log excerpt, the base commit where it "
+                            "also fails and the blocked issue")
         elif verb.name == "send":
             sp.add_argument("--notes", required=True, help="what the worker should do (posted as a comment)")
     return p

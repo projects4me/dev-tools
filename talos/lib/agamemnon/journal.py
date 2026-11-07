@@ -104,6 +104,11 @@ def actions(since=None, issue=None, incident_id=None):
     return [_action(r) for r in _query(sql, args)]
 
 
+def actions_of(verb):
+    """Every action of the verb, oldest first, across incidents."""
+    return [_action(r) for r in _query("SELECT * FROM aga_actions WHERE verb = ? ORDER BY id", (verb,))]
+
+
 def count(incident_id):
     return len(actions(incident_id=incident_id))
 
