@@ -11,7 +11,7 @@ import threading
 from datetime import datetime, timedelta
 
 from . import db
-from .ai_cli import run_ai
+from .ai_cli import ai_json, run_ai
 from .config import TalosError, log
 
 WAITING = "waiting"     # polling `ai rabbit` for the PR's head commit
@@ -131,12 +131,29 @@ def ai_handoff(env, issue, to=None):
         raise TalosError(f"ai handoff {issue}: exit {r.returncode}: {(r.stderr or r.stdout or '')[-500:]}")
 
 
+def ai_rabbit_full(env):
+    """True when the daily CodeRabbit budget is used up: a follow-up review would be answered `human`."""
+    return ai_json(env, "rabbit", "budget")["tier"] == "full"
+
+
+def ai_rabbit_request(env, repo, pr, source, issue):
+    """`ai rabbit request` for a re-review of the PR: True when CodeRabbit was asked (the trigger comment was posted
+    and counted), False when the budget answered human."""
+    return ai_json(env, "rabbit", "request", repo, str(pr), "--source", source, "--rereview",
+                   "--issue", str(issue))["decision"] == "coderabbit"
+
+
+LIMIT_NOTE = "CodeRabbit limit reached: open CodeRabbit findings left for you."
+FAILED_NOTE = "CodeRabbit could not be asked for a review (the ai command failed): open CodeRabbit findings left for you."
+
+
 # -- the watcher ----------------------------------------------------------------------------------
 
 class Watcher:
     """Polls the agent's waiting issues: hands off, queues a bot round, or keeps waiting."""
 
-    def __init__(self, agent, user_id, tracker, submit, rabbit=None, handoff=None, now=_now, route=None, find_pr=None):
+    def __init__(self, agent, user_id, tracker, submit, rabbit=None, handoff=None, now=_now, route=None, find_pr=None,
+                 full=None, request=None):
         self.agent = agent
         self.user_id = user_id
         self.tracker = tracker
@@ -145,6 +162,11 @@ class Watcher:
         self.handoff = handoff or (lambda issue, to=None: ai_handoff(tracker.child_env(), issue, to))
         # route(issue) -> (Gaia user id, name) to hand a CodeRabbit-clean issue to instead of the reviewer, or None
         # (an orchestrator that merges clean PRs itself, see lib/orchestrator)
+        # full() -> True when a follow-up review would go to the human reviewer (daily budget used up);
+        # request(repo, pr, source, issue) -> True when CodeRabbit was asked to review the PR's new head
+        self.full = full or (lambda: ai_rabbit_full(tracker.child_env()))
+        self.request = request or (lambda repo, pr, source, issue:
+                                   ai_rabbit_request(tracker.child_env(), repo, pr, source, issue))
         self.route = route or (lambda issue: None)
         # find_pr(repo, issue) -> {"number", "merged", ...} or None: the issue's PR, to put a clean re-review back
         # into the loop (None: no orchestrator to route to)
@@ -167,11 +189,44 @@ class Watcher:
         pr = self.find_pr(repo, number)
         if not pr or pr.get("merged"):
             return False
+        if not self.ask_review(number, repo, pr["number"], "reenter"):
+            return False                # it stays with the reviewer, who was told why
         reenter(self.agent.name, self.tracker, self.user_id, number, repo, pr["number"], issue["status"],
                 self.deadline())
         log(f"#{number} re-review addressed: waiting for CodeRabbit on {repo} PR {pr['number']} to merge it",
             self.agent.name)
         return True
+
+    def ask_review(self, number, repo, pr, source):
+        """Ask CodeRabbit to review the PR's new head, once: True when asked. At the limit, or when the ai command
+        fails, the reviewer is told why (nothing waits for a review that was never requested) and this is False."""
+        try:
+            if self.request(repo, pr, source, number):
+                return True
+            note = LIMIT_NOTE
+        except TalosError as e:
+            log(f"#{number} CodeRabbit review not requested on {repo} PR {pr}: {e}", self.agent.name)
+            note = FAILED_NOTE
+        self.tracker.comment(number, f"{self.agent.display_name}: no CodeRabbit re-review", f"<p>{html.escape(note)}</p>")
+        return False
+
+    def hand_off_unreviewed(self, number, record, note):
+        """No follow-up review will come: explain, then hand the issue (never the merger) to the reviewer."""
+        self.tracker.comment(number, f"{self.agent.display_name}: no CodeRabbit re-review", f"<p>{html.escape(note)}</p>")
+        self.handoff(number)
+        drop(self.agent.name, number)
+        log(f"#{number} no CodeRabbit re-review on PR {record['pr']} after {record['rounds']} round(s): handed to "
+            f"the reviewer", self.agent.name)
+
+    def after_round(self, number, repo, pr):
+        """A bot round pushed: ask CodeRabbit to review the new head. False when it can't be asked, then the issue is
+        already with the reviewer."""
+        if self.ask_review(number, repo, pr, "bot-round"):
+            return True
+        self.handoff(number)
+        drop(self.agent.name, number)
+        log(f"#{number} no CodeRabbit re-review on {repo} PR {pr}: handed to the reviewer", self.agent.name)
+        return False
 
     def deadline(self):
         return self.now() + timedelta(minutes=self.agent.bot_review_wait_minutes)
@@ -218,6 +273,15 @@ class Watcher:
         if step == WAIT:
             return step
         if step == RUN_ROUND:
+            try:
+                full = self.full()
+            except TalosError as e:
+                log(f"#{number} CodeRabbit budget unreadable: {e}", name)
+                self.hand_off_unreviewed(number, record, FAILED_NOTE)
+                return HAND_OFF
+            if full:
+                self.hand_off_unreviewed(number, record, LIMIT_NOTE)
+                return HAND_OFF
             if not start_round(name, number):
                 return WAIT
             if not self.submit(number, f"CodeRabbit round {record['rounds'] + 1}/{self.cap} on PR {record['pr']}"):
