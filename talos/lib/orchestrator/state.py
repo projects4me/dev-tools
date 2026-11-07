@@ -98,6 +98,16 @@ def find_open_merge(agent, issue, pr):
         conn.close()
 
 
+def merge_recorded(agent, issue, pr):
+    """True when the orchestrator's own merge flow has the PR: a record still waiting or one that ended merged."""
+    conn = db.connect()
+    try:
+        return conn.execute("SELECT 1 FROM auto_merges WHERE agent = ? AND issue = ? AND pr = ? "
+                            "AND (ended_at IS NULL OR outcome = 'merged')", (agent, issue, pr)).fetchone() is not None
+    finally:
+        conn.close()
+
+
 def note_merge(record_id, text):
     """Add a step to the record's note."""
     conn = db.connect()

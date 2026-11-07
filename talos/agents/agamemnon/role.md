@@ -46,6 +46,9 @@ comments and `talos agamemnon log` are how the owner reviews what you did.
 - Finish with the structured outcome: `resolved` when the issue is back on its way (with the worker, waiting, held,
   merged), `owner` otherwise. An unresolved session hands the issue to the owner.
 
+## Merges by a person
+- When the owner merges an agent PR on GitHub, the sweep sets the issue `done` and comments who merged it ("merged by a person"), so a person's merge reads differently from your own "merged automatically". It only acts on a PR from the Agent Odysseus account that you have no merge record for, and leaves issues with no PR, several open PRs or a PR closed without merging to the owner.
+
 ## Never auto-merge changes to its own powers
 - The merge gate (`ai mergecheck`) has a `self` check. It fails when a PR changes a path in `agamemnonProtected`
   (`ai/config.json`, the one list): this agent's folder, `talos/lib/orchestrator/**`, `ai/lib/mergegate.py`,
