@@ -127,6 +127,13 @@ CREATE TABLE IF NOT EXISTS overlap_holds (
     checked_at          TEXT,                   -- the latest sweep that found the overlap
     PRIMARY KEY (agent, issue)
 );
+CREATE TABLE IF NOT EXISTS dependency_holds (   -- issues waiting on "Depends on" issues; survives a restart
+    agent               TEXT    NOT NULL,
+    issue               INTEGER NOT NULL,
+    dependencies        TEXT,                   -- JSON list of issue numbers
+    waiting_on          TEXT,                   -- JSON list last commented on; NULL when statuses were unreadable
+    PRIMARY KEY (agent, issue)
+);
 CREATE TABLE IF NOT EXISTS aga_incidents (
     id                  INTEGER PRIMARY KEY AUTOINCREMENT,
     issue               INTEGER NOT NULL,
