@@ -28,7 +28,7 @@ class Orchestrator:
 
     def __init__(self, agent, worker, tracker, worker_id, dry_run=False, branch_holder=_branch_holder, now=_now,
                  worker_state=sessions.get, merges=None, keeper=None, overlap=None,
-                 holds=None, triage=None, human_merges=None):
+                 holds=None, triage=None, human_merges=None, backlog=None):
         self.agent, self.worker, self.tracker = agent, worker, tracker
         self.settings = agent.orchestration
         self.worker_id = str(worker_id)
@@ -36,6 +36,7 @@ class Orchestrator:
         self.keeper = keeper            # keeper.BranchKeeper: keeps agent PRs mergeable (None = off)
         self.overlap = overlap          # overlap.OverlapGate: holds issues whose files are in flight (None = off)
         self.human_merges = human_merges    # human_merges.HumanMergeSweeper: sets done what a person merged (None = off)
+        self.backlog = backlog          # backlog.BacklogSender: deferred PRs get CodeRabbit once credit frees up (None = off)
         self.holds = holds              # holds() -> note: gives back issues `aga` held whose time has come (None = off)
         self.triage = triage            # agamemnon.triage.Triage: incidents in the premise get a session (None = off)
         self.owners = [str(o) for o in (self.settings.owners or [worker.handoff_to]) if o]
@@ -105,6 +106,8 @@ class Orchestrator:
         merged += f"merged by a person: {by_person}; " if by_person else ""
         kept = self.keeper.sweep() if self.keeper else ""
         merged += f"branches: {kept}; " if kept else ""
+        sent = self.backlog.sweep() if self.backlog else ""
+        merged += f"CodeRabbit backlog: {sent}; " if sent else ""
         released = self.holds() if self.holds else ""
         merged += f"holds: {released}; " if released else ""
         issues = None
