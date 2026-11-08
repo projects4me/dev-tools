@@ -55,6 +55,9 @@ RECORDED_BUILDER = (f"p=$(cat {BUILD_PID} 2>/dev/null); [ -n \"$p\" ] && kill -0
 BUILDER_RUNNING_SCRIPT = f"{{ {RECORDED_BUILDER}; }} || pgrep -f '[e]mber build' >/dev/null"
 STOP_BUILDER_SCRIPT = (f"{{ {RECORDED_BUILDER} && kill \"$p\"; }}; pkill -f '[e]mber build'; "
                        f"rm -f {BUILD_PID}; sleep 1")
+# Babel worker threads of the watch build (broccoli reads JOBS, default os.cpus().length = 24 in Docker). Each
+# worker keeps its own V8 heap: 24 of them hold ~4 GiB idle, JOBS=4 about 1.3 GiB with the same build time.
+PROMETHEUS_JOBS = 4
 TEST_TIMEOUT = 900        # seconds for one `ember test`
 STUCK_GRACE = 20          # seconds after a hang marker before the run is stopped (the other tests may still finish)
 # Output after which testem never reports completion: no test matched, or QUnit/TestLoader failed globally.
@@ -120,6 +123,13 @@ def mount_source(info, destination):
 
 def _key(path):
     return hashlib.sha1(norm(path).encode("utf-8")).hexdigest()[:8]
+
+
+def prometheus_containers_without_jobs():
+    """Names of p4m-test-prometheus-* containers whose environment lacks the JOBS cap."""
+    r = _docker("ps", "-a", "--filter", "name=p4m-test-prometheus-", "--format", "{{.Names}}", check=False)
+    names = [n for n in (r.stdout or "").split() if n]
+    return [n for n in names if not PrometheusTestContainer.has_jobs(inspect(n))]
 
 
 def _running(info):
@@ -426,11 +436,19 @@ class PrometheusTestContainer(CopiedSourceContainer):
         super().__init__(checkout, state_dir, "p4m-test-prometheus")
         self.base = base
 
+    @staticmethod
+    def has_jobs(info):
+        """True when a container's environment carries JOBS=PROMETHEUS_JOBS."""
+        return f"JOBS={PROMETHEUS_JOBS}" in (info or {}).get("Config", {}).get("Env", [])
+
     # container lifecycle
     def ensure(self, fresh=False):
         own = inspect(self.name)
         if own and (fresh or not _running(own)):
             _docker("rm", "-f", self.name)
+            own = None
+        if own and not self.has_jobs(own):
+            _docker("rm", "-f", self.name)      # created before JOBS was set: its build holds ~4 GiB
             own = None
         if own:
             return False
@@ -441,6 +459,7 @@ class PrometheusTestContainer(CopiedSourceContainer):
                       "prometheus_prometheus_node_modules")
         _docker("run", "-d", "--name", self.name, "--label", f"{LABEL}={norm(self.checkout)}",
                 "-v", f"{volume}:/prometheus/node_modules", "-e", "CI=true", "-e", "TRAVIS=true",
+                "-e", f"JOBS={PROMETHEUS_JOBS}",
                 "-w", "/prometheus", "--entrypoint", "sh", image, "-c", "sleep infinity")
         # The image holds an old copy of the source: start from an empty tree (node_modules is a volume).
         _docker("exec", self.name, "sh", "-c",

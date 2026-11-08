@@ -39,6 +39,32 @@ class PathTest(unittest.TestCase):
 
 
 
+class JobsCapTest(unittest.TestCase):
+    """The Prometheus test container caps the Babel worker pool with JOBS."""
+
+    def test_has_jobs_reads_the_container_env(self):
+        has = testenv.PrometheusTestContainer.has_jobs
+        self.assertTrue(has({"Config": {"Env": ["CI=true", f"JOBS={testenv.PROMETHEUS_JOBS}"]}}))
+        self.assertFalse(has({"Config": {"Env": ["CI=true"]}}))
+        self.assertFalse(has(None))
+
+    def test_new_container_and_old_container(self):
+        calls = []
+        box = testenv.PrometheusTestContainer(".", Path("."))
+        box.manifest_file = Path("nonexistent-manifest")
+        old = (testenv.inspect, testenv._docker)
+        old_env = {"Config": {"Env": []}, "State": {"Running": True}}
+        testenv.inspect = lambda n: old_env if n == box.name else None
+        testenv._docker = lambda *a, **k: calls.append(a)
+        try:
+            self.assertTrue(box.ensure())
+        finally:
+            testenv.inspect, testenv._docker = old
+        self.assertIn(("rm", "-f", box.name), calls)
+        run = next(c for c in calls if c[0] == "run")
+        self.assertIn(f"JOBS={testenv.PROMETHEUS_JOBS}", run)
+
+
 class RunTestsTest(unittest.TestCase):
     """run_tests stops a run that testem would never finish, and always cleans the container up."""
 
