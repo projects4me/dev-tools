@@ -11,7 +11,8 @@ ASSIGNEE_EVENT = "issue.assignee.changed"
 STATUS_EVENT = "issue.status.changed"
 LIMITED = "limited"      # read_outcome's outcome for a Claude usage or rate-limit stop; never a Claude-reported one
 AWAITING_BOT_REVIEW = "awaiting_bot_review"   # PR open, hand-off deferred until CodeRabbit settles (bot_review.py)
-OUTCOMES = ("done", "ready_to_ship", AWAITING_BOT_REVIEW, "needs_input", "blocked", "escalate")
+AWAITING_TEST_SLOT = "awaiting_test_slot"     # `ai test` found every test slot in use: resume when one is free
+OUTCOMES = ("done", "ready_to_ship", AWAITING_BOT_REVIEW, AWAITING_TEST_SLOT, "needs_input", "blocked", "escalate")
 
 
 class RunLimits(NamedTuple):
@@ -137,6 +138,22 @@ def render_prompt(action, issue, repo, catch_up=False, reviewer="your reviewer")
                   reviewer=reviewer)
     prompt = action.prompt.format(**values)
     return prompt + CATCH_UP.format(**values) if catch_up else prompt
+
+
+TEST_SLOT_FREE = ("A test slot is free now. Continue Projects4Me issue #{issue} (repo {repo}) where you stopped: "
+                  "restart the timer with dev-tools/ai/ai timer {issue}, run the tests again and carry on. End with the same "
+                  "structured outcome as before.")
+TEST_SLOT_SYNC = (" You waited {minutes} minutes, so the base branch may have moved: first git fetch origin and merge "
+                  "the base branch (origin/dev; origin/main for dev-tools) into claude-issue-{issue} (merge, never "
+                  "rebase), then test.")
+TEST_SLOT_SYNC_MINUTES = 60
+
+
+def render_test_slot_prompt(issue, repo, waited_minutes):
+    """The prompt that resumes a session which ended with awaiting_test_slot; after a long wait it syncs first."""
+    values = dict(issue=issue["number"], repo=repo, minutes=round(waited_minutes))
+    sync = TEST_SLOT_SYNC.format(**values) if waited_minutes >= TEST_SLOT_SYNC_MINUTES else ""
+    return TEST_SLOT_FREE.format(**values) + sync
 
 
 def with_pack(prompt, pack):

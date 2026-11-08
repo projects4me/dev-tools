@@ -113,3 +113,24 @@ def held(path, wait_seconds=30, on_wait=None):
             _unlock(fd)
     finally:
         os.close(fd)
+
+
+@contextmanager
+def held_if_free(path):
+    """Hold the lock for the block if nobody holds it now; yields whether it was taken. Never waits."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(path, os.O_CREAT | os.O_RDWR)
+    try:
+        if not _try_lock(fd):
+            yield False
+            return
+        try:
+            os.lseek(fd, 0, os.SEEK_SET)
+            os.ftruncate(fd, 0)
+            os.write(fd, str(os.getpid()).encode())
+            yield True
+        finally:
+            _unlock(fd)
+    finally:
+        os.close(fd)

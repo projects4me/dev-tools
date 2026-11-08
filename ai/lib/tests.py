@@ -21,8 +21,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import baseline, results, testmap
-from .common import (STATE_DIR, WORKSPACE, base_branch, checkout_state_file, config, git, kill_tree, p4m, repo_dir,
-                     say)
+from .common import (LOCAL_DIR, STATE_DIR, WORKSPACE, base_branch, checkout_state_file, config, git, kill_tree, p4m,
+                     repo_dir, say, testlease)
 
 PHPUNIT_FOLDERS = ("tests/libraries/security", "tests/libraries/utils", "tests/services", "tests/tools")
 
@@ -388,7 +388,24 @@ def cmd_test(args):
         say(n)
     full = not targets
     with terminate_as_interrupt():
-        return _run_and_record(args, repo, src, targets, full)
+        return run_leased(repo, lambda: _run_and_record(args, repo, src, targets, full))
+
+
+def run_leased(repo, run):
+    """run() while holding one of the test slots Talos set for this run (see installer/testlease.py), so the
+    suites and any baseline they need run in that one slot; with no slot free, say so and don't run."""
+    lease = testlease()
+    count = lease.slots_from_env()
+    if not count:
+        return run()
+    with lease.leased(lease.lock_dir(LOCAL_DIR), repo, count) as slot:
+        if slot is None:
+            say(f"all {count} {repo} test slots are in use by other runs: no test ran")
+            say(f"{lease.NO_SLOT}: end the session with outcome awaiting_test_slot; Talos resumes it when a "
+                "slot is free")
+            return lease.NO_SLOT_EXIT
+        say(f"{repo} test slot {slot} of {count} leased for this run")
+        return run()
 
 
 def _run_and_record(args, repo, src, targets, full):

@@ -517,3 +517,41 @@ class TestSlotAndTimerLock(unittest.TestCase):
             for t in threads:
                 t.join()
             self.assertEqual(sorted(common.load_timers()), [str(n) for n in range(1, 9)])
+
+
+class TestLeaseTest(unittest.TestCase):
+    """`ai test` holds one of the slots Talos set for the run while it tests (installer/testlease.py)."""
+
+    def setUp(self):
+        self.local = Path(tempfile.mkdtemp())
+        self.patch = mock.patch.object(tests, "LOCAL_DIR", self.local)
+        self.patch.start()
+        self.lease = tests.testlease()
+
+    def tearDown(self):
+        self.patch.stop()
+
+    def test_without_talos_slots_the_run_takes_no_lease(self):
+        with mock.patch.dict("os.environ", {}, clear=True):
+            self.assertEqual(tests.run_leased("prometheus", lambda: 0), 0)
+
+    def test_the_run_and_its_baseline_hold_one_slot(self):
+        folder = self.lease.lock_dir(self.local)
+        seen = []
+        with mock.patch.dict("os.environ", {self.lease.ENV: "2"}):
+            rc = tests.run_leased("prometheus", lambda: seen.append(self.lease.free_count(folder, "prometheus", 2)))
+        self.assertIsNone(rc)
+        self.assertEqual(seen, [1])
+        self.assertEqual(self.lease.free_count(folder, "prometheus", 2), 2)
+
+    def test_no_free_slot_runs_nothing_and_says_so(self):
+        ran, said = [], []
+        folder = self.lease.lock_dir(self.local)
+        with mock.patch.dict("os.environ", {self.lease.ENV: "1"}), \
+                mock.patch.object(tests, "say", said.append), \
+                mock.patch.object(self.lease.time, "sleep", lambda s: None), \
+                self.lease.leased(folder, "prometheus", 1):
+            rc = tests.run_leased("prometheus", lambda: ran.append(1))
+        self.assertEqual(rc, self.lease.NO_SLOT_EXIT)
+        self.assertEqual(ran, [])
+        self.assertTrue(any(line.startswith(self.lease.NO_SLOT) for line in said))

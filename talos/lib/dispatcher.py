@@ -4,11 +4,14 @@ import html
 import json
 import queue
 import threading
+import time
 import uuid
 from datetime import datetime
 
 from . import bot_review, memory, policy, pool, record_runs, runner, runtime_check, sessions, workspaces
 from .dependency_gate import DependencyGate
+from .slot_waits import SlotWaits
+from .test_slots import TestSlots
 from .registry import Action
 from .usage_pause import UsagePause
 from .docker_pause import DockerPause
@@ -73,6 +76,8 @@ class Dispatcher:
             start=lambda: log(docker_engine.describe(docker_engine.for_agent(agent, "start")), agent.name),
             on_change=self._write_docker_hold, free=docker_free, log=lambda text: log(text, agent.name))
         self._deps = DependencyGate(agent.dependency_done_statuses, agent.name)   # issues waiting on "Depends on" issues
+        self._slot_waits = SlotWaits()      # runs that ended with awaiting_test_slot
+        self._test_slots = TestSlots(agent.prometheus_test_slots)     # Prometheus slots leased while testing
         self._releases = queue.Queue()      # changed issue numbers (None = unknown) for the release worker
         # the CodeRabbit loop; merge_route(issue) names an orchestrator that merges a clean PR itself (or None)
         self.bot_review = bot_review.Watcher(agent, self.user_id, tracker, self.submit, route=merge_route,
@@ -206,6 +211,8 @@ class Dispatcher:
         for n in range(self.agent.max_parallel):
             threading.Thread(target=self._loop, name=f"worker-{self.agent.name}-{n + 1}", daemon=True).start()
         threading.Thread(target=self._release_loop, name=f"release-{self.agent.name}", daemon=True).start()
+        if self.agent.prometheus_test_slots and not self.dry_run:
+            threading.Thread(target=self._slot_loop, name=f"test-slots-{self.agent.name}", daemon=True).start()
         if not self.dry_run:
             self.bot_review.start()
 
@@ -213,26 +220,38 @@ class Dispatcher:
         while True:
             job = self._queue.get(self._rank)
             number, source, reconcile = job
-            requeue = False
+            requeue = parked = False
             try:
                 if self._pause.wait():
                     log("usage-limit pause over, dispatching resumes", self.agent.name)
                 self._docker.wait()     # a run already in flight is not touched
                 if self._docker.stopped:
                     return
-                requeue = self.handle(number, reconcile) == policy.LIMITED
+                outcome = self.handle(number, reconcile)
+                requeue, parked = outcome == policy.LIMITED, outcome == policy.AWAITING_TEST_SLOT
             except Exception as e:  # never let one issue stop the worker
                 log(f"#{number} failed in Talos: {e}", self.agent.name)
             finally:
                 if requeue:       # a usage limit stopped the run: it runs first once the pause is over
                     self._queue.put(None, job, front=True)
-                else:
+                elif not parked:  # a run waiting for a test slot stays pending: _slot_loop queues it again
                     with self._lock:
                         self._pending.discard(number)
 
     # -- one job -----------------------------------------------------------------------------
 
     def handle(self, number, reconcile=False):
+        slot_wait = self._slot_waits.resumed(number)
+        outcome = None
+        try:
+            outcome = self._handle(number, reconcile, slot_wait)
+            return outcome
+        finally:
+            # it ended without waiting again (park() re-records); a usage limit requeues it, still resuming the wait
+            if slot_wait and outcome != policy.LIMITED and self._slot_waits.resumed(number):
+                self._slot_waits.drop(number)
+
+    def _handle(self, number, reconcile, slot_wait):
         issue = self.tracker.issue(number)
         review = bot_review.get(self.agent.name, number)
         if review and not bot_review.still_waiting(review, issue, self.user_id):
@@ -268,6 +287,8 @@ class Dispatcher:
         if override and review:     # the orchestrator's action wins over a stale CodeRabbit round
             bot_review.drop(self.agent.name, number)
             review = {}
+        if slot_wait:
+            return self._resume_for_test_slot(issue, decision, slot_wait)
         bot_round = review.get("phase") == bot_review.ROUND
         if not bot_round:
             return self._work(number, issue, decision, decision.action)
@@ -295,6 +316,33 @@ class Dispatcher:
             prompt = policy.render_prompt(action, issue, decision.repo, catch_up=catch_up,
                                          reviewer=self.agent.reviewer_name)
         return self._start(issue, decision.repo, prompt, model, session_id, why, bot_round=bot_round)
+
+    def _resume_for_test_slot(self, issue, decision, wait):
+        """Resume the session that ended with awaiting_test_slot, now that a slot is free. A runner that keeps no
+        sessions starts over with the status' action instead."""
+        number = issue["number"]
+        waited = (_now() - wait.since).total_seconds() / 60
+        if not (wait.session_id and self.runner.resumable):
+            return self._work(number, issue, decision, decision.action)
+        prompt = policy.render_test_slot_prompt(issue, wait.repo, waited)
+        why = f"test slot free after {waited:.0f} min, resume {wait.session_id[:8]}"
+        return self._start(issue, wait.repo, prompt, wait.model, wait.session_id, why, shipping=wait.shipping)
+
+    SLOT_POLL_SECONDS = 30
+
+    def _slot_loop(self):
+        while True:
+            time.sleep(self.SLOT_POLL_SECONDS)
+            try:
+                self.resume_slot_waits()
+            except Exception as e:  # never let one look stop the loop
+                log(f"test slot check failed: {e}", self.agent.name)
+
+    def resume_slot_waits(self):
+        """Queue first the runs waiting for a test slot that the slots free now can take, oldest wait first."""
+        for number in self._slot_waits.due(self._test_slots.free()):
+            self._queue.put(None, (number, "test slot free", False), front=True)
+            log(f"#{number} queued (a {TestSlots.REPO} test slot is free)", self.agent.name)
 
     def run_step(self, issue, repo, prompt, resume, model, step):
         """A workflow 'Run agent' step on the issue (workflow_steps.py): the step's prompt, session and model. The
@@ -370,7 +418,7 @@ class Dispatcher:
         step.outcome, step.comment = record_runs.report(outcome, summary, comment)
         return outcome
 
-    def _start(self, issue, repo, prompt, model, session_id, why, bot_round=False, step=None):
+    def _start(self, issue, repo, prompt, model, session_id, why, bot_round=False, step=None, shipping=False):
         """Prepare the issue's workspace, add the Gaia pack to a fresh session's prompt, and run."""
         number = issue["number"]
         folder = workspace_error = None
@@ -387,7 +435,7 @@ class Dispatcher:
         if repo == "gaia" and not session_id and not bot_round:     # a resumed session already has it
             prompt = policy.with_pack(prompt, runner.gaia_pack(number, folder))
         return self._run(issue, prompt, model, session_id, why=why, repo=repo, workspace_error=workspace_error,
-                         step=step)
+                         step=step, shipping=shipping)
 
     def _branch_checked_out(self, number, error, repo, step=None):
         """The issue's branch is checked out in another folder, so no worktree can be made. A person has to free it;
@@ -464,6 +512,7 @@ class Dispatcher:
                 env = {**self.tracker.child_env(), **self.agent.env}
                 if lease.slot:
                     env["P4M_TEST_SLOT"] = str(lease.slot)        # `ai test` runs gaia suites in this slot
+                env.update(self._test_slots.env(repo))
                 result, log_path = self.runner.execute(runner.Job(self.agent.name, number, repo, cmd, env, prompt))
             except Exception as e:  # e.g. the Claude binary or Docker vanished, or no worktree; close the run, hand off
                 result, log_path = {"is_error": True, "subtype": "talos error", "result": str(e)}, None
@@ -500,6 +549,14 @@ class Dispatcher:
             sessions.update(self.agent.name, number, runs=done_runs)   # a limited run is not an iteration
             self._pause_for_limit(number, reset_at)
             return policy.LIMITED
+
+        if outcome == policy.AWAITING_TEST_SLOT and not step and self._test_slots.leases(repo):
+            sessions.update(self.agent.name, number, runs=done_runs)   # waiting for a slot is not an iteration
+            self._slot_waits.park(number, repo, model, new_session, shipping, ended)
+            log(f"#{number} waiting for a {repo} test slot", self.agent.name)
+            return policy.AWAITING_TEST_SLOT
+        if outcome == policy.AWAITING_TEST_SLOT:
+            outcome, summary = "failed", f"reported awaiting_test_slot where no test slot is leased: {summary}"
 
         if outcome == "escalate" and model != self.agent.model_escalate and not escalated:
             sessions.update(self.agent.name, number, escalated=True)

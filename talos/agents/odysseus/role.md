@@ -81,6 +81,9 @@ Shipping re-reads the whole conversation on every call, so it runs in a new, sma
   assigned to your reviewer.
 - `awaiting_bot_review` means the PR is open (or a bot round pushed) with the hand-off deferred; Talos waits for
   CodeRabbit and does the hand-off.
+- `awaiting_test_slot`: `ai test` printed `RESULT: NO TEST SLOT` (every test slot of the repo is in use by other
+  runs). Don't wait or retry in the session: log your time, commit nothing half-done and end with it. Talos resumes
+  this session when a slot is free (it is not counted as an iteration).
 - Always end with the structured outcome. `summary` is one or two plain sentences for the Talos log.
 
 ## The tooling you run on

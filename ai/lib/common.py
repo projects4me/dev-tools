@@ -213,6 +213,16 @@ def _filelock():
     return filelock
 
 
+def testlease():
+    """installer/testlease.py, the test slots Talos caps a repo's test runs with."""
+    sys.path.insert(0, str(DEV_TOOLS / "installer"))
+    try:
+        import testlease as module
+    finally:
+        sys.path.remove(str(DEV_TOOLS / "installer"))
+    return module
+
+
 def _devstack_lock():
     """A long browser check holds it; the OS drops it if the holder is killed."""
     filelock = _filelock()

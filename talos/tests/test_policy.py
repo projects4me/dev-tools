@@ -171,6 +171,22 @@ class ShipPromptTest(unittest.TestCase):
         self.assertIn("no handoff note", policy.render_ship_prompt(agent, make_issue(), "gaia", ""))
 
 
+class TestSlotPromptTest(unittest.TestCase):
+    def test_a_short_wait_just_tests_again(self):
+        prompt = policy.render_test_slot_prompt(make_issue(), "prometheus", 12)
+        self.assertIn("#42 (repo prometheus)", prompt)
+        self.assertNotIn("merge the base branch", prompt)
+
+    def test_a_wait_of_an_hour_syncs_with_the_base_branch_first(self):
+        prompt = policy.render_test_slot_prompt(make_issue(), "prometheus", 75)
+        self.assertIn("You waited 75 minutes", prompt)
+        self.assertIn("merge the base branch", prompt)
+
+    def test_awaiting_test_slot_is_an_outcome_claude_may_report(self):
+        out = {"subtype": "success", "structured_output": {"outcome": policy.AWAITING_TEST_SLOT, "summary": "s"}}
+        self.assertEqual(policy.read_outcome(out)[0], policy.AWAITING_TEST_SLOT)
+
+
 class ModelChoiceTest(unittest.TestCase):
     def test_complex_issue_runs_on_opus(self):
         self.assertEqual(policy.choose_model(make_agent(), make_issue(complexity="complex")), "opus")

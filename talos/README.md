@@ -362,6 +362,7 @@ their events), and an env file with its `GAIA_*` credentials.
 | `maxParallel` | worker threads: issues run at once, each in its own workspace and test slot (default 1) |
 | `maxParallelByRepo`, `maxParallelByModel` | caps on runs at once per repo and per model (model default `{"opus": 1}`) |
 | `testSlots` | test slots leased among the runs (default `maxParallel`; at most `TEST_SLOTS` in `p4m.env`) |
+| `prometheusTestSlots` | Prometheus test runs at once, leased by `ai test` only while it tests (see Parallel runs; default 0 = no cap) |
 | `permissionMode`, `allowedTools` | passed to `claude -p` |
 | `rolePrompt` | file appended to the system prompt: the agent's role and headless rules |
 | `runner` | where runs execute: this machine (default) or `{"type": "container", "image": ...}`, see "Container runs" |
@@ -809,6 +810,19 @@ in, first out; an issue already queued or running is never queued twice. Before 
 slot under the repo and model caps, then leases a test slot: `P4M_TEST_SLOT` is set in its environment and
 `ai test gaia` runs in that slot (`--slot` overrides). The lease is released when the run ends. A ship session or an
 escalation re-run leases again. `talos status` lists every run in flight with its repo and slot.
+
+Prometheus runs lease a test slot only while they test (`prometheusTestSlots`, adt-4372): most of a run is spent
+before its first test, so a slot held for the whole run would sit idle. Talos sets `P4M_TEST_LEASE_SLOTS` in the
+run's environment; `ai test` takes the first free of those slots (a file lock per slot in `dev-tools/.p4m`, see
+`installer/testlease.py`, so every process sees them and a crashed holder frees its slot) and holds it for the
+suites and the baseline they may need: the baseline runs in the caller's slot, never a second one, which would
+deadlock against the per-repo baseline lock. With every slot in use `ai test` runs nothing, prints
+`RESULT: NO TEST SLOT` and exits 75; the session ends with outcome `awaiting_test_slot`, which is not an iteration
+and leaves the issue pending in Talos. Every 30 seconds Talos queues first the oldest waiting runs the free slots can
+take (runs resumed but not yet ended count as taking one) and resumes their sessions; a wait of an hour or more asks
+the session to merge the base branch before it tests. Waits are kept in memory: after a restart the issue is picked
+up by its status action as usual. Agamemnon's `resolve-conflict` tests lease a slot the same way and are refused when
+none is free.
 
 Shared files: `ai/state/timers.json` is changed under a lock (`state/timers.lock`). Browser checks against the shared
 dev stack (gaia-dev, Prometheus on :4200) take turns with `dev-tools/ai/ai devstack -- <command>`.
