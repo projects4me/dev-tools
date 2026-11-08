@@ -544,6 +544,7 @@ class Aga:
         pr = self.open_pr()
         folder = self.folder()
         repo, branch = self.repo(), workspaces.branch_name(self.number)
+        self._wait_for_run()
         if self.p.worker_state(self.number).get("running"):
             raise Refused(f"#{self.number} has a run in flight: its workspace is in use")
         if self.p.git(folder, "rev-parse", "--abbrev-ref", "HEAD") != branch:
@@ -575,7 +576,7 @@ class Aga:
             self.p.git(folder, "reset", "--hard", head, check=False)
             raise
         try:
-            passed, output = self.p.test_changed(folder, repo)
+            passed, output = self._test_changed(folder, repo)
         except Exception:
             self.p.git(folder, "reset", "--hard", head, check=False)
             raise
@@ -601,6 +602,31 @@ class Aga:
                    {"head": merge, "remoteHead": merge, "resolved": files}, None,
                    f"cannot be undone here: taking a pushed merge back needs a force push (tier 3); the branch "
                    f"before it is {head[:7]}, also in this incident's backup")
+
+    def _wait_for_run(self):
+        """The conflict test counts as one of the worker's runs: wait (at most agaWaitMaxMinutes) until the worker has
+        fewer than its maxParallel runs in flight; Refused when it still has not. It runs before the workspace checks, so a
+        run that started on this issue during the wait is still caught."""
+        cap = self.s.worker.max_parallel
+        deadline = self.p.now() + timedelta(minutes=self.s.orchestration.aga_wait_max_minutes)
+        while len(self.p.in_flight()) >= cap:
+            if self.p.now() >= deadline:
+                raise Refused(f"the worker has {cap} run(s) in flight (maxParallel) and none ended within "
+                              f"{self.s.orchestration.aga_wait_max_minutes} min: no room for the conflict test, try "
+                              f"again later")
+            self.p.sleep(self.s.orchestration.aga_poll_seconds)
+
+    def _test_changed(self, folder, repo):
+        """ai test <repo> --changed, marked in the worker's talos.db row while it runs so docker_free's idle rule
+        leaves the issue's test container alone; its end counts as the issue's last use."""
+        self.p.update_worker_state(self.number, conflict_test_running=1, conflict_test_at=stamp(self.p.now()))
+        try:
+            return self.p.test_changed(folder, repo)
+        finally:
+            try:
+                self.p.update_worker_state(self.number, conflict_test_running=0, conflict_test_at=stamp(self.p.now()))
+            except Exception:   # keep the test's result; docker_free ignores a mark older than CONFLICT_TEST_MAX
+                pass
 
     def _resolve_files(self, folder, conflicted):
         """Resolve and stage each conflicting file; Refused (naming the hunks) unless every one is additive."""

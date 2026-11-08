@@ -650,7 +650,13 @@ and is `enabled: false` until the engineer turns it on.
     (never a rebase) as Odysseus. Code, not the model, decides (`lib/agamemnon/conflicts.py`): every conflicting
     hunk must be additive on both sides (in diff3 form the base part is empty; files added, deleted or renamed on
     one side, or not UTF-8, don't qualify), and the resolution keeps every line both sides added, ours first, and
-    nothing else. Then `ai test <repo> --changed` must pass; the merge commit (signed as Odysseus, its message
+    nothing else. Then `ai test <repo> --changed` must pass. That test counts as one of the worker's runs: before
+    merging, the verb waits (polling every `agaPollSeconds`, at most `agaWaitMaxMinutes`) until the worker has fewer
+    than `maxParallel` runs in flight, and is refused, with nothing changed, when it still has not (chosen over
+    taking a slot in the dispatcher's gate, which lives in the `talos run` process: a dispatcher run that starts
+    during the test can briefly make it `maxParallel` + 1). While it runs, the worker's talos.db row is marked
+    (`conflict_test_running`, `conflict_test_at`) so the idle rule leaves the container alone; its end restarts the
+    idle window; the merge commit (signed as Odysseus, its message
     naming Agamemnon and the incident) is pushed to the odysseus remote as a fast-forward, and the issue goes to the
     worker waiting for CodeRabbit on the new head (the CodeRabbit loop, as after a deferred ship). Otherwise the
     merge is aborted, the workspace is put back at the PR's head, and the verb is refused with the reason, so the
@@ -680,8 +686,8 @@ Thresholds are set in the agent's `agent.json`; these are the defaults:
 "docker": {"memoryHighPercent": 85, "memoryOkPercent": 70}
 ```
 
-`docker.staleHours` (default 72) is used by the memory freeing below; `docker.holdMaxHours` (default 72) by
-`aga hold-until-docker`.
+`docker.staleHours` (default 72) and `docker.idleTestContainerMinutes` (default 15, 0 = off) are used by the memory
+freeing below; `docker.holdMaxHours` (default 72) by `aga hold-until-docker`.
 
 `talos status` prints one line: `DOCKER  ok  memory 2.0GiB / 8.0GiB (25%)  test containers 3` (or `down (…)`).
 
@@ -694,6 +700,18 @@ won't fix, or its Gaia modified time is more than `docker.staleHours` (default 7
 about is never chosen; with Docker unreachable nothing is stopped and the hold carries on. Each stopped container is
 logged with its issue and reason; the issue gets no comment. `talos gc --dry-run` lists the containers that would be
 stopped. The warm ember build inside a container that is otherwise in use is not touched.
+
+**Idle rule** (no memory pressure needed): at most every 5 minutes, on a wake-up of its release worker (an event or
+its 5-minute timeout, so in practice every 5-10 minutes), each dispatcher stops the running p4m test
+container of an issue whose last use ended more than `docker.idleTestContainerMinutes` (default 15) ago. The last use is
+the latest `last_ended_at` of its Talos runs (any agent, from talos.db, not Gaia's modified time) or the end of an
+Agamemnon `resolve-conflict` test. It is skipped while any agent has a run in flight on the issue or a
+`resolve-conflict` test is using the workspace (`conflict_test_running`; a mark older than 2 h, or with no time, is one
+a stopped process left behind), and for an issue with no recorded end. Every dispatcher sweeps all Talos workspaces,
+so with agents set differently the shortest `idleTestContainerMinutes` wins (as with `staleHours` above). Only containers labelled under `<workspace>/.runs` are touched:
+never a checkout used interactively, never a gaia slot container. Like `ensure()` after any stop, the next `ai test`
+starts cold (about 40-60 s): the price of not holding a container through `awaiting_bot_review`, `in_review`, conflict
+waits and review rounds. Docker unreachable: the sweep logs it and tries again next time.
 
 ### Starting and restarting the engine
 

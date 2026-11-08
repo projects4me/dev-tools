@@ -204,6 +204,18 @@ class DispatcherTest(unittest.TestCase):
     def new_dispatcher(self, **agent_overrides):
         return dispatcher_mod.Dispatcher(make_agent(**agent_overrides), StubTracker(make_issue()), "claude")
 
+    def test_idle_sweep_runs_at_most_every_interval_and_survives_errors(self):
+        calls = []
+
+        def sweep():
+            calls.append(1)
+            raise OSError("docker down")
+        d = dispatcher_mod.Dispatcher(make_agent(), StubTracker(make_issue()), "claude", idle_free=sweep)
+        d.free_idle(now=1000)
+        d.free_idle(now=1000 + d.IDLE_SWEEP_SECONDS - 1)
+        d.free_idle(now=1000 + d.IDLE_SWEEP_SECONDS)
+        self.assertEqual(len(calls), 2)
+
     def test_workers_hitting_a_limit_together_make_one_pause_and_one_comment(self):
         reset = dispatcher_mod._now() + timedelta(hours=3)
         limit = {"is_error": True, "subtype": "success", "session_id": "s1",
