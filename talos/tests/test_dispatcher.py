@@ -5,6 +5,7 @@ import json
 import tempfile
 import threading
 import unittest
+from contextlib import contextmanager
 from datetime import timedelta
 from pathlib import Path
 from unittest import mock
@@ -78,6 +79,15 @@ class DispatcherTest(unittest.TestCase):
 
     def dispatch(self, issue, outcomes, holder=None, refresh_spec=None, **agent_overrides):
         tracker = StubTracker(issue)
+        with self.fake_claude(outcomes):
+            d = dispatcher_mod.Dispatcher(make_agent(**agent_overrides), tracker, "claude", refresh_spec=refresh_spec)
+            if holder is not None:
+                holder["d"] = d
+            return d.handle(42), tracker
+
+    @contextmanager
+    def fake_claude(self, outcomes):
+        """Claude runs that end with `outcomes` in turn, recording their commands, prompts and environments."""
         replies = iter(outcomes)
 
         def fake_run(cmd, env, agent, number, prompt, cwd=None):
@@ -95,10 +105,7 @@ class DispatcherTest(unittest.TestCase):
 
         with mock.patch.object(dispatcher_mod.runner, "run", fake_run), \
                 mock.patch.object(dispatcher_mod.runner, "build_command", fake_build):
-            d = dispatcher_mod.Dispatcher(make_agent(**agent_overrides), tracker, "claude", refresh_spec=refresh_spec)
-            if holder is not None:
-                holder["d"] = d
-            return d.handle(42), tracker
+            yield
 
     def test_failed_handback_is_recorded_and_retried_until_it_succeeds(self):
         tracker = StubTracker(make_issue())
@@ -183,6 +190,52 @@ class DispatcherTest(unittest.TestCase):
     def test_single_worker_leases_no_slot(self):
         self.dispatch(make_issue(), [result("needs_input")], max_parallel=1, test_slots=2)
         self.assertNotIn("P4M_TEST_SLOT", self.envs[0])
+
+    def prometheus_agent(self, slots=2):
+        return dict(projects={"A Gaia": "gaia", "A Prometheus": "prometheus"}, prometheus_test_slots=slots,
+                    actions={**make_agent().actions, "in_progress": Action("Continue #{issue}", resume=True)})
+
+    def test_prometheus_run_gets_its_test_lease_slots(self):
+        self.dispatch(make_issue(project="A Prometheus"), [result("needs_input")], **self.prometheus_agent(3))
+        self.assertEqual(self.envs[0]["P4M_TEST_LEASE_SLOTS"], "3")
+        self.dispatch(make_issue(), [result("needs_input")], **self.prometheus_agent(3))
+        self.assertNotIn("P4M_TEST_LEASE_SLOTS", self.envs[1])
+
+    def test_waiting_for_a_test_slot_parks_the_run_and_resumes_its_session_when_a_slot_frees(self):
+        tracker = StubTracker(make_issue(project="A Prometheus"))
+        with self.fake_claude([result(policy.AWAITING_TEST_SLOT, session="s1"), result("needs_input", session="s1")]):
+            d = dispatcher_mod.Dispatcher(make_agent(**self.prometheus_agent()), tracker, "claude")
+            self.assertEqual(d.handle(42), policy.AWAITING_TEST_SLOT)
+            self.assertEqual((tracker.handoffs, tracker.comments), ([], []))
+            self.assertEqual(sessions.get("odysseus", 42)["runs"], 0)      # not an iteration
+            with mock.patch.object(d._test_slots, "free", return_value=0):
+                d.resume_slot_waits()
+            self.assertEqual(d._queue._entries, [])                        # no slot: it keeps waiting
+            with mock.patch.object(d._test_slots, "free", return_value=1):
+                d.resume_slot_waits()
+                d.resume_slot_waits()                                      # resumed, not ended: not queued twice
+            self.assertEqual([e[3][0] for e in d._queue._entries], [42])
+            self.assertEqual(d.handle(42), "needs_input")
+        self.assertEqual(self.calls[1]["resume"], "s1")
+        self.assertIn("A test slot is free now", self.calls[1]["prompt"])
+        self.assertIsNone(d._slot_waits.resumed(42))                       # the wait ended with the run
+
+    def test_a_resumed_wait_stopped_by_a_usage_limit_still_resumes_its_session(self):
+        d = dispatcher_mod.Dispatcher(make_agent(**self.prometheus_agent()), StubTracker(make_issue()), "claude")
+        d._slot_waits.park(42, "prometheus", "sonnet", "s1", True, dispatcher_mod._now())
+        d._slot_waits.due(1)
+        with mock.patch.object(d, "_handle", return_value=policy.LIMITED):
+            d.handle(42)
+        self.assertIsNotNone(d._slot_waits.resumed(42))                    # the requeued run resumes the wait
+        with mock.patch.object(d, "_handle", side_effect=RuntimeError("boom")):
+            with self.assertRaises(RuntimeError):
+                d.handle(42)
+        self.assertIsNone(d._slot_waits.resumed(42))                       # a failed run frees its place
+
+    def test_awaiting_test_slot_without_a_lease_is_a_failed_run(self):
+        outcome, tracker = self.dispatch(make_issue(), [result(policy.AWAITING_TEST_SLOT)], **self.prometheus_agent())
+        self.assertEqual(outcome, "failed")
+        self.assertEqual(len(tracker.handoffs), 1)
 
     def feedback_agent(self):
         return dict(actions={"feedback": make_agent().actions["feedback"]})

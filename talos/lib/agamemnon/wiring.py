@@ -8,7 +8,7 @@ import subprocess
 from datetime import datetime, timedelta
 
 from .. import bot_review as review_loop
-from .. import db, docker_engine, docker_free, docker_state, sessions, workspaces
+from .. import db, docker_engine, docker_free, docker_state, sessions, test_slots, workspaces
 from ..ai_cli import run_ai
 from ..config import LOCAL_DIR, WORKSPACE, TalosError
 from ..orchestrator import github
@@ -50,9 +50,14 @@ def ody_git(cwd, *args, check=True):
     return _run([bash, str(common.ODYSSEUS), "git", *args], cwd, args, check=check)
 
 
-def test_changed(folder, repo):
-    """(passed, output) of `ai test <repo> --changed` on the issue's workspace (P4M_WORKSPACE, as in its runs)."""
-    r = run_ai({**os.environ, **workspaces.env(folder.parent)}, "test", repo, "--changed", timeout=TEST_TIMEOUT)
+def test_changed(folder, repo, slots):
+    """(passed, output) of `ai test <repo> --changed` on the issue's workspace (P4M_WORKSPACE, as in its runs). A
+    Prometheus test leases one of the worker's test slots (TestSlots), as its runs do; TalosError when none is free."""
+    lease = slots.env(repo)
+    r = run_ai({**os.environ, **workspaces.env(folder.parent), **lease}, "test", repo, "--changed",
+               timeout=TEST_TIMEOUT)
+    if r.returncode == test_slots.NO_SLOT_EXIT and lease:
+        raise TalosError(f"every {repo} test slot is in use by the worker's runs: try again later")
     return r.returncode == 0, f"{r.stdout or ''}{r.stderr or ''}"
 
 
@@ -149,6 +154,7 @@ def build(agent_name=AGENT):
     if agent.kind != "orchestrator":
         raise TalosError(f"'{agent_name}' is a {agent.kind} agent, not an orchestrator")
     worker = load_agents(agent.orchestration.worker)[0]
+    slots = test_slots.TestSlots(worker.prometheus_test_slots)
     agent = dataclasses.replace(agent, projects=dict(worker.projects))
     tracker = Tracker(agent)
     worker_id = Tracker(worker).user_id()
@@ -160,7 +166,8 @@ def build(agent_name=AGENT):
     ports = Ports(tracker=tracker, merger=Merger(tracker.child_env, github.agamemnon_gh), gh=github.agamemnon_gh,
                   git=git, push=push, worker_state=lambda issue: sessions.get(worker.name, issue),
                   run_log=run_log(worker.name), in_flight=in_flight(worker.name), free_slot=free_slot,
-                  ody_git=ody_git, test_changed=test_changed, bot_review=bot_review(worker, worker_id, tracker),
+                  ody_git=ody_git, test_changed=lambda folder, repo: test_changed(folder, repo, slots),
+                  bot_review=bot_review(worker, worker_id, tracker),
                   update_worker_state=lambda issue, **fields: sessions.update(worker.name, issue, **fields),
                   docker_read=docker_state.read, docker_engine=lambda action: docker_engine.for_agent(agent, action),
                   stale_containers=stale_containers(agent, tracker), stop_containers=docker_free.stop)

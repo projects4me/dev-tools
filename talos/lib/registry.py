@@ -116,6 +116,7 @@ class Agent:
     max_parallel_by_repo: dict = field(default_factory=dict)   # repo -> runs at once
     max_parallel_by_model: dict = field(default_factory=lambda: {"opus": 1})   # model -> runs at once
     test_slots: int = 0                 # test slots to lease per run (0 = max_parallel; at most TEST_SLOTS in p4m.env)
+    prometheus_test_slots: int = 0      # Prometheus test runs at once, leased by `ai test` (testlease.py); 0 = no cap
     runner: dict = field(default_factory=dict)       # where runs execute: {} / {"type": "local"} or a container (container.py)
     dispatch: str = "status"            # "status": works issues assigned to it by their status (actions);
                                         # "workflow": runs the Run agent steps Gaia's workflows send it (workflow_steps.py)
@@ -278,6 +279,7 @@ def load_agent(folder):
         max_parallel_by_repo={str(k): int(v) for k, v in raw.get("maxParallelByRepo", {}).items()},
         max_parallel_by_model={str(k): int(v) for k, v in raw.get("maxParallelByModel", {"opus": 1}).items()},
         test_slots=test_slots,
+        prometheus_test_slots=max(0, int(raw.get("prometheusTestSlots", 0))),
         runner=dict(runner),
         dispatch=dispatch,
         extra={k: raw[k] for k in ("knowledgeMap", "ideaSource") if k in raw},
