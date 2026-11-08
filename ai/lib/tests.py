@@ -37,6 +37,7 @@ class SuiteResult:
     failed_count: int = None     # failures the runner itself reported, when it reports a count
     ran: int = None              # tests executed, when known
     skipped: bool = False        # not run on purpose (e.g. a folder this checkout doesn't have): neither pass nor fail
+    oom: bool = False            # the kernel killed the run for memory: no verdict, run it again
 
 
 def _run_logged(name, cmd, cwd=WORKSPACE):
@@ -159,6 +160,9 @@ def api(src, api_filter=None, prepare=True, slot=None):
                        re.findall(r"^FAIL (\S+)", out, flags=re.M), log, code, failed, ran)
 
 
+OOM_MARKER = "killed: out of memory"     # printed by p4m test ember (installer/testenv.py)
+
+
 def ember(src, qunit_filter=None):
     cmd = _p4m("test", "ember", "--src", str(src))
     if qunit_filter:
@@ -168,6 +172,10 @@ def ember(src, qunit_filter=None):
     failed = _int(re.search(r"^# fail\s+(\d+)", out, flags=re.M))
     # "not ok 340 Chrome 97.0 - [41 ms] - Integration | Component | role/card: it renders"
     failures = [m.strip() for m in re.findall(r"^not ok \d+ .*? - (?:\[[^\]]*\] - )?(.*)$", out, flags=re.M)]
+    if OOM_MARKER in out:
+        # the partial results say nothing: never a pass, never matched against known failures
+        return SuiteResult("ember", "ember: killed: out of memory, not a test result: run it again "
+                           "(limit: PROMETHEUS_TEST_MEMORY in p4m.env)", [], log, code or 137, oom=True)
     if "No tests matched the filter" in out:
         return SuiteResult("ember", "ember: the filter matched no test (see log)", [], log, code or 1, None, 0)
     if passed is None and failed is None:
@@ -266,6 +274,8 @@ def judge(r, known):
     explained by the failures the runner reported, and a run must have executed something."""
     if r.skipped:
         return True, []
+    if r.oom:
+        return False, []
     unexpected = [f for f in r.failures if f not in known]
     if r.summary.startswith("no summary") or unexpected:
         return False, unexpected
