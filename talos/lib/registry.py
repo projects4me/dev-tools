@@ -129,6 +129,7 @@ class Agent:
     docker_restart_command: list = None      # argv that restarts it; None = default
     docker_auto_start: bool = True           # the dispatcher starts a stopped engine once per hold (docker_pause.py)
     docker_stale_hours: float = 72           # a pressured Docker stops the test containers of issues unchanged this long
+    docker_idle_minutes: float = 15          # test containers of issues with no run this long are stopped (0 = never)
     docker_check_seconds: float = 30         # the dispatcher re-reads Docker at most this often
     docker_start_timeout_seconds: float = 180   # how long a start/restart waits for the daemon to answer
     docker_hold_max_hours: float = 72        # `aga hold-until-docker` hands the issue to the owner after this
@@ -163,7 +164,8 @@ def _argv(docker, key):
 
 def docker_settings(raw):
     """agent.json `docker: {"memoryHighPercent": 85, "memoryOkPercent": 70, "startCommand": [...],
-    "restartCommand": [...], "startTimeoutSeconds": 180, "autoStart": true, "checkSeconds": 30}` -> the Agent fields."""
+    "restartCommand": [...], "startTimeoutSeconds": 180, "autoStart": true, "checkSeconds": 30,
+    "staleHours": 72, "idleTestContainerMinutes": 15, "holdMaxHours": 72}` -> the Agent fields."""
     docker = raw.get("docker") or {}
     return {"docker_memory_high_percent": float(docker.get("memoryHighPercent", 85)),
             "docker_memory_ok_percent": float(docker.get("memoryOkPercent", 70)),
@@ -171,6 +173,7 @@ def docker_settings(raw):
             "docker_restart_command": _argv(docker, "restartCommand"),
             "docker_auto_start": bool(docker.get("autoStart", True)),
             "docker_stale_hours": float(docker.get("staleHours", 72)),
+            "docker_idle_minutes": float(docker.get("idleTestContainerMinutes", 15)),
             "docker_check_seconds": float(docker.get("checkSeconds", 30)),
             "docker_start_timeout_seconds": float(docker.get("startTimeoutSeconds", 180)),
             "docker_hold_max_hours": float(docker.get("holdMaxHours", 72))}

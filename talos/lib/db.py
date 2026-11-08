@@ -201,6 +201,8 @@ MIGRATIONS = (
     ("issues", "pending_assignee", "TEXT"),
     ("issues", "pending_tries", "INTEGER DEFAULT 0"),
     ("issues", "conflict_noted", "TEXT"),         # PR head the reviewer was told about once the attempts ran out
+    ("issues", "conflict_test_running", "INTEGER DEFAULT 0"),  # an Agamemnon resolve-conflict test uses the workspace
+    ("issues", "conflict_test_at", "TEXT"),       # start of that test while it runs, its end after (docker_free)
     ("auto_merges", "ci_rerun_sha", "TEXT"),      # PR head whose failed CI job(s) were re-run
     ("auto_merges", "ci_rerun_at", "TEXT"),
     ("auto_merges", "ci_rerun_count", "INTEGER DEFAULT 0"),   # re-runs started at ci_rerun_sha

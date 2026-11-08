@@ -4,6 +4,7 @@ Run: python -m unittest discover -s tests"""
 
 import sys
 import unittest
+from datetime import timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -62,6 +63,7 @@ class ResolveConflictVerbTest(AgaTest):
         self.ports.test_changed = lambda folder, repo: (self.tested.append(repo), self.test_result)[1]
         self.ports.bot_review = lambda issue, repo, pr: self.reviews.append((issue, repo, pr))
         self.ports.update_worker_state = lambda issue, **f: sessions.update("odysseus", issue, **f)
+        self.settings.worker.max_parallel = 2       # the fixture's worker runs #8: one run free
         self.incident_id = journal.open_incident(ISSUE, "merge_conflict", "t")
 
     def gh(self, *args):
@@ -155,6 +157,51 @@ class ResolveConflictVerbTest(AgaTest):
         self.assertEqual(self.remote_head(), out["pushed"])
         self.assertIn("tracker down", out["botReviewError"])
         self.assertIsNotNone(journal.action(out["action"]))
+
+    def test_the_test_is_marked_in_the_workers_row_while_it_runs(self):
+        self.conflicting("  Scenario: create\n", "  Scenario: delete\n")
+        seen = []
+        self.ports.test_changed = lambda folder, repo: (seen.append(dict(sessions.get("odysseus", ISSUE))),
+                                                        self.test_result)[1]
+        self.resolve()
+        self.assertEqual(seen[0]["conflict_test_running"], 1)
+        after = sessions.get("odysseus", ISSUE)
+        self.assertEqual(after["conflict_test_running"], 0)
+        self.assertEqual(after["conflict_test_at"], self.clock[0].isoformat(timespec="seconds"))
+
+    def test_with_the_worker_at_max_parallel_it_waits_for_a_run_to_end(self):
+        self.conflicting("  Scenario: create\n", "  Scenario: delete\n")
+        self.settings.worker.max_parallel = 1
+        runs = [[8], [8], []]
+        self.ports.in_flight = lambda: runs.pop(0) if len(runs) > 1 else runs[0]
+        start = self.clock[0]
+        self.resolve()
+        self.assertEqual(self.tested, ["gaia"])
+        self.assertEqual(self.clock[0] - start, timedelta(seconds=2 * self.orch.aga_poll_seconds))
+
+    def test_with_the_worker_full_past_the_wait_it_refuses_before_merging(self):
+        folder = self.conflicting("  Scenario: create\n", "  Scenario: delete\n")
+        head = git(folder, "rev-parse", "HEAD")
+        self.settings.worker.max_parallel = 1
+        with self.assertRaisesRegex(Refused, "maxParallel"):
+            self.resolve()
+        self.assertEqual((git(folder, "rev-parse", "HEAD"), git(folder, "status", "--porcelain")), (head, ""))
+        self.assertEqual(self.tested, [])
+
+    def test_a_run_of_the_issue_that_starts_during_the_wait_is_still_refused(self):
+        self.conflicting("  Scenario: create\n", "  Scenario: delete\n")
+        self.settings.worker.max_parallel = 1
+        runs = [[8], []]
+
+        def in_flight():
+            if len(runs) > 1:
+                return runs.pop(0)
+            sessions.update("odysseus", ISSUE, running=True)
+            return runs[0]
+        self.ports.in_flight = in_flight
+        with self.assertRaisesRegex(Refused, "in flight"):
+            self.resolve()
+        self.assertEqual(self.tested, [])
 
     def test_never_in_a_workspace_with_a_run_in_flight(self):
         self.conflicting("a\n", "b\n")

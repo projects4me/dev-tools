@@ -99,7 +99,8 @@ def _run(args):
                                 mcp=mcp_config(STATE_DIR / agent.name / "mcp.json"),
                                 collector=lambda issue: gc_workspaces(only=issue),
                                 merge_route=merge_routes.get(agent.name), refresh_spec=refresh_spec,
-                                docker_free=lambda agent=agent, tracker=tracker: free_docker(agent, tracker))
+                                docker_free=lambda agent=agent, tracker=tracker: free_docker(agent, tracker),
+                                idle_free=lambda agent=agent: free_idle(agent))
         dispatcher.recover_interrupted()
         dispatcher.start()
         dispatchers.append(dispatcher)
@@ -377,10 +378,23 @@ GC_LOCK = threading.Lock()
 def free_docker(agent, tracker, dry_run=False):
     """Stop the test containers of idle issues (see lib/docker_free); with dry_run only list them.
     Returns [(issue, name, reason)]. Docker unreachable: nothing is stopped."""
+    return _stop_containers(agent, "docker free", dry_run, lambda: docker_free.plan(
+        WORKSPACE, sessions.all_entries(), tracker, testenv, agent.docker_stale_hours))
+
+
+def free_idle(agent, dry_run=False):
+    """Stop the test containers of issues with no Talos run for docker.idleTestContainerMinutes (see lib/docker_free);
+    with dry_run only list them. Returns [(issue, name, reason)]. Docker unreachable: nothing is stopped."""
+    return _stop_containers(agent, "idle containers", dry_run, lambda: docker_free.plan_idle(
+        WORKSPACE, sessions.all_entries(), testenv, agent.docker_idle_minutes))
+
+
+def _stop_containers(agent, what, dry_run, choose):
+    """docker stop what choose() returns ([(issue, names, reason)]), logging each; [(issue, name, reason)]."""
     try:
-        chosen = docker_free.plan(WORKSPACE, sessions.all_entries(), tracker, testenv, agent.docker_stale_hours)
+        chosen = choose()
     except OSError as e:
-        log(f"docker free: docker not reachable: {e}", agent.name)
+        log(f"{what}: docker not reachable: {e}", agent.name)
         return []
     stopped = []
     for issue, names, reason in chosen:
@@ -388,9 +402,9 @@ def free_docker(agent, tracker, dry_run=False):
             try:
                 docker_free.stop(names)
             except OSError as e:
-                log(f"docker free: #{issue} not stopped: {e}", agent.name)
+                log(f"{what}: #{issue} not stopped: {e}", agent.name)
                 continue
-            log(f"docker free: stopped {', '.join(names)} of #{issue} ({reason})", agent.name)
+            log(f"{what}: stopped {', '.join(names)} of #{issue} ({reason})", agent.name)
         stopped += [(issue, name, reason) for name in names]
     return stopped
 
@@ -439,6 +453,8 @@ def cmd_gc(args):
         agent = next(iter(load_agents()), None)
         for issue, name, reason in (free_docker(agent, Tracker(agent), dry_run=True) if agent else []):
             print(f"#{issue}: would-stop test container {name} ({reason}), when Docker is short of memory")
+        for issue, name, reason in (free_idle(agent, dry_run=True) if agent else []):
+            print(f"#{issue}: would-stop test container {name} ({reason})")
     return 0
 
 

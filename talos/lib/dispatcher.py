@@ -4,6 +4,7 @@ import html
 import json
 import queue
 import threading
+import time
 import uuid
 from datetime import datetime
 
@@ -48,13 +49,15 @@ class Dispatcher:
     slot."""
 
     def __init__(self, agent, tracker, claude, dry_run=False, mcp=None, collector=None, merge_route=None,
-                 refresh_spec=None, docker_free=None):
+                 refresh_spec=None, docker_free=None, idle_free=None):
         self.agent = agent
         self.tracker = tracker
         self.claude = claude
         self.dry_run = dry_run
         self.mcp = mcp          # the agent's MCP config file (mcp.mcp_config)
         self.collector = collector      # collector(issue or None): gc of finished issues, run by the release worker
+        self.idle_free = idle_free      # idle_free(): stops idle test containers (docker_free idle rule)
+        self._idle_due = 0.0            # time.monotonic() of the next idle sweep
         self.refresh_spec = refresh_spec    # re-reads the agent's Gaia spec before each run (agent_spec.follow)
         self.runner = runner.for_agent(agent)
         self.user_id = tracker.user_id()
@@ -97,6 +100,7 @@ class Dispatcher:
                 changed = self._releases.get(timeout=self.RETRY_SECONDS)
             except queue.Empty:       # nothing changed: still retry the handbacks Gaia refused
                 self._retry_handoffs("timer")
+                self.free_idle()
                 continue
             self._retry_handoffs("status changed or reconnect")
             try:
@@ -104,8 +108,24 @@ class Dispatcher:
             except Exception as e:  # never let one re-check stop the release worker
                 log(f"held re-check failed: {e}", self.agent.name)
             self.collect_finished(changed)
+            self.free_idle()
 
     RETRY_SECONDS = 300
+    IDLE_SWEEP_SECONDS = 300
+
+    def free_idle(self, now=None):
+        """At most every IDLE_SWEEP_SECONDS, stop the test containers of issues idle past docker.idleTestContainerMinutes
+        (the release worker runs it after each wake-up, so a busy event stream doesn't starve it)."""
+        if self.idle_free is None or self.dry_run:
+            return
+        now = time.monotonic() if now is None else now
+        if now < self._idle_due:
+            return
+        self._idle_due = now + self.IDLE_SWEEP_SECONDS
+        try:
+            self.idle_free()
+        except Exception as e:      # housekeeping never stops the release worker
+            log(f"idle container sweep failed: {e}", self.agent.name)
 
     def _retry_handoffs(self, source):
         if self.dry_run:
