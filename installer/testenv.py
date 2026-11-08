@@ -58,6 +58,15 @@ STOP_BUILDER_SCRIPT = (f"{{ {RECORDED_BUILDER} && kill \"$p\"; }}; pkill -f '[e]
 # Babel worker threads of the watch build (broccoli reads JOBS, default os.cpus().length = 24 in Docker). Each
 # worker keeps its own V8 heap: 24 of them hold ~4 GiB idle, JOBS=4 about 1.3 GiB with the same build time.
 PROMETHEUS_JOBS = 4
+# Memory limit of a Prometheus test container (page cache counts): with JOBS=4 a cold full suite peaks at ~3.5 GiB.
+# Without a limit one runaway container takes down Docker's whole VM. Override with PROMETHEUS_TEST_MEMORY in p4m.env.
+PROMETHEUS_MEMORY = "4.5g"
+OOM_MESSAGE = ("killed: out of memory (container limit {limit}; raise PROMETHEUS_TEST_MEMORY in p4m.env "
+               "if the suite has grown). Not a test failure: run it again")
+CGROUP_EVENTS = ("/sys/fs/cgroup/memory.events", "/sys/fs/cgroup/memory/memory.oom_control")
+# testem's report of a browser that went away
+BROWSER_GONE = re.compile(r"browser (exited|disconnected)|Browser .*(crashed|disconnected)|"
+                          r"Chrome (exited|crashed)|disconnected,? .*reconnect", re.I)
 TEST_TIMEOUT = 900        # seconds for one `ember test`
 STUCK_GRACE = 20          # seconds after a hang marker before the run is stopped (the other tests may still finish)
 # Output after which testem never reports completion: no test matched, or QUnit/TestLoader failed globally.
@@ -123,6 +132,24 @@ def mount_source(info, destination):
 
 def _key(path):
     return hashlib.sha1(norm(path).encode("utf-8")).hexdigest()[:8]
+
+
+def memory_bytes(text):
+    """Bytes in a docker memory setting such as 4.5g, 512m or 1073741824; ValueError when it isn't one."""
+    m = re.fullmatch(r"\s*(\d+(?:\.\d+)?)\s*([kmg]?)b?\s*", str(text), re.I)
+    if not m:
+        raise ValueError(f"not a memory size: {text!r} (e.g. 4.5g)")
+    return int(float(m.group(1)) * {"": 1, "k": 1024, "m": 1024 ** 2, "g": 1024 ** 3}[m.group(2).lower()])
+
+
+def classify_run(code, oom_before, oom_after, output=""):
+    """Why an `ember test` run ended: "oom" when the kernel killed a process of the container (exit 137, or
+    the oom_kill count rose while testem reports its browser gone), else None."""
+    if code == 137:
+        return "oom"
+    if oom_before is not None and oom_after is not None and oom_after > oom_before and BROWSER_GONE.search(output):
+        return "oom"
+    return None
 
 
 def prometheus_containers_without_jobs():
@@ -432,9 +459,28 @@ class PrometheusTestContainer(CopiedSourceContainer):
 
     root = "/prometheus"
 
-    def __init__(self, checkout, state_dir, base="prometheus-dev"):
+    def __init__(self, checkout, state_dir, base="prometheus-dev", memory=PROMETHEUS_MEMORY):
         super().__init__(checkout, state_dir, "p4m-test-prometheus")
         self.base = base
+        self.memory = memory
+        self.memory_limit = memory_bytes(memory)
+
+    def has_memory_limit(self, info):
+        """True when a container runs with this box's memory limit."""
+        return (info or {}).get("HostConfig", {}).get("Memory") == self.memory_limit
+
+    def run_args(self, image, volume):
+        """`docker run` arguments of the test container."""
+        return ["run", "-d", "--name", self.name, "--label", f"{LABEL}={norm(self.checkout)}",
+                "--memory", self.memory, "-v", f"{volume}:/prometheus/node_modules", "-e", "CI=true",
+                "-e", "TRAVIS=true", "-e", f"JOBS={PROMETHEUS_JOBS}",
+                "-w", "/prometheus", "--entrypoint", "sh", image, "-c", "sleep infinity"]
+
+    def oom_kills(self):
+        """The container's cgroup oom_kill count, or None when it can't be read."""
+        r = _docker("exec", self.name, "sh", "-c", f"cat {' '.join(CGROUP_EVENTS)} 2>/dev/null", check=False)
+        m = re.search(r"^oom_kill\s+(\d+)", r.stdout or "", re.M)
+        return int(m.group(1)) if m else None
 
     @staticmethod
     def has_jobs(info):
@@ -447,8 +493,8 @@ class PrometheusTestContainer(CopiedSourceContainer):
         if own and (fresh or not _running(own)):
             _docker("rm", "-f", self.name)
             own = None
-        if own and not self.has_jobs(own):
-            _docker("rm", "-f", self.name)      # created before JOBS was set: its build holds ~4 GiB
+        if own and not (self.has_jobs(own) and self.has_memory_limit(own)):
+            _docker("rm", "-f", self.name)      # created before JOBS / the memory limit were set
             own = None
         if own:
             return False
@@ -457,10 +503,7 @@ class PrometheusTestContainer(CopiedSourceContainer):
         volume = next((m["Name"] for m in (shared or {}).get("Mounts", [])
                        if m["Type"] == "volume" and m["Destination"] == "/prometheus/node_modules"),
                       "prometheus_prometheus_node_modules")
-        _docker("run", "-d", "--name", self.name, "--label", f"{LABEL}={norm(self.checkout)}",
-                "-v", f"{volume}:/prometheus/node_modules", "-e", "CI=true", "-e", "TRAVIS=true",
-                "-e", f"JOBS={PROMETHEUS_JOBS}",
-                "-w", "/prometheus", "--entrypoint", "sh", image, "-c", "sleep infinity")
+        _docker(*self.run_args(image, volume))
         # The image holds an old copy of the source: start from an empty tree (node_modules is a volume).
         _docker("exec", self.name, "sh", "-c",
                 "find /prometheus -mindepth 1 -maxdepth 1 ! -name node_modules -exec rm -rf {} +")
@@ -560,6 +603,8 @@ class PrometheusTestContainer(CopiedSourceContainer):
         the in-container ember test and Chrome are killed.
         """
         self.kill_tests()
+        oom_before = self.oom_kills()
+        output = []
         proc = subprocess.Popen(self.test_command(filter_text), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                 text=True, encoding="utf-8", errors="replace", bufsize=1)
         lines = queue.Queue()
@@ -582,6 +627,7 @@ class PrometheusTestContainer(CopiedSourceContainer):
                     if line is None:
                         break
                     print(line, end="", flush=True)
+                    output.append(line)
                     if logf:
                         logf.write(line)
                         logf.flush()
@@ -606,7 +652,15 @@ class PrometheusTestContainer(CopiedSourceContainer):
         if reason:
             print(f"\np4m: stopped ember test: {reason}", flush=True)
             return 1
-        return proc.wait()
+        code = proc.wait()
+        if classify_run(code, oom_before, self.oom_kills(), "".join(output)) == "oom":
+            message = OOM_MESSAGE.format(limit=self.memory)
+            print(f"\np4m: {message}", flush=True)
+            if log:
+                with open(log, "a", encoding="utf-8") as f:
+                    f.write(f"\n# p4m: {message}\n")
+            return code if code else 137
+        return code
 
 
 # --- cleanup -------------------------------------------------------------------------------------

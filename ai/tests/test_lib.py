@@ -158,6 +158,17 @@ class JudgeTest(unittest.TestCase):
     def test_known_failure_explaining_the_exit_code_passes(self):
         self.assertTrue(tests.judge(self.r(failures=["k"], rc=1, failed_count=1), {"k"})[0])
 
+    def test_oom_kill_is_never_a_pass(self):
+        self.assertFalse(tests.judge(self.r(suite="ember", rc=137, oom=True, failed_count=None, ran=None), set())[0])
+        self.assertFalse(tests.judge(self.r(suite="ember", rc=0, oom=True), set())[0])
+
+    def test_ember_oom_marker_gives_an_oom_result(self):
+        out = "ok 1 a\n\np4m: killed: out of memory (container limit 4.5g)\n"
+        with mock.patch.object(tests, "_run_logged", return_value=(137, out, Path("x.log"))),                 mock.patch.object(tests, "_p4m", return_value=["p4m"]):
+            r = tests.ember(".")
+        self.assertTrue(r.oom)
+        self.assertEqual(r.failures, [])
+
     def test_unexpected_failure_fails(self):
         ok, unexpected = tests.judge(self.r(failures=["k", "new"], rc=1, failed_count=2), {"k"})
         self.assertFalse(ok)

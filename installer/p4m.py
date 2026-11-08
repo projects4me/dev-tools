@@ -1718,7 +1718,11 @@ def cmd_test(args) -> None:
         sys.exit(rc)
     if t == "ember":
         src = _test_checkout(args, "prometheus")
-        box = testenv.PrometheusTestContainer(src, STATE_DIR / "test")
+        try:
+            box = testenv.PrometheusTestContainer(
+                src, STATE_DIR / "test", memory=settings().get("PROMETHEUS_TEST_MEMORY", testenv.PROMETHEUS_MEMORY))
+        except ValueError as e:
+            raise P4MError(f"PROMETHEUS_TEST_MEMORY: {e}")
         try:
             if box.ensure(fresh=args.fresh):
                 info(f"started {box.name} for {src} (the first build takes a few minutes)")

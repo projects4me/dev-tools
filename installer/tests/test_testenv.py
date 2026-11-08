@@ -65,6 +65,56 @@ class JobsCapTest(unittest.TestCase):
         self.assertIn(f"JOBS={testenv.PROMETHEUS_JOBS}", run)
 
 
+class MemoryLimitTest(unittest.TestCase):
+    def test_sizes(self):
+        self.assertEqual(testenv.memory_bytes("4.5g"), 4831838208)
+        self.assertEqual(testenv.memory_bytes("512m"), 512 * 1024 ** 2)
+        self.assertEqual(testenv.memory_bytes("1024"), 1024)
+        with self.assertRaises(ValueError):
+            testenv.memory_bytes("lots")
+
+    def test_run_args_carry_the_limit(self):
+        box = testenv.PrometheusTestContainer(".", Path("."), memory="3g")
+        args = box.run_args("img", "vol")
+        self.assertEqual(args[args.index("--memory") + 1], "3g")
+        self.assertEqual(testenv.PrometheusTestContainer(".", Path(".")).memory, testenv.PROMETHEUS_MEMORY)
+
+    def test_container_with_another_limit_is_recreated(self):
+        box = testenv.PrometheusTestContainer(".", Path("."))
+        box.manifest_file = Path("nonexistent-manifest")
+        calls = []
+        info = {"Config": {"Env": [f"JOBS={testenv.PROMETHEUS_JOBS}"]}, "State": {"Running": True},
+                "HostConfig": {"Memory": 0}}
+        old = (testenv.inspect, testenv._docker)
+        testenv.inspect = lambda n: info if n == box.name else None
+        testenv._docker = lambda *a, **k: calls.append(a)
+        try:
+            self.assertTrue(box.ensure())
+            info["HostConfig"]["Memory"] = box.memory_limit
+            calls.clear()
+            self.assertFalse(box.ensure())
+        finally:
+            testenv.inspect, testenv._docker = old
+        self.assertEqual(calls, [])
+
+
+class ClassifyRunTest(unittest.TestCase):
+    def test_exit_137_is_oom(self):
+        self.assertEqual(testenv.classify_run(137, None, None), "oom")
+
+    def test_browser_gone_with_a_new_oom_kill_is_oom(self):
+        self.assertEqual(testenv.classify_run(1, 0, 1, "Browser exited unexpectedly"), "oom")
+
+    def test_browser_gone_without_an_oom_kill_is_not(self):
+        self.assertIsNone(testenv.classify_run(1, 1, 1, "Browser exited unexpectedly"))
+        self.assertIsNone(testenv.classify_run(1, None, None, "Browser exited unexpectedly"))
+
+    def test_plain_failure_and_pass_are_not(self):
+        self.assertIsNone(testenv.classify_run(1, 0, 0, "not ok 3 x"))
+        self.assertIsNone(testenv.classify_run(0, 0, 0))
+        self.assertIsNone(testenv.classify_run(1, 0, 1, "not ok 3 x"))
+
+
 class RunTestsTest(unittest.TestCase):
     """run_tests stops a run that testem would never finish, and always cleans the container up."""
 
@@ -72,6 +122,7 @@ class RunTestsTest(unittest.TestCase):
         box = testenv.PrometheusTestContainer(".", Path("."))
         box.kills = 0
         box.kill_tests = lambda: setattr(box, "kills", box.kills + 1)
+        box.oom_kills = lambda: 0
         box.test_command = lambda flt=None: [sys.executable, "-c", script]
         return box
 
