@@ -1087,6 +1087,15 @@ def cmd_doctor(args) -> int:
             ok(f"network '{NETWORK}' exists")
         else:
             warn(f"network '{NETWORK}' missing (created by `p4m up`)")
+        try:
+            loose = testenv.prometheus_containers_without_jobs()
+        except testenv.TestEnvError:
+            loose = []
+        if loose:
+            warn(f"{len(loose)} Prometheus test container(s) lack JOBS={testenv.PROMETHEUS_JOBS} (each holds ~4 GiB): "
+                 f"{', '.join(loose)} - the next `p4m test ember` recreates them, or `docker rm -f` them")
+        else:
+            ok(f"Prometheus test containers cap Babel workers (JOBS={testenv.PROMETHEUS_JOBS})")
     else:
         err("daemon not reachable - start Docker Desktop"); problems += 1
 
