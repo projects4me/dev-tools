@@ -39,6 +39,19 @@ class SettingsFromTest(unittest.TestCase):
                                                          "byComplexity": {"complex": "opus"}}), FALLBACK)
         self.assertEqual((out["model_escalate"], out["model_by_complexity"]), ("opus", {"complex": "opus"}))
 
+    def test_reads_the_shape_the_prometheus_agent_form_saves(self):
+        out = agent_spec.settings_from(spec(modelConfig={"simple": "sonnet", "complex": "opus",
+                                                         "escalation": "fable"}), FALLBACK)
+        self.assertEqual((out["model_default"], out["model_escalate"], out["model_by_complexity"]),
+                         ("sonnet", "fable", {"simple": "sonnet", "complex": "opus"}))
+
+    def test_talos_keys_win_over_the_form_keys_when_both_are_present(self):
+        out = agent_spec.settings_from(spec(modelConfig={
+            "model": "haiku", "escalate": "opus", "byComplexity": {"complex": "fable"},
+            "simple": "sonnet", "complex": "opus", "escalation": "sonnet"}), FALLBACK)
+        self.assertEqual((out["model_default"], out["model_escalate"], out["model_by_complexity"]),
+                         ("haiku", "opus", {"simple": "sonnet", "complex": "fable"}))
+
     def test_unset_limits_and_mode_fall_back_to_agent_json(self):
         out = agent_spec.settings_from(spec(maxTurns=None, maxRunsPerIssue=None, permissionMode=None), FALLBACK)
         self.assertEqual((out["max_turns"], out["max_iterations"], out["permission_mode"]), (150, 10, "dontAsk"))
