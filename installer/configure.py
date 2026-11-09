@@ -23,6 +23,7 @@ import shutil
 import stat
 import subprocess
 import sys
+from datetime import datetime
 from pathlib import Path
 
 INSTALLER_DIR = Path(__file__).resolve().parent
@@ -71,19 +72,46 @@ def read_env(path):
     return values
 
 
-def write_private(path, text):
-    """Write a file only its owner can read (chmod 600 where the OS supports it)."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text, encoding="utf-8")
+BACKUPS_KEPT = 5
+
+
+def _owner_only(path):
     try:
         os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
     except OSError:
         pass
 
 
+def backup_file(path, new_bytes):
+    """Copy an existing file that is about to change to <file>.<YYYYmmdd-HHMMSS>.bak (owner-only), keep the
+    newest BACKUPS_KEPT copies and say where the copy went. No copy when the content stays the same."""
+    if not path.is_file() or path.read_bytes() == new_bytes:
+        return None
+    copy = path.with_name(f"{path.name}.{datetime.now().strftime('%Y%m%d-%H%M%S')}.bak")
+    if not copy.exists():  # a second rewrite within the same second keeps the older copy
+        shutil.copyfile(path, copy)
+        _owner_only(copy)
+        _ok(f"backed up {path.name} to {copy}")
+    for old in sorted(path.parent.glob(f"{path.name}.*.bak"))[:-BACKUPS_KEPT]:
+        old.unlink()
+    return copy
+
+
+def write_private(path, text):
+    """Write a file only its owner can read (chmod 600 where the OS supports it), backing up the old one."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data = text.encode("utf-8")
+    backup_file(path, data)
+    path.write_bytes(data)  # bytes: Windows text mode would write CRLF and break the exact comparison
+    _owner_only(path)
+
+
 def write_json(path, data):
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    text = json.dumps(data, indent=2, ensure_ascii=False) + "\n"
+    data = text.encode("utf-8")
+    backup_file(path, data)
+    path.write_bytes(data)
 
 
 def ask(label, default=None, kind=None, answers=None, key=None):
