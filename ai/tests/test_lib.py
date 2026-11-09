@@ -74,7 +74,8 @@ class GaiaMappingTest(unittest.TestCase):
 
     def test_phpunit_folders_are_the_ones_gaia_ci_runs(self):
         self.assertEqual(tests.PHPUNIT_FOLDERS,
-                         ("tests/libraries/security", "tests/libraries/utils", "tests/services", "tests/tools"))
+                         ("tests/libraries/security", "tests/libraries/utils", "tests/libraries/authorization",
+                          "tests/models", "tests/services", "tests/tools"))
 
     def test_phpunit_skips_a_folder_the_checkout_lacks(self):
         with tempfile.TemporaryDirectory() as d, mock.patch.object(tests, "_run_logged") as run:

@@ -133,7 +133,7 @@ def gaia_api_filter(checkout, base_ref, changed):
             terms |= set(ids)
             if not ids:
                 unmapped.append(f)
-        elif f.startswith(("tests/", "core/services/", "core/tasks/", "tools/api-tester/src/", "tools/gaia-dev/",
+        elif f.startswith(("tests/", "core/services/", "core/tasks/", "core/libs/authorization/", "core/mvc/models/", "tools/api-tester/src/", "tools/gaia-dev/",
                            "docs/")) or f.endswith(".md"):
             continue                       # phpunit runs in full (tests/tools covers gaia-dev and the generated docs,
                                            # tests/services, once it exists in the checkout, covers core/services
