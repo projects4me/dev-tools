@@ -90,6 +90,19 @@ class Tracker:
         """Project name -> id for the agent's configured projects."""
         return {name: str(self._call(self.gaia.project, name)["id"]) for name in self.agent.projects}
 
+    def visible_projects(self, names):
+        """(project name -> id for the `names` this token can see, {name: why} for the others), read fresh so a new
+        membership shows. Gaia unreachable raises TalosError: that says nothing about visibility."""
+        self.gaia._projects = None
+        self._call(self.gaia.projects)
+        found, skipped = {}, {}
+        for name in names:
+            try:
+                found[name] = str(self.gaia.project(name)["id"])
+            except gaia_mcp.GaiaError as e:
+                skipped[name] = str(e)
+        return found, skipped
+
     # -- issues ----------------------------------------------------------------------------
 
     ISSUE_RELS = "issuestatus,issuetype,issuemilestone,project"

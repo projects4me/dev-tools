@@ -208,6 +208,22 @@ class SettingsTest(unittest.TestCase):
         self.assertEqual("gaia-agent-hera-a-2", gaia_agents.agent_name("Agent  HERA!", "a-2", {"gaia-agent-hera"}))
 
 
+class KeepVisibleTest(unittest.TestCase):
+    def agent(self):
+        return make_agent(projects={"A Gaia": "gaia", "A Ares": "ares"})
+
+    def test_invisible_projects_are_skipped_and_logged_once(self):
+        with mock.patch.object(gaia_agents, "log") as log:
+            agent = gaia_agents.keep_visible(self.agent(), {"A Gaia": "1"}, {"A Ares": "not visible"})
+        self.assertEqual({"A Gaia": "gaia"}, agent.projects)
+        log.assert_called_once()
+        self.assertIn("A Ares", log.call_args[0][0])
+
+    def test_no_visible_project_means_not_started(self):
+        with self.assertRaisesRegex(TalosError, "none of its projects is visible"):
+            gaia_agents.keep_visible(self.agent(), {}, {"A Gaia": "x", "A Ares": "y"})
+
+
 class DiscoveryTest(unittest.TestCase):
     def setUp(self):
         self.fake = FakeGaia()
@@ -269,6 +285,25 @@ class DiscoveryTest(unittest.TestCase):
             self.discovery.sync()
         self.assertEqual({"a-1", "a-2"}, set(self.discovery.running))
         self.assertEqual([], self.stopped)
+
+    def test_a_new_membership_restarts_the_agent_on_the_next_round(self):
+        seen = {"now": ("A Gaia",)}
+        started = []
+
+        def start(agent):
+            started.append(agent.name)
+            return gaia_agents.AgentRun(agent, mock.Mock(), [lambda: self.stopped.append(agent.name)],
+                                        seen["now"], lambda: seen["now"])
+        d = gaia_agents.Discovery(lambda: self.g, template(), start)
+        self.assertEqual((["gaia-agent-hera", "gaia-agent-iris"], []), d.sync())
+        self.assertEqual(([], []), d.sync())
+        seen["now"] = ("A Gaia", "A Ares")
+        for run in d.running.values():
+            run.visible = lambda: seen["now"]
+        started_before = len(started)
+        d.sync()
+        self.assertEqual(started_before + 2, len(started))
+        self.assertEqual(2, len(self.stopped))
 
     def test_an_agent_refused_at_start_is_tried_again_on_the_next_sync(self):
         self.refuse_start.add("a-1")
@@ -338,6 +373,7 @@ class RuntimeStartTest(unittest.TestCase):
         for p in patches:
             self.addCleanup(p.stop)
         agent_listener, runtime_listener = mocks[5], mocks[8]
+        mocks[3].return_value.visible_projects.return_value = ({"A Gaia": "1"}, {})
         args = mock.Mock(dry_run=False)
 
         discovery = talos._gaia_agents(cfg, "claude", identity, args)
