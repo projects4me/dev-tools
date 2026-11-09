@@ -11,6 +11,7 @@ from .common import AiError, config, ody, say
 from . import coderabbit
 
 LEDGER = "rabbitbudget.json"
+SWITCH = "rabbit-switch"
 WINDOW = timedelta(hours=24)
 KEEP = timedelta(hours=48)
 DEFAULT_TRIGGER = "@coderabbitai full review"
@@ -105,6 +106,52 @@ def _next_slot(ledger, now):
     return min(_parse(s["at"]) for s in recent) + WINDOW
 
 
+# ---- the on/off switch ----
+
+def _switch_path():
+    return common.STATE_DIR / f"{SWITCH}.json"
+
+
+def switch():
+    """{off, since, reason}; a missing or unreadable file means on."""
+    try:
+        data = json.loads(_switch_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        data = {}
+    if not isinstance(data, dict) or not data.get("off"):
+        return {"off": False, "since": None, "reason": None}
+    return {"off": True, "since": data.get("since"), "reason": data.get("reason") or ""}
+
+
+def _write_switch(state):
+    path = _switch_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    tmp.write_text(json.dumps(state, indent=2), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def turn_off(reason=""):
+    with common.state_locked(SWITCH):
+        state = {"off": True, "since": _stamp(_utc_now()), "reason": reason or ""}
+        _write_switch(state)
+    return state
+
+
+def turn_on(keep_deferred=False):
+    """Switch CodeRabbit on; drops the deferred list unless `keep_deferred`. Returns the number dropped."""
+    with common.state_locked(SWITCH):
+        _write_switch({"off": False})
+    dropped = 0
+    if not keep_deferred:
+        with common.state_locked("rabbitbudget"):
+            ledger = _read()
+            dropped = len(ledger["deferred"])
+            ledger["deferred"] = []
+            _write(ledger)
+    return dropped
+
+
 # ---- commands ----
 
 def request(repo, pr, source, files=0, rereview=False, issue=None):
@@ -116,6 +163,10 @@ def request(repo, pr, source, files=0, rereview=False, issue=None):
         return {"decision": "absent", "used": 0, "limit": None, "reason": f"CodeRabbit not enabled for {repo}"}
     conf = settings()
     limit = conf["limit"] if conf else None
+    sw = switch()
+    if sw["off"]:  # nothing posted, counted or deferred: the backlog sweep must not resend these when it is back on
+        return {"decision": "human", "used": used_now(), "limit": limit, "off": True,
+                "reason": f"CodeRabbit is off ({sw['reason'] or 'no reason given'})"}
     with common.state_locked("rabbitbudget"):
         now = _utc_now()
         ledger = _read()
@@ -158,8 +209,10 @@ def budget():
     ledger = _read()
     used = used_now(ledger, now)
     slot = _next_slot(ledger, now)
+    sw = switch()
     return {"used": used, "limit": conf["limit"] if conf else None, "tier": tier(used, conf),
-            "nextSlot": _stamp(slot) if slot else None, "deferred": ledger["deferred"]}
+            "nextSlot": _stamp(slot) if slot else None, "deferred": ledger["deferred"],
+            "off": sw["off"], "offSince": sw["since"], "offReason": sw["reason"]}
 
 
 def cmd_request(args):
@@ -176,8 +229,22 @@ def cmd_budget(args):
     if args.json:
         say(json.dumps(info))
         return 0
+    if info["off"]:
+        say(f"CodeRabbit is OFF since {info['offSince']} ({info['offReason'] or 'no reason given'})")
     say(f"used {info['used']} of {info['limit'] if info['limit'] is not None else 'unlimited'} in the last 24h "
         f"(tier: {info['tier']}); next slot frees: {info['nextSlot'] or 'n/a'}")
     for d in info["deferred"]:
         say(f"  deferred: {d['repo']}#{d['pr']} (issue {d['issue']}, {d['files']} files, since {d['at']})")
+    return 0
+
+
+def cmd_off(args):
+    state = turn_off(args.reason)
+    say(f"CodeRabbit is OFF since {state['since']}" + (f" ({state['reason']})" if state["reason"] else ""))
+    return 0
+
+
+def cmd_on(args):
+    dropped = turn_on(args.keep_deferred)
+    say("CodeRabbit is on" + (f"; cleared {dropped} deferred PR(s)" if dropped else ""))
     return 0
