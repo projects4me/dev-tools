@@ -164,10 +164,7 @@ def collect(previous, answers):
     _say("\nAgent Odysseus (the team's shared agent identity; the team lead shares these)")
     a["agentEmail"] = ask("Agent Projects4Me email", gaia_env.get("GAIA_EMAIL") or "agent.odysseus@projects4.me",
                           answers=answers, key="agentEmail")
-    a["agentClientId"] = ask("Agent OAuth client id (from its Projects4Me agent credentials)",
-                             gaia_env.get("GAIA_CLIENT_ID"), answers=answers, key="agentClientId")
-    a["agentClientSecret"] = ask("Agent OAuth client secret", gaia_env.get("GAIA_CLIENT_SECRET"), SECRET,
-                                 answers, "agentClientSecret")
+    ask_sign_in(a, "agent", "Agent", gaia_env, answers)
     a["ghToken"] = ask("Agent GitHub token (fine-grained)", ody_env.get("GH_TOKEN"), SECRET, answers, "ghToken")
     have_key = AGENT_KEY.exists()
     a["sshKey"] = ask("Path to the agent's SSH private key" + (" (Enter keeps the installed one)" if have_key else ""),
@@ -179,21 +176,66 @@ def collect(previous, answers):
     if a["agamemnon"]:
         a["agamemnonEmail"] = ask("Agamemnon Projects4Me email", ag_env.get("GAIA_EMAIL") or "agent.agamemnon@projects4.me",
                                   answers=answers, key="agamemnonEmail")
-        a["agamemnonClientId"] = ask("Agamemnon OAuth client id", ag_env.get("GAIA_CLIENT_ID"),
-                                     answers=answers, key="agamemnonClientId")
-        a["agamemnonClientSecret"] = ask("Agamemnon OAuth client secret", ag_env.get("GAIA_CLIENT_SECRET"), SECRET,
-                                         answers, "agamemnonClientSecret")
+        ask_sign_in(a, "agamemnon", "Agamemnon", ag_env, answers)
     return a
+
+
+def ask_sign_in(a, prefix, label, env, answers):
+    """How an agent signs in to Gaia: 'password' (a Gaia user: GAIA_PASSWORD) or 'client' (a Gaia Agent record:
+    client credentials). The default is what the existing env file has. The OAuth client id/secret are asked in
+    both modes (the password grant uses the shared app client too)."""
+    have = "password" if env.get("GAIA_PASSWORD") else "client"
+    mode = str(ask(f"{label} signs in with a password (user) or client credentials (Agent record)? (password/client)",
+                   have, answers=answers, key=f"{prefix}SignIn")).strip().lower()
+    if mode not in ("password", "client"):
+        raise SystemExit(f"p4m configure: '{prefix}SignIn' must be 'password' or 'client', not '{mode}'")
+    a[f"{prefix}SignIn"] = mode
+    if mode == "password":
+        a[f"{prefix}Password"] = ask(f"{label} Projects4Me password", env.get("GAIA_PASSWORD"), SECRET,
+                                     answers, f"{prefix}Password")
+    a[f"{prefix}ClientId"] = ask(f"{label} OAuth client id", env.get("GAIA_CLIENT_ID"),
+                                 answers=answers, key=f"{prefix}ClientId")
+    a[f"{prefix}ClientSecret"] = ask(f"{label} OAuth client secret", env.get("GAIA_CLIENT_SECRET"), SECRET,
+                                     answers, f"{prefix}ClientSecret")
+
+
+def merge_env(path, header, updates):
+    """The env file's text with `updates` applied: every existing key configure doesn't set itself is kept
+    (never replaced wholesale), changed keys keep their place, new keys go at the end."""
+    existing = read_env(path)
+    merged = dict(existing)
+    merged.update(updates)
+    return "\n".join([header] + [f"{k}={v}" for k, v in merged.items()]) + "\n"
+
+
+def sign_in_updates(a, prefix, email):
+    """The keys configure sets for one agent. Only the chosen mode's keys are set; the other mode's stay."""
+    updates = {"GAIA_URL": a["gaiaUrl"], "GAIA_UI_URL": a["appUrl"], "GAIA_EMAIL": email,
+               "GAIA_CLIENT_ID": a[f"{prefix}ClientId"], "GAIA_CLIENT_SECRET": a[f"{prefix}ClientSecret"]}
+    if a[f"{prefix}SignIn"] == "password":
+        updates["GAIA_PASSWORD"] = a[f"{prefix}Password"]
+    return updates
+
+
+def check_sign_in(a, prefix, email):
+    """Sign in to Gaia with the answers before anything is written; stop (files untouched) when it fails."""
+    sub = dict(a, agentEmail=email, agentClientId=a[f"{prefix}ClientId"], agentClientSecret=a[f"{prefix}ClientSecret"],
+               agentPassword=a.get(f"{prefix}Password", ""))
+    server, g = gaia_client(sub)
+    try:
+        g.token()
+    except server.GaiaError as e:
+        raise SystemExit(f"p4m configure: could not sign in to {a['gaiaUrl']} as {email} "
+                         f"({a[f'{prefix}SignIn']} sign-in): {e}. Nothing was written; the existing files are unchanged.")
 
 
 # -- steps -----------------------------------------------------------------------------------
 
 def write_credentials(a):
-    write_private(GAIA_ENV, "\n".join([
-        "# Written by `dev-tools/installer/p4m configure` (shared Agent Odysseus credentials). Git-ignored.",
-        f"GAIA_URL={a['gaiaUrl']}", f"GAIA_UI_URL={a['appUrl']}",
-        f"GAIA_EMAIL={a['agentEmail']}",
-        f"GAIA_CLIENT_ID={a['agentClientId']}", f"GAIA_CLIENT_SECRET={a['agentClientSecret']}", ""]))
+    check_sign_in(a, "agent", a["agentEmail"])
+    write_private(GAIA_ENV, merge_env(
+        GAIA_ENV, "# Written by `dev-tools/installer/p4m configure` (shared Agent Odysseus credentials). Git-ignored.",
+        sign_in_updates(a, "agent", a["agentEmail"])))
     _ok(f"gaia MCP credentials -> {GAIA_ENV.relative_to(TOOLS_DIR)}")
     keep = {k: v for k, v in read_env(ODYSSEUS_ENV).items() if k != "GH_TOKEN"}
     lines = ["# Written by `dev-tools/installer/p4m configure` (shared Agent Odysseus). Git-ignored.",
@@ -256,6 +298,7 @@ def gaia_client(a):
     g = server.Gaia()
     g.base, g.email = a["gaiaUrl"].rstrip("/"), a["agentEmail"]
     g.client_id, g.client_secret = a["agentClientId"], a["agentClientSecret"]
+    g.password = a.get("agentPassword", "")
     return server, g
 
 
@@ -306,15 +349,14 @@ def setup_agamemnon(a, user_id):
     if not a.get("agamemnon"):
         _ok("Agent Agamemnon skipped (disabled)")
         return
-    write_private(AGAMEMNON_ENV, "\n".join([
-        "# Written by `dev-tools/installer/p4m configure` (Agent Agamemnon). Git-ignored.",
-        f"GAIA_URL={a['gaiaUrl']}", f"GAIA_UI_URL={a['appUrl']}",
-        f"GAIA_EMAIL={a['agamemnonEmail']}",
-        f"GAIA_CLIENT_ID={a['agamemnonClientId']}", f"GAIA_CLIENT_SECRET={a['agamemnonClientSecret']}", ""]))
+    check_sign_in(a, "agamemnon", a["agamemnonEmail"])
+    write_private(AGAMEMNON_ENV, merge_env(
+        AGAMEMNON_ENV, "# Written by `dev-tools/installer/p4m configure` (Agent Agamemnon). Git-ignored.",
+        sign_in_updates(a, "agamemnon", a["agamemnonEmail"])))
     _ok(f"Agamemnon credentials -> {AGAMEMNON_ENV.relative_to(TOOLS_DIR)}")
-    sub = dict(a, agentEmail=a["agamemnonEmail"], agentClientId=a["agamemnonClientId"],
-               agentClientSecret=a["agamemnonClientSecret"])
-    server, g = gaia_client(sub)
+    server, g = gaia_client(dict(a, agentEmail=a["agamemnonEmail"], agentClientId=a["agamemnonClientId"],
+                                 agentClientSecret=a["agamemnonClientSecret"],
+                                 agentPassword=a.get("agamemnonPassword", "")))
     try:
         users = g.find("user", f"(User.email : {a['agamemnonEmail']})", limit=1)
     except server.GaiaError as e:
@@ -445,7 +487,8 @@ def main(argv=None):
     register_mcp()
     install_talos_deps()
     write_json(ANSWERS, {k: v for k, v in a.items()
-                         if k not in ("agentClientSecret", "ghToken", "sshKey", "agamemnonClientSecret")}
+                         if k not in ("agentClientSecret", "ghToken", "sshKey", "agamemnonClientSecret",
+                                     "agentPassword", "agamemnonPassword")}
                | {"gaiaUserId": user_id})
     if not args.skip_checks:
         verify(a)
