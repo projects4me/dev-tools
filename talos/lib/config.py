@@ -16,7 +16,7 @@ WORKSPACE = DEV_TOOLS.parent
 # (<workspace>/.dev-tools-runtime, see `p4m runtime`), so their paths don't depend on which copy is running.
 LOCAL_DIR = WORKSPACE / "dev-tools"
 AGENTS_DIR = TALOS_DIR / "agents"
-STATE_DIR = LOCAL_DIR / "talos" / "state"
+STATE_DIR = Path(os.environ["TALOS_STATE_DIR"]) if os.environ.get("TALOS_STATE_DIR") else LOCAL_DIR / "talos" / "state"   # the env override keeps tests off the live state
 LOG_DIR = STATE_DIR / "logs"
 CONTAINER_DIR = STATE_DIR / "containers"   # per-issue ~/.claude of container runs (container.py)
 CONFIG_FILE = TALOS_DIR / "config.json"
@@ -67,7 +67,7 @@ _log_lock = threading.Lock()
 
 def log(msg, agent=None):
     """One timestamped line to stdout and state/talos.log."""
-    STATE_DIR.mkdir(exist_ok=True)
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
     line = f"{datetime.now().astimezone().isoformat(timespec='seconds')} [{agent or 'talos'}] {msg}"
     with _log_lock:
         print(line, flush=True)
