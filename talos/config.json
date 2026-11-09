@@ -10,6 +10,7 @@
     "secretFile": "dev-tools/sim/state/hermes-secret"
   },
   "kbMaxAgeMinutes": 10,
+  "repoSyncMinutes": 10,
   "browserBin": "",
   "prometheusUrl": ""
 }

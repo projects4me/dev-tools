@@ -10,6 +10,7 @@ from pathlib import Path
 
 import sys
 
+from . import reposync
 from .common import (AiError, PROJECT_FOR_REPO, REPOS, STATE_DIR, base_branch, config, git, git_dir, issue_repo,
                      devstack_locked, load_timers, now, ody, repo_dir, run_workspace, save_timers, say, start_timer,
                      strip_html, succeeds, timers_locked, tracker_call)
@@ -39,8 +40,38 @@ def sync_dev(repo):
     return git(repo, "log", "--oneline", "-1")
 
 
+SYNC_REPOS = [r for r in REPOS if r != "pr4m"]
+
+
+def sync_repos(repos):
+    """Fast-forward each repo's base branch without switching branches (see reposync); a repo that is skipped or
+    fails never stops the others. Returns the number of repos that were skipped."""
+    skipped = 0
+    for repo in repos:
+        try:
+            state, message = reposync.sync_checkout(repo_dir(repo), base_branch(repo), fetch_only=in_run_workspace(repo))
+        except (AiError, OSError) as e:
+            state, message = reposync.SKIPPED, str(e).splitlines()[0]
+        skipped += state == reposync.SKIPPED
+        say(f"{'WARNING ' if state == reposync.SKIPPED else ''}{repo}: {message}")
+    return skipped
+
+
+def show_drift(repos):
+    """Print how far each repo's local base branch is behind origin (from the last fetch; nothing is changed)."""
+    for repo in repos:
+        n = reposync.behind(repo_dir(repo), base_branch(repo))
+        say(f"{repo}: behind origin/{base_branch(repo)}: {'?' if n is None else n}")
+
+
 def cmd_sync(args):
-    say(f"dev: {sync_dev(args.repo)}")
+    if args.all == bool(args.repo):
+        raise AiError("give a repo or --all")
+    repos = SYNC_REPOS if args.all else [args.repo]
+    if args.check:
+        show_drift(repos)
+    else:
+        sync_repos(repos)
 
 
 def cmd_start(args):

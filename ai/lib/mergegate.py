@@ -5,7 +5,9 @@ running, GitHub still computing mergeability) or failed. A repo in `mergeReviewe
 design review recorded by `ai ship`) instead of the `coderabbit` one. The gate passes only when every check is ok.
 """
 
+import contextlib
 import fnmatch
+import io
 import json
 
 from . import coderabbit, mergereviewer, reviewrecord
@@ -209,6 +211,9 @@ def cmd_merge(args):
     if not merged:
         raise AiError(f"PR #{args.pr} was approved but GitHub reports no merge commit")
     result["merged"] = merged
+    from .workflow import sync_repos        # local dev follows the merge (never fails the merge itself)
+    with contextlib.redirect_stdout(io.StringIO()) if args.json else contextlib.nullcontext():
+        sync_repos([args.repo])
     if args.json:
         say(json.dumps(result))
     else:

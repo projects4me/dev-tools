@@ -500,7 +500,7 @@ Prometheus ─▶ Gaia ─publish─▶ Hermes ─idea.message.created───�
 - **State**: the conversation lives in Gaia (or the sim); Talos keeps the agent's own memory in the `ideas` table.
 
 Config: `hermesUrl` (as for issue agents); on the sim, `sim.url` and `sim.secretFile` (or `sim.secret` in
-config.local.json); `kbMaxAgeMinutes`; `browserBin` and `prometheusUrl` for screens (empty: found automatically).
+config.local.json); `kbMaxAgeMinutes`; `repoSyncMinutes` (default 10: `talos run` runs `ai sync --all` that often, lib/repo_sync_timer.py, so each repo's local `dev` follows origin without switching branches; `talos status` warns when a repo has been behind for over an hour); `browserBin` and `prometheusUrl` for screens (empty: found automatically).
 
 ## Events agents (kind `events`)
 

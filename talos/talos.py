@@ -14,6 +14,7 @@ import time
 import urllib.request
 from datetime import datetime
 
+from lib import repo_sync_timer
 from lib import container, db, delegated_tokens, docker_free, docker_state, gaia_agents, policy, runner, runtime_requests, service_identity, sessions, workflow_steps, workspace_gc, workspaces
 from lib import runs as run_log
 from lib.agamemnon import journal as agamemnon_journal
@@ -73,6 +74,7 @@ def _run(args):
             log(f"service identity: {e}")
     log(f"starting with {len(agents)} agent(s): {', '.join(a.name for a in agents)}; claude {claude}")
     dispatchers, orchestrators, event_workers = [], [], []
+    repo_sync = None if args.dry_run else repo_sync_timer.start(int(cfg.get("repoSyncMinutes", 10)))
     merge_routes = orchestrator_setup.merge_routes(agents)     # worker -> its orchestrator's automatic merges
     for agent in agents:
         if agent.kind == "ideas":
@@ -108,6 +110,8 @@ def _run(args):
         while True:
             time.sleep(3600)
     except KeyboardInterrupt:
+        if repo_sync:
+            repo_sync.set()
         if discovery:
             discovery.shutdown()
         for dispatcher in dispatchers:
@@ -289,6 +293,8 @@ def cmd_status(args):
         _print_live(runner.transcript(r.get("session_id")), args.steps)
     _print_docker()
     _print_docker_holds()
+    for repo in repo_sync_timer.stale(repo_sync_timer.drift(), datetime.now()):
+        print(f"WARNING  {repo} has been behind origin since {repo_sync_timer.drift()[repo][:16]}; `ai sync {repo}`")
     print_in_flight = len(running)
     if print_in_flight > 1:
         print(f"{print_in_flight} runs in flight:")
