@@ -42,6 +42,16 @@ def settings(template, spec):
     return values
 
 
+def keep_visible(agent, visible, skipped):
+    """The agent on the template projects its token can see. Logs the skipped ones once; TalosError when none is
+    visible (the agent is not started, discovery tries again next round)."""
+    if not visible:
+        raise TalosError("none of its projects is visible: " + "; ".join(f"{n}: {w}" for n, w in skipped.items()))
+    for name, why in skipped.items():
+        log(f"project '{name}' skipped, not visible: {why}", agent.name)
+    return dataclasses.replace(agent, projects={n: r for n, r in agent.projects.items() if n in visible})
+
+
 def build(template, row, spec, name):
     """The Agent for a listed Gaia agent (`row`: id, name, userId) and its spec."""
     return dataclasses.replace(template, name=name, display_name=str(row.get("name") or name),
@@ -56,6 +66,8 @@ class AgentRun:
     agent: object
     token: object                       # delegated_tokens.AgentToken
     stoppers: list
+    projects: tuple = ()                # the template projects it started on
+    visible: object = None              # visible() -> the template projects visible now (None: not re-checked)
 
     def renew(self):
         self.token()
@@ -109,6 +121,8 @@ class Discovery:
                 spec = specs.get(agent_id)
                 if spec is None:
                     continue
+                if agent_id in self.running and self._membership_changed(agent_id):
+                    stopped.append(self._stop(agent_id, "its visible projects changed"))
                 if agent_id in self.running:
                     self._update(self.running[agent_id].agent, spec)
                 else:
@@ -157,6 +171,18 @@ class Discovery:
             return None
         log(f"started Gaia agent '{agent.display_name}'", agent.name)
         return agent.name
+
+    def _membership_changed(self, agent_id):
+        """Whether the template projects the running agent can see differ from the ones it started on. It then
+        restarts (from this round) on the new set; a check that can't be made keeps it as it is."""
+        run = self.running[agent_id]
+        if run.visible is None:
+            return False
+        try:
+            return tuple(run.visible()) != tuple(run.projects)
+        except TalosError as e:
+            log(f"project visibility not checked: {e}", run.agent.name)
+            return False
 
     def _update(self, agent, spec):
         try:

@@ -196,8 +196,13 @@ def _gaia_agents(cfg, claude, identity, args):
                                             STATE_DIR / agent.name / "gaia-token" / "token")
         token()                         # refused or unreachable: not started, discovery tries again
         tracker = Tracker.delegated(agent, identity.gaia_url, token)
+        wanted = tuple(agent.projects)
+        visible, skipped = tracker.visible_projects(wanted)
+        agent = gaia_agents.keep_visible(agent, visible, skipped)
+        tracker.agent = agent
         _, stoppers = _start_issues_agent(agent, tracker, cfg, claude, False, router=router)
-        return gaia_agents.AgentRun(agent, token, stoppers)
+        return gaia_agents.AgentRun(agent, token, stoppers, tuple(visible),
+                                    lambda: tuple(tracker.visible_projects(wanted)[0]))
 
     discovery = gaia_agents.Discovery(identity.gaia, template, start,
                                       poll_seconds=cfg.get("gaiaAgentsPollSeconds", gaia_agents.POLL_SECONDS),
