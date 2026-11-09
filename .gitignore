@@ -39,3 +39,6 @@ Thumbs.db
 # local working files (project notes and mockups; ISSUES.md describes unfixed security issues - keep out of this public repo)
 ISSUES.md
 mockups/
+
+# configure backups of rewritten credential/config files
+*.bak

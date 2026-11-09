@@ -89,3 +89,41 @@ class AgamemnonStepTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BackupTest(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.dir = Path(tmp.name)
+        self.env = self.dir / "gaia-mcp.env"
+
+    def backups(self):
+        return sorted(self.dir.glob("gaia-mcp.env.*.bak"))
+
+    def test_rewrite_leaves_byte_identical_owner_only_backup(self):
+        configure.write_private(self.env, "GAIA_PASSWORD=secret\n")
+        configure.write_private(self.env, "GAIA_URL=x\n")
+        baks = self.backups()
+        self.assertEqual(len(baks), 1)
+        self.assertEqual(baks[0].read_bytes(), b"GAIA_PASSWORD=secret\n")
+        if sys.platform != "win32":
+            self.assertEqual(baks[0].stat().st_mode & 0o777, 0o600)
+
+    def test_unchanged_content_makes_no_backup(self):
+        configure.write_private(self.env, "A=1\n")
+        configure.write_private(self.env, "A=1\n")
+        configure.write_json(self.dir / "c.json", {"a": 1})
+        configure.write_json(self.dir / "c.json", {"a": 1})
+        self.assertEqual(self.backups(), [])
+        self.assertEqual(list(self.dir.glob("c.json.*.bak")), [])
+
+    def test_prunes_to_five_newest(self):
+        self.env.write_bytes(b"v0\n")
+        for i in range(8):
+            (self.dir / f"gaia-mcp.env.20200101-00000{i}.bak").write_text("old", encoding="utf-8")
+        configure.write_private(self.env, "v1\n")
+        baks = self.backups()
+        self.assertEqual(len(baks), configure.BACKUPS_KEPT)
+        self.assertEqual(baks[0].name, "gaia-mcp.env.20200101-000004.bak")
+        self.assertEqual(baks[-1].read_bytes(), b"v0\n")

@@ -28,7 +28,7 @@ Projects4Me\
 └─ dev-tools\
    ├─ installer\                ← p4m itself
    │  ├─ p4m.cmd / p4m / p4m.py    the CLI (Windows / bash launchers + code)
-   │  ├─ configure.py              `p4m configure`: per-engineer settings and credentials
+   │  ├─ configure.py              `p4m configure`: per-engineer settings and credentials; backs up files it rewrites (.bak, last 5)
    │  ├─ runtime.py                `p4m runtime`: the runtime copy of dev-tools
    │  └─ P4M-CLI.md                this doc
    ├─ p4m.env                   your settings (created on first run)
