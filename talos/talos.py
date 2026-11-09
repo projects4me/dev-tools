@@ -14,7 +14,7 @@ import time
 import urllib.request
 from datetime import datetime
 
-from lib import agent_spec, container, db, docker_free, docker_state, policy, runner, service_identity, sessions, workflow_steps, workspace_gc, workspaces
+from lib import container, db, delegated_tokens, docker_free, docker_state, gaia_agents, policy, runner, service_identity, sessions, workflow_steps, workspace_gc, workspaces
 from lib import runs as run_log
 from lib.agamemnon import journal as agamemnon_journal
 from lib.agamemnon import undo as agamemnon_undo
@@ -29,7 +29,7 @@ from lib.orchestrator import setup as orchestrator_setup
 from lib.orchestrator import state as orchestrator_state
 from lib.hermes import Listener
 from lib.mcp import mcp_config
-from lib.registry import load_agents
+from lib.registry import load_agents, load_gaia_template
 from lib.pool import LeaseFile
 from lib.tracker import Tracker
 
@@ -64,9 +64,11 @@ def _run(args):
                 log(f"gc: {action} #{issue} ({reason})")
     except Exception as e:              # housekeeping never keeps Talos from starting
         log(f"gc failed: {e}")
+    identity = None
     if not args.dry_run:
         try:
-            service_identity.start_keeper(service_identity.ServiceIdentity.from_settings(cfg, announce=log))
+            identity = service_identity.ServiceIdentity.from_settings(cfg, announce=log)
+            service_identity.start_keeper(identity)
         except TalosError as e:         # the service identity never keeps Talos from starting
             log(f"service identity: {e}")
     log(f"starting with {len(agents)} agent(s): {', '.join(a.name for a in agents)}; claude {claude}")
@@ -94,35 +96,20 @@ def _run(args):
             except Exception as e:      # one agent's setup never keeps the others from running
                 log(f"not started: {e}", agent.name)
             continue
-        tracker = Tracker(agent)
         try:
-            refresh_spec = agent_spec.follow(agent, tracker.agent_spec)
+            dispatcher, _ = _start_issues_agent(agent, Tracker(agent), cfg, claude, args.dry_run,
+                                                merge_routes.get(agent.name))
         except TalosError as e:         # one agent's setup never keeps the others from running
             log(f"not started: {e}", agent.name)
             continue
-        dispatcher = Dispatcher(agent, tracker, claude, dry_run=args.dry_run,
-                                mcp=mcp_config(STATE_DIR / agent.name / "mcp.json"),
-                                collector=lambda issue: gc_workspaces(only=issue),
-                                merge_route=merge_routes.get(agent.name), refresh_spec=refresh_spec,
-                                docker_free=lambda agent=agent, tracker=tracker: free_docker(agent, tracker),
-                                idle_free=lambda agent=agent: free_idle(agent))
-        dispatcher.recover_interrupted()
-        dispatcher.start()
         dispatchers.append(dispatcher)
-        if agent.dispatch == "workflow":    # Gaia's workflows say what to run: no assignments, only Run agent steps
-            steps = workflow_steps.StepRunner(agent, tracker, dispatcher, dry_run=args.dry_run)
-            steps.recover_interrupted()
-            steps.start()
-            Listener(agent, tracker, [policy.STATUS_EVENT], steps.on_event, steps.reconcile, cfg["hermesUrl"],
-                     cfg.get("nodeBin", "node"), cfg.get("reconnectSeconds", 10),
-                     extra_intents=workflow_steps.intents(dispatcher.user_id)).start()
-            continue
-        Listener(agent, tracker, [policy.ASSIGNEE_EVENT, policy.STATUS_EVENT], dispatcher.on_event, dispatcher.reconcile,
-                 cfg["hermesUrl"], cfg.get("nodeBin", "node"), cfg.get("reconnectSeconds", 10)).start()
+    discovery = _gaia_agents(cfg, claude, identity, args) if not args.agent else None
     try:
         while True:
             time.sleep(3600)
     except KeyboardInterrupt:
+        if discovery:
+            discovery.shutdown()
         for dispatcher in dispatchers:
             dispatcher.stop()
         for orchestrator in orchestrators:
@@ -131,6 +118,73 @@ def _run(args):
             worker.stop()
         log("stopped")
     return 0
+
+
+def _start_issues_agent(agent, tracker, cfg, claude, dry_run, merge_route=None):
+    """Start an issues agent: its dispatcher, its Hermes listener and, for workflow dispatch, its step runner.
+    Returns (dispatcher, the calls that stop its intake)."""
+    dispatcher = Dispatcher(agent, tracker, claude, dry_run=dry_run,
+                            mcp=mcp_config(STATE_DIR / agent.name / "mcp.json"),
+                            collector=lambda issue: gc_workspaces(only=issue), merge_route=merge_route,
+                            docker_free=lambda: free_docker(agent, tracker), idle_free=lambda: free_idle(agent))
+    hermes = (cfg["hermesUrl"], cfg.get("nodeBin", "node"), cfg.get("reconnectSeconds", 10))
+    steps = None
+    if agent.dispatch == "workflow":    # Gaia's workflows say what to run: no assignments, only Run agent steps
+        steps = workflow_steps.StepRunner(agent, tracker, dispatcher, dry_run=dry_run)
+        listener = Listener(agent, tracker, [policy.STATUS_EVENT], steps.on_event, steps.reconcile, *hermes,
+                            extra_intents=workflow_steps.intents(dispatcher.user_id))
+    else:
+        listener = Listener(agent, tracker, [policy.ASSIGNEE_EVENT, policy.STATUS_EVENT], dispatcher.on_event,
+                            dispatcher.reconcile, *hermes)
+    started = []                        # a failed start stops what it had started, so no thread is left behind
+    try:
+        dispatcher.recover_interrupted()
+        dispatcher.start()
+        started.append(dispatcher.stop)
+        if steps:
+            steps.recover_interrupted()
+            steps.start()
+            started.append(steps.stop)
+        listener.start()
+        started.append(listener.stop)
+    except Exception:
+        for stop in reversed(started):
+            try:
+                stop()
+            except Exception as e:      # noqa: BLE001  (keep stopping the rest)
+                log(f"stop failed: {e}", agent.name)
+        raise
+    stoppers = [steps.stop] if steps else []
+    return dispatcher, stoppers + [listener.stop, dispatcher.stop]
+
+
+def _gaia_agents(cfg, claude, identity, args):
+    """Start discovering the Gaia-declared agents (gaia_agents.py) when the template is there and Talos has its
+    service identity. Returns the Discovery, or None."""
+    try:
+        template = load_gaia_template()
+    except TalosError as e:
+        log(f"Gaia agents: {e}")
+        return None
+    if not template:
+        return None
+    if args.dry_run or not identity:
+        log("Gaia agents: not discovered (dry run, or Talos has no service identity)")
+        return None
+    tokens = delegated_tokens.TokenCache.for_identity(identity)
+
+    def start(agent):
+        token = delegated_tokens.AgentToken(tokens, agent.gaia_agent_id,
+                                            STATE_DIR / agent.name / "gaia-token" / "token")
+        token()                         # refused or unreachable: not started, discovery tries again
+        tracker = Tracker.delegated(agent, identity.gaia_url, token)
+        _, stoppers = _start_issues_agent(agent, tracker, cfg, claude, False)
+        return gaia_agents.AgentRun(agent, token, stoppers)
+
+    discovery = gaia_agents.Discovery(identity.gaia, template, start,
+                                      poll_seconds=cfg.get("gaiaAgentsPollSeconds", gaia_agents.POLL_SECONDS))
+    gaia_agents.start_discovery(discovery)
+    return discovery
 
 
 def _orchestrator(name):
@@ -166,8 +220,7 @@ def cmd_dispatch(args):
     db.import_legacy()
     tracker = Tracker(agent)
     dispatcher = Dispatcher(agent, tracker, claude_bin(cfg.get("claudeBin")), dry_run=args.dry_run,
-                            mcp=mcp_config(STATE_DIR / agent.name / "mcp.json"),
-                            refresh_spec=agent_spec.follow(agent, tracker.agent_spec))
+                            mcp=mcp_config(STATE_DIR / agent.name / "mcp.json"))
     outcome = dispatcher.handle(args.issue)
     print(outcome or "skipped")
     return 0
@@ -469,9 +522,6 @@ def cmd_agents(args):
         line = {"name": agent.name, "role": agent.role, "enabled": agent.enabled}
         try:
             tracker = Tracker(agent)
-            if agent.gaia_agent:        # its models and limits as Gaia sets them now
-                line["gaiaAgent"] = agent.gaia_agent
-                agent_spec.follow(agent, tracker.agent_spec)
             line["gaiaUser"] = tracker.user_id()
             line["projects"] = tracker.project_ids()
         except TalosError as e:

@@ -2,6 +2,7 @@
 Run: python -m unittest discover -s tests (from dev-tools/gaia-mcp)"""
 
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -133,6 +134,60 @@ class SignInAndRotationTest(unittest.TestCase):
         g._http = self.fake.http
         self.assertTrue(g.token())
 
+
+
+class DelegationTest(unittest.TestCase):
+    def setUp(self):
+        self.fake = FakeGaia()
+        self.fake.secrets["svc-e-1"] = ["secret-1"]
+        self.fake.agents = {"a-1": {"name": "Agent Hera", "userId": "u-1", "spec": {}},
+                            "a-2": {"name": "Agent Iris", "userId": "u-2", "spec": {}, "delegable": False}}
+        self.g = service_client.service_gaia("https://gaia.test", "svc-e-1", "secret-1")
+        self.g._http = self.fake.http
+
+    def test_delegable_agents_lists_what_gaia_lets_the_runtime_run(self):
+        agents = service_client.delegable_agents(self.g)
+        self.assertEqual([("a-1", "Agent Hera", "u-1")], [(a["id"], a["name"], a["userId"]) for a in agents])
+
+    def test_a_delegated_token_is_got_with_the_runtimes_own_credentials(self):
+        self.assertEqual({"accessToken": "agent-a-1-1", "expiresIn": 3600},
+                         service_client.delegated_token(self.g, "a-1"))
+        self.assertIn(("POST", "token", False), self.fake.calls)
+
+    def test_an_agent_that_cant_be_delegated_is_refused(self):
+        with self.assertRaisesRegex(service_client.DelegationRefused, "cannot be delegated") as e:
+            service_client.delegated_token(self.g, "a-2")
+        self.assertEqual(401, e.exception.status)
+
+    def test_a_runtime_with_a_wrong_secret_is_refused(self):
+        self.g.client_secret = "wrong"
+        with self.assertRaisesRegex(service_client.DelegationRefused, "invalid_client"):
+            service_client.delegated_token(self.g, "a-1")
+
+
+class TokenFileTest(unittest.TestCase):
+    def setUp(self):
+        self.path = Path(tempfile.mkdtemp()) / "gaia-token"
+        self.g = server.Gaia()
+        self.g.token_file = str(self.path)
+
+    def test_the_token_is_read_from_the_file_on_every_call(self):
+        self.path.write_text("first\n", encoding="utf-8")
+        self.assertEqual("first", self.g.token())
+        self.path.write_text("renewed", encoding="utf-8")
+        self.assertEqual("renewed", self.g.token())
+
+    def test_a_missing_or_empty_file_is_a_clear_error(self):
+        with self.assertRaisesRegex(server.GaiaError, "Cannot read GAIA_TOKEN_FILE"):
+            self.g.token()
+        self.path.write_text("", encoding="utf-8")
+        with self.assertRaisesRegex(server.GaiaError, "is empty"):
+            self.g.token()
+
+    def test_a_token_source_wins_over_signing_in(self):
+        self.g.token_file = None
+        self.g.token_source = lambda: "from-talos"
+        self.assertEqual("from-talos", self.g.token())
 
 if __name__ == "__main__":
     unittest.main()

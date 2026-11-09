@@ -58,7 +58,45 @@ hand-copied secret (Gaia rbac decisions D-066, D-068, D-070), the first step tow
   memory and saved again on the next check when the write fails. Rotation
   needs the Serviceclient id from the enrollment delivery; without it Talos logs once and keeps the secret.
 
-Agent discovery (which Gaia agents to run) is a later step.
+### Agents declared in Gaia
+
+Talos asks Gaia which agents it may run instead of naming them locally (D-067, D-069; `lib/gaia_agents.py`).
+agent.json stays for Talos' own agents (Odysseus, Nestor, Agamemnon), which keep their own credentials.
+
+- **Discovery.** Every `gaiaAgentsPollSeconds` (config.json, default 300) `talos run` lists the agents with its
+  service token (`GET agent`: Gaia answers a runtime with the delegable agents only) and reads each one's spec
+  (`GET agentspec/{id}`). An agent new in the list starts. One gone from it (disabled, its user locked, its delegation
+  emptied) takes no new runs: its listener disconnects and its step intake stops, so its steps stay pending in
+  Gaia, and a run in progress finishes. It starts again when it is listed again. Edits to a running agent's spec
+  apply from its next run; a spec Talos can't run keeps the last good one (and a new agent with one does not start).
+  When the list can't be read, nothing changes.
+- **Settings.** Gaia owns the name, role prompt, models, limits, tool grants and skills; `lib/agent_spec.py` maps
+  them:
+
+  | Spec | Talos setting |
+  |---|---|
+  | `agent.name` | `gaia-<name>` in state folders and logs (with the id's start when two names collide); the display name |
+  | `config.rolePrompt` | the role prompt (required), followed by the granted `skills` (name, description, content) |
+  | `config.modelConfig.model` | the model (required); `escalate` and `byComplexity` work as `model.escalate` and `model.byComplexity` in agent.json |
+  | `config.maxTurns`, `config.maxRunsPerIssue` | the turn cap and `maxIterations`; null = the template's |
+  | `config.permissionMode` | `claude --permission-mode`, one of `default`, `acceptEdits`, `plan`, `auto`, `dontAsk`, `bypassPermissions`; null = the template's |
+  | `toolGrants` | added to the template's `allowedTools` (an MCP server or tool, a runtime tool's permission rule) |
+
+  Everything machine-local comes from `agents/gaia-runtime/template.json`, overlaid by its `agent.local.json`
+  (`p4m configure` writes the reviewer there): agent.json's issues-agent keys (`projects`, `allowedTools`,
+  `runner`, parallelism, `limitsByModel`, the ship and bot-round prompts, ...) without `name`, `displayName`,
+  `gaiaEnv`, `model`, `rolePrompt`, `kind` or `dispatch` (refused). Every Gaia agent is `dispatch: "workflow"`: it
+  takes work from Gaia's workflow run requests only (see Workflow steps). `"enabled": false` in the overlay runs none.
+- **Delegated tokens** (`lib/delegated_tokens.py`). Each agent acts on its own token from the agent-delegation grant
+  (Talos' client id and secret plus the `agent_id`; one hour, no refresh token), cached and renewed 5 minutes before
+  it expires; tokens are checked every minute. Talos' own Gaia calls and the agent's Hermes connection use it. Its
+  runs' child processes (the gaia MCP server, `ai`) get `GAIA_URL`, `GAIA_EMAIL` (the agent user's, read once on
+  the token) and `GAIA_TOKEN_FILE`, never a secret: the token is written, owner-only, to
+  `state/<agent>/gaia-token/token`, which gaia-mcp reads on every call, so a run longer than an hour keeps working.
+  A container run mounts that folder read-only. When Gaia refuses the token (the agent can no longer be delegated,
+  or Talos lost `agent.delegate`) the agent stops as above, and discovery starts it again once Gaia grants it.
+- **Not run**: in `--dry-run`, with `talos run --agent`, without a service identity (enroll first), or without
+  the template.
 
 ### The runtime copy: Talos runs `main`, not the checkout being worked
 
@@ -392,7 +430,6 @@ their events), and an env file with its `GAIA_*` credentials.
 | `permissionMode`, `allowedTools` | passed to `claude -p` |
 | `rolePrompt` | file appended to the system prompt: the agent's role and headless rules |
 | `runner` | where runs execute: this machine (default) or `{"type": "container", "image": ...}`, see "Container runs" |
-| `gaiaAgent` | a Gaia agent (name, email or id) whose agentspec sets the role prompt, model and limits; see "Agents defined in Gaia" |
 
 `config.json`: `hermesUrl`, `claudeBin` (empty = PATH, then the newest VS Code extension binary), `nodeBin`,
 `reconnectSeconds`. `config.local.json` (git-ignored) overrides any of them per engineer.
@@ -401,28 +438,6 @@ their events), and an env file with its `GAIA_*` credentials.
 act only on the issues *its* engineer assigns. `agents/<name>/agent.local.json` (git-ignored, written by
 `dev-tools/installer/p4m configure`) sets `acceptAssignmentsFrom` and `handoffTo` to that engineer's Gaia user id and
 `reviewerName` to their name (used in the prompts as `{reviewer}`). Talos refuses to start an agent without them.
-
-### Agents defined in Gaia (`gaiaAgent`)
-
-An issues agent can take its definition from Gaia instead of agent.json: set `gaiaAgent` to the Gaia agent's name,
-email or id and leave `rolePrompt` and `model` out (having both is refused). Talos reads the agent's spec
-(`GET agentspec/{id}`, gaia-mcp's `Gaia.agent_spec`) as the agent itself, with its `gaiaEnv` credentials, so that
-user needs `agentspec.get`. `lib/agent_spec.py` maps it:
-
-| Spec (`config`) | Talos setting |
-|---|---|
-| `rolePrompt` | the role prompt (required) |
-| `modelConfig.model` | the model (required); `modelConfig.escalate` and `modelConfig.byComplexity` work as `model.escalate` and `model.byComplexity` in agent.json |
-| `maxTurns` | the turn cap; null = agent.json's `maxTurns` |
-| `maxRunsPerIssue` | `maxIterations`; null = agent.json's |
-| `permissionMode` | `claude --permission-mode`, one of `default`, `acceptEdits`, `plan`, `auto`, `dontAsk`, `bypassPermissions` (anything else is refused); null = agent.json's |
-
-The spec is read when `talos run` (or `dispatch`) starts and again before each run, so an edit in Gaia applies from
-the next run without a restart. When a later read fails (Gaia unreachable, a spec Talos can't run), the run uses the
-last good spec and the log says so; with no usable spec at start the agent is not started and the log says why.
-Everything machine-local stays in agent.json: `gaiaEnv`, `projects`, `allowedTools`/`deniedTools`, `runner`,
-the parallelism settings, `limitsByModel` and the prompts. The spec's tool grants and skills are not applied yet
-(logged once). `talos agents` shows the models and limits as Gaia sets them.
 
 ## Ideas agents (Agent Nestor)
 
@@ -840,6 +855,8 @@ The pre-SQLite `state/sessions.json` is imported when `talos run`/`dispatch` sta
 | `lib/tracker.py` | Gaia as one agent, through the `gaia-mcp` client |
 | `lib/service_identity.py` | Talos as a runtime service client: enrollment (one process at a time), sign-in, weekly secret rotation, the `talos run` keeper |
 | `lib/service_credential.py` | the service credential file: atomic write, owner-only permissions (chmod / icacls) |
+| `lib/gaia_agents.py` | Gaia-declared agents: discovery (start, update, stop to match Gaia's list), the spec on the template, the renewal loop |
+| `lib/delegated_tokens.py` | delegated tokens per Gaia agent: cache and renewal, refusals, the owner-only token file for child processes |
 | `lib/db.py` | SQLite connection, schema, one-time import of `sessions.json` |
 | `lib/sessions.py` | issue state (`issues` table): session, run count, escalation, in-flight flag |
 | `lib/runs.py` | run records (`runs` table) and the per-run cost calculation |

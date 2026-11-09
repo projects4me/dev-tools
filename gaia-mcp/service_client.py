@@ -7,6 +7,8 @@ sign in with the delivered client credentials, and rotate that secret.
   return the client id and secret once, after an admin approves the code (or at once with a valid token).
 - Sign-in: a `service_gaia()` is a gaia-mcp `Gaia` on the client_credentials grant; it asks for a new token when the
   current one is about to expire (service tokens have no refresh token).
+- Agents (D-067, D-069): a runtime lists the agents it may run (GET /agent answers a runtime token with the delegable
+  ones only) and gets a token acting as one of them with the agent-delegation grant (one hour, no refresh token).
 - Rotation: PATCH /serviceclient/{id} with only `rotateSecret: true`, sent with the service's own token; the new
   secret comes back once and the previous one stays valid for a short grace period.
 
@@ -19,8 +21,13 @@ from server import NOT_JSON, Gaia, GaiaError, page_text
 
 PENDING = ("pending", "approved")       # still waiting: approved is delivered by the next poll
 POLL_SECONDS = 5
+DELEGATION_GRANT = "urn:projects4me:params:oauth:grant-type:agent-delegation"
 MAX_WAIT_SECONDS = 20 * 60              # a request expires after 15 minutes; this only stops a runaway loop
 POLL_RETRIES = 5                        # failed polls in a row (network, 5xx) before giving up
+
+
+class DelegationRefused(GaiaError):
+    """Gaia refused a delegated token: the runtime may not delegate, or the agent can't be delegated (any more)."""
 
 
 def service_gaia(base, client_id, client_secret, ssl_context=None):
@@ -40,7 +47,7 @@ def _error_text(status, payload):
     errors = payload.get("errors")
     if isinstance(errors, list) and errors and isinstance(errors[0], dict):
         return f"{status}: {errors[0].get('detail') or errors[0].get('title') or errors[0]}"
-    return f"{status}: {payload.get('message') or payload.get('error') or payload}"
+    return f"{status}: {payload.get('message') or payload.get('error_description') or payload.get('error') or payload}"
 
 
 def _attributes(payload):
@@ -124,3 +131,21 @@ def rotate_secret(gaia, service_client_id):
         raise GaiaError("Gaia's rotation reply has no new secret.")
     return {"clientId": rotated.get("clientId"), "clientSecret": rotated["clientSecret"],
             "previousSecretExpiresAt": rotated.get("previousSecretExpiresAt")}
+
+
+def delegable_agents(gaia):
+    """The agents the signed-in runtime may run (id, name, userId, ...): Gaia filters the list for a runtime token."""
+    return gaia.find("agent", limit=-1)
+
+
+def delegated_token(gaia, agent_id):
+    """A token acting as the agent, got with the runtime's own client credentials (the agent-delegation grant).
+    Returns {accessToken, expiresIn}; raises DelegationRefused when Gaia says no (400, 401, 403)."""
+    status, payload = gaia.anonymous("POST", "token", form={
+        "grant_type": DELEGATION_GRANT, "agent_id": agent_id,
+        "client_id": gaia.client_id, "client_secret": gaia.client_secret})
+    if status in (400, 401, 403):
+        raise DelegationRefused(f"Gaia refused a token for agent {agent_id} ({_error_text(status, payload)})", status)
+    if status != 200 or not payload.get("access_token"):
+        raise GaiaError(f"Gaia's delegation grant failed ({_error_text(status, payload)})", status)
+    return {"accessToken": payload["access_token"], "expiresIn": int(payload.get("expires_in") or 3600)}

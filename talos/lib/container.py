@@ -26,6 +26,8 @@ WORK = "/work"                                   # the issue's work volume: work
 CLAUDE_HOME = "/home/talos/.claude"            # the image user's home (talos/container/Dockerfile)
 DOCKER_SOCKET = "/var/run/docker.sock"
 SECRETS = "/run/secrets/talos"                   # key files, mounted read-only
+GAIA_TOKEN_DIR = "/run/secrets/gaia-token"       # a Gaia-declared agent's token folder, mounted read-only
+DELEGATED_GAIA = ("GAIA_URL", "GAIA_EMAIL", "GAIA_CA_FILE")     # its Gaia settings, besides the token file
 MCP = WORK + "/.talos/mcp.json"                  # written by the entrypoint: the gaia server from the runtime clone
 MEMORY = "/memory"                               # the workspace's auto-memory folder, mounted (claudeHome "bind")
 BASE_BRANCH = {"dev-tools": "main"}
@@ -78,6 +80,7 @@ class ContainerRunner(runner.Runner):
         self.agent_name = agent.name
         self.agent_keys = set(agent.env) - {GITHUB_TOKEN}
         self.gaia_env = agent.gaia_env
+        self.delegated = bool(agent.gaia_agent_id)       # on a delegated token (gaia_agents.py), no gaiaEnv file
         self.settings = agent.runner
         self.home = self.settings.get("claudeHome", "bind")
         if self.home not in CLAUDE_HOMES:
@@ -129,13 +132,16 @@ class ContainerRunner(runner.Runner):
     def environment(self, job):
         """(variables the container gets, key files to mount as {host path: container path}).
         Only what the run needs crosses over: credentials, the agent's GAIA_* (from its gaiaEnv file, never this
-        process's), agent.json env, the test slot and the entrypoint's settings; never the rest of this process's
+        process's; for a Gaia-declared agent its Tracker's settings and its token's folder, which Talos keeps
+        renewed), agent.json env, the test slot and the entrypoint's settings; never the rest of this process's
         environment."""
         forwarded = {*CLAUDE_CREDENTIALS, *(k for k in FILES if not k.startswith("GAIA_")), *self.agent_keys,
                      "P4M_TEST_SLOT"}
         values = {k: v for k, v in job.env.items() if k in forwarded}
         gaia_env = Path(self.gaia_env)
-        if gaia_env.is_file():
+        if self.delegated:
+            values.update({k: job.env[k] for k in DELEGATED_GAIA if job.env.get(k)})
+        elif gaia_env.is_file():
             values.update({k: v for k, v in read_env_file(gaia_env).items() if k.startswith("GAIA_")})
         for name in self.settings.get("envFiles", ENV_FILES):   # after: GH_TOKEN is Odysseus's, not the engineer's
             path = LOCAL_DIR / name
@@ -161,6 +167,11 @@ class ContainerRunner(runner.Runner):
             files[str(path)] = values[name]
             if path.with_name(path.name + ".pub").is_file():          # the SSH signing key's public half
                 files[str(path) + ".pub"] = values[name] + ".pub"
+        if self.delegated:
+            # its folder: a renewal replaces the file, which a mount of the file itself would miss
+            token = Path(job.env["GAIA_TOKEN_FILE"])
+            files[str(token.parent)] = GAIA_TOKEN_DIR
+            values["GAIA_TOKEN_FILE"] = f"{GAIA_TOKEN_DIR}/{token.name}"
         ai_config = LOCAL_DIR / "ai" / "config.local.json"
         values.update({
             "TALOS_REPO": job.repo,

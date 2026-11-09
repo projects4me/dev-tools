@@ -1,4 +1,5 @@
-"""A fake Gaia for the service-client endpoints (enrollment, client_credentials token, secret rotation), answering
+"""A fake Gaia for the service-client endpoints (enrollment, client_credentials token, secret rotation, delegable
+agents, their specs and the agent-delegation grant), answering
 gaia-mcp's `Gaia._http(method, path, params, body, form, auth)`. Shared by the gaia-mcp and Talos tests."""
 
 ENROLLMENT_TOKEN = "enroll-token-ok"
@@ -15,6 +16,8 @@ class FakeGaia:
         self.calls = []
         self.grants = 0
         self.rotations = 0
+        self.agents = {}            # agent id -> {"name", "userId", "spec", "delegable" (default True)}
+        self.delegations = 0
 
     def approve(self, enrollment_id="e-1"):
         self.enrollments[enrollment_id]["status"] = "approved"
@@ -29,14 +32,34 @@ class FakeGaia:
             return self._poll(path.split("/", 1)[1], (params or {}).get("pollToken"))
         if method == "PATCH" and path.startswith("serviceclient/"):
             return self._rotate(path.split("/", 1)[1], body)
+        if method == "GET" and path == "agent":
+            return 200, {"data": [{"type": "agent", "id": i, "attributes": {"name": a["name"], "userId": a["userId"]}}
+                                  for i, a in self.agents.items() if a.get("delegable", True)]}
+        if method == "GET" and path.startswith("agentspec/"):
+            agent = self.agents.get(path.split("/", 1)[1])
+            if not agent or not agent.get("delegable", True):
+                return 404, {"errors": [{"detail": "not found"}]}
+            return 200, agent["spec"]
         return 404, {"errors": [{"detail": "not found"}]}
 
     def _token(self, form):
+        if form.get("grant_type") == "urn:projects4me:params:oauth:grant-type:agent-delegation":
+            return self._delegate(form)
         if form.get("grant_type") != "client_credentials" or \
                 form.get("client_secret") not in self.secrets.get(form.get("client_id"), ()):
             return 400, {"error": "invalid_client"}
         self.grants += 1
         return 200, {"access_token": f"tok-{self.grants}", "expires_in": 3600, "token_type": "Bearer"}
+
+    def _delegate(self, form):
+        if form.get("client_secret") not in self.secrets.get(form.get("client_id"), ()):
+            return 400, {"error": "invalid_client"}
+        agent = self.agents.get(form.get("agent_id"))
+        if not agent or not agent.get("delegable", True):
+            return 401, {"errors": [{"detail": "The agent does not exist, is not active or cannot be delegated."}]}
+        self.delegations += 1
+        return 200, {"access_token": f"agent-{form['agent_id']}-{self.delegations}", "expires_in": 3600,
+                     "token_type": "Bearer"}
 
     def _request(self, attributes):
         token = attributes.get("enrollmentToken")

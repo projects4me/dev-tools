@@ -4,6 +4,7 @@
   "claudeBin": "",
   "nodeBin": "node",
   "reconnectSeconds": 10,
+  "gaiaAgentsPollSeconds": 300,
   "sim": {
     "url": "http://127.0.0.1:4791",
     "secretFile": "dev-tools/sim/state/hermes-secret"

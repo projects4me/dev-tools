@@ -1,9 +1,7 @@
-"""An agent's Gaia agentspec as Talos settings: for an agent.json with gaiaAgent, Gaia owns the role prompt, model
-and limits (GET agentspec/{id}, read through gaia-mcp's Gaia.agent_spec)."""
+"""An agent's Gaia agentspec as Talos settings: for a Gaia-declared agent (gaia_agents.py), Gaia owns the role
+prompt, model and limits (GET agentspec/{id}, read through gaia-mcp's Gaia.agent_spec_by_id)."""
 
-import threading
-
-from .config import TalosError, log
+from .config import TalosError
 
 SPEC_VERSION = 1
 PERMISSION_MODES = ("default", "acceptEdits", "plan", "auto", "dontAsk", "bypassPermissions")   # claude --permission-mode
@@ -53,48 +51,12 @@ def _limit(config, key, fallback):
     return value
 
 
-class SpecSource:
-    """Keeps one agent's settings in step with its Gaia spec. A fetch that fails (Gaia unreachable, a spec Talos
-    can't run) keeps the last good spec; with none yet, the agent can't run."""
-
-    def __init__(self, agent, fetch):
-        self.agent = agent
-        self.fetch = fetch          # fetch(gaia_agent) -> the spec, as the agent's own Gaia user
-        self.fallback = {k: getattr(agent, k) for k in FALLBACKS}
-        self._good = None
-        self._ignored_noted = False
-        self._lock = threading.Lock()
-
-    def refresh(self):
-        """Fetch the spec and apply it to the agent (shared by its worker threads)."""
-        with self._lock:
-            try:
-                spec = self.fetch(self.agent.gaia_agent)
-                values = settings_from(spec, self.fallback)
-            except TalosError as e:
-                if self._good is None:
-                    raise TalosError(f"no usable agentspec for Gaia agent '{self.agent.gaia_agent}': {e}")
-                log(f"agentspec for '{self.agent.gaia_agent}' unavailable, keeping the last good one: {e}",
-                    self.agent.name)
-                return
-            self._note_ignored(spec)
-            for name, value in values.items():
-                setattr(self.agent, name, value)
-            self._good = values
-
-    def _note_ignored(self, spec):
-        if self._ignored_noted or not (spec.get("toolGrants") or spec.get("skills")):
-            return
-        self._ignored_noted = True
-        log(f"agentspec for '{self.agent.gaia_agent}': tool grants and skills are not applied yet; "
-            f"tools come from agent.json", self.agent.name)
-
-
-def follow(agent, fetch):
-    """For an agent with gaiaAgent: applies its spec now (TalosError when there is none) and returns the refresh to
-    call before each run. None for an agent configured in agent.json alone."""
-    if not agent.gaia_agent:
-        return None
-    source = SpecSource(agent, fetch)
-    source.refresh()
-    return source.refresh
+def skills_prompt(spec):
+    """The skills granted in Gaia, appended to the role prompt so the agent works by them."""
+    parts = []
+    for skill in spec.get("skills") or []:
+        text = "\n\n".join(t for t in ((skill.get("description") or "").strip(), (skill.get("content") or "").strip())
+                           if t)
+        if text:
+            parts.append(f"## Skill: {skill.get('name') or skill.get('id')}\n\n{text}")
+    return "\n\n# Skills granted in Gaia\n\n" + "\n\n".join(parts) if parts else ""
