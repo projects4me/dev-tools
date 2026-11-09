@@ -14,6 +14,7 @@ from lib import delegated_tokens, gaia_agents, service_identity, workflow_steps 
 from lib import tracker as tracker_mod  # noqa: E402
 from lib.config import GAIA_MCP, TalosError  # noqa: E402
 from test_policy import make_agent  # noqa: E402
+import talos  # noqa: E402
 
 sys.path.insert(0, str(GAIA_MCP / "tests"))
 from fake_gaia import FakeGaia  # noqa: E402
@@ -309,6 +310,45 @@ class DiscoveryTest(unittest.TestCase):
         self.discovery.stop_all()
         self.assertIn("gaia-agent-hera", self.stopped)
         run.token.close.assert_called_once_with()
+
+
+class RuntimeStartTest(unittest.TestCase):
+    """talos._gaia_agents wires the runtime's run-request router and listener to the agents it discovers."""
+
+    def test_a_discovered_agent_is_started_on_the_router_and_everything_stops_with_discovery(self):
+        fake = FakeGaia()
+        fake.secrets["svc-1"] = ["secret-1"]
+        fake.agents = {"a-1": {"name": "Agent Hera", "userId": "u-1", "spec": spec()}}
+        g = service_client.service_gaia("https://gaia.test", "svc-1", "secret-1")
+        g._http = fake.http
+        identity = mock.Mock(gaia=lambda: g, gaia_url="https://gaia.test")
+        cfg = {"hermesUrl": "http://hermes.test"}
+        patches = [mock.patch.object(talos, "load_gaia_template", return_value=template()),
+                   mock.patch.object(talos.delegated_tokens, "TokenCache"),
+                   mock.patch.object(talos.delegated_tokens, "AgentToken"),
+                   mock.patch.object(talos.Tracker, "delegated"),
+                   mock.patch.object(talos, "Dispatcher"),
+                   mock.patch.object(talos, "Listener"),
+                   mock.patch.object(talos, "mcp_config"),
+                   mock.patch.object(talos.workflow_steps, "StepRunner"),
+                   mock.patch.object(talos.runtime_requests, "Listener"),
+                   mock.patch.object(talos.gaia_agents, "start_discovery"),
+                   mock.patch.object(talos, "log"), mock.patch.object(gaia_agents, "log")]
+        mocks = [p.start() for p in patches]
+        for p in patches:
+            self.addCleanup(p.stop)
+        agent_listener, runtime_listener = mocks[5], mocks[8]
+        args = mock.Mock(dry_run=False)
+
+        discovery = talos._gaia_agents(cfg, "claude", identity, args)
+
+        runtime_listener.return_value.start.assert_called_once_with()
+        self.assertEqual((["gaia-agent-hera"], []), discovery.sync())
+        agent_listener.return_value.start.assert_called_once_with()
+        mocks[7].return_value.start.assert_called_once_with()   # the step runner
+        discovery.shutdown()
+        runtime_listener.return_value.stop.assert_called_once_with()
+        agent_listener.return_value.stop.assert_called_once_with()
 
 
 if __name__ == "__main__":
