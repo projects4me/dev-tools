@@ -53,6 +53,10 @@ Supported on Windows 10/11 (Git Bash + Docker Desktop), macOS and Ubuntu/Debian.
    Talos' listener dependency, and checks GitHub and SSH access. Re-run it any time; your previous answers are the
    defaults.
 
+   To (re)write only the Gaia-declared agents' reviewer settings (`talos/agents/gaia-runtime/agent.local.json`,
+   merged into the existing file) without touching any credential or other config file, run
+   `dev-tools/installer/p4m configure gaia-agents` (name and Gaia user id default to your previous answers).
+
 4. **Restart Claude Code** in the workspace folder and ask it to run `gaia_whoami`.
 
 5. **Optional: run Talos** with `dev-tools/talos/talos run`. Your copy acts only on issues **you** assign to Agent

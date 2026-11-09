@@ -237,7 +237,8 @@ def _issues_agent(folder, path, local, raw, role_prompt, model, gaia_env):
     """An issues agent from its merged settings (`raw`); `local` is the agent.local.json the reviewer comes from."""
     if not raw["acceptAssignmentsFrom"] or not raw["handoffTo"]:
         raise TalosError(f"{folder.name}: no reviewer configured (acceptAssignmentsFrom/handoffTo); "
-                         f"run `dev-tools/installer/p4m configure`, which writes {local.name}")
+                         f"run `dev-tools/installer/p4m configure` (or, for Gaia-declared agents, just "
+                         f"`dev-tools/installer/p4m configure gaia-agents`), which writes {local.name}")
     reserved = [k for k in raw.get("env", {}) if str(k).upper().startswith("GAIA_")]
     if reserved:
         raise TalosError(f"{path}: env may not set {', '.join(reserved)} (the agent's credentials come from gaiaEnv)")
