@@ -20,12 +20,16 @@ def settings_from(spec, fallback):
     if not role_prompt:
         raise TalosError("agentspec has no rolePrompt")
     model_config = config.get("modelConfig") or {}
-    model = str(model_config.get("model") or "").strip()
+    model = str(model_config.get("model") or model_config.get("simple") or "").strip()
     if not model:
         raise TalosError("agentspec modelConfig has no model")
     by_complexity = model_config.get("byComplexity") or {}
     if not isinstance(by_complexity, dict):
         raise TalosError("agentspec modelConfig.byComplexity must map issue complexities to models")
+    # the Prometheus agent form saves {simple, complex, escalation}; byComplexity and escalate win when also set
+    form_models = {k: model_config[k] for k in ("simple", "complex") if model_config.get(k)}
+    by_complexity = {**form_models, **by_complexity}
+    escalate = model_config.get("escalate") or model_config.get("escalation") or model
     mode = config.get("permissionMode") or fallback["permission_mode"]
     if mode not in PERMISSION_MODES:
         raise TalosError(f"agentspec permissionMode '{mode}' is not a Claude Code mode "
@@ -33,7 +37,7 @@ def settings_from(spec, fallback):
     return {
         "role_prompt": role_prompt,
         "model_default": model,
-        "model_escalate": str(model_config.get("escalate") or model),
+        "model_escalate": str(escalate),
         "model_by_complexity": {str(k): str(v) for k, v in by_complexity.items()},
         "max_turns": _limit(config, "maxTurns", fallback["max_turns"]),
         "max_iterations": _limit(config, "maxRunsPerIssue", fallback["max_iterations"]),
