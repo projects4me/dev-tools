@@ -7,6 +7,7 @@ resembles with its exemplar PR, and the `gaia-dev` checks to run before shipping
 """
 
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -112,20 +113,40 @@ def scaffold_command(letter, models):
     return c.format(model=models[0] if models else "<Name>") if c else None
 
 
-def gaia_dev(root, args, timeout=120):
-    """(exit code, output) of `gaia-dev <args>` on this checkout: local php, else the gaia image with it mounted.
+def check_line(check):
+    """How to run a check: through `ai gaia-dev` when it allows it, else gaia-dev itself (needs PHP and Gaia's db)."""
+    from .gaiadev import allowed  # gaiadev imports this module
+    return f"dev-tools/ai/ai gaia-dev {check}" if allowed(check.split()) else f"php {GAIA_DEV} {check}"
 
-    (None, reason) when neither is available. Never the shared gaia-dev container: it may mount another checkout.
+
+def gaia_dev_command(root, args, which=shutil.which):
+    """The command that runs `gaia-dev <args>` on the checkout at root, or None when nothing can run it.
+
+    Local php only when the checkout has its own vendor folder (a run's worktree doesn't: its packages live in
+    the gaia_vendor volume); else a throwaway container of the gaia image with the checkout mounted, so gaia-dev
+    writes to that checkout and never to the shared gaia-dev container or another checkout. No network, so it
+    can't reach a database; on POSIX it runs as the caller so the files it writes stay theirs.
+    """
+    root = Path(root).resolve()
+    if which("php") and (root / "vendor" / "autoload.php").is_file():
+        return ["php", GAIA_DEV, *args]
+    if which("docker"):
+        user = ["--user", f"{os.getuid()}:{os.getgid()}"] if os.name != "nt" else []
+        return ["docker", "run", "--rm", "--network", "none", *user, "-e", "XDEBUG_MODE=off",
+                "-v", f"{root}:/var/www/html", "-v", f"{VENDOR_VOLUME}:/var/www/html/vendor", "-w", "/var/www/html",
+                "gaia-gaia", "php", GAIA_DEV, *args]
+    return None
+
+
+def gaia_dev(root, args, timeout=120):
+    """(exit code, output) of `gaia-dev <args>` on this checkout (see gaia_dev_command).
+
+    (None, reason) when it can't run. Never the shared gaia-dev container: it may mount another checkout.
     """
     root = Path(root)
-    if shutil.which("php"):
-        cmd = ["php", GAIA_DEV, *args]
-    elif shutil.which("docker"):
-        cmd = ["docker", "run", "--rm", "-e", "XDEBUG_MODE=off", "-v", f"{root}:/var/www/html",
-               "-v", f"{VENDOR_VOLUME}:/var/www/html/vendor", "-w", "/var/www/html", "gaia-gaia",
-               "php", GAIA_DEV, *args]
-    else:
-        return None, "no php or docker on PATH"
+    cmd = gaia_dev_command(root, args)
+    if cmd is None:
+        return None, "no php (with the checkout's vendor folder) or docker on PATH"
     try:
         r = subprocess.run(cmd, cwd=root, capture_output=True, text=True, encoding="utf-8", errors="replace",
                            timeout=timeout)
@@ -172,7 +193,7 @@ def build(root, text, endpoints, run=gaia_dev, sections=kb_sections, cap=None):
     if hits:
         blocks.append(("doc sections", [f"{k} ({s} lines) {t}" for k, s, t in hits]))
     checks = check_commands(letter, models)
-    blocks.append(("checks to run before shipping (ai ship gates on the drift checks and api-cases only)", [f"php {GAIA_DEV} {c}" for c in checks]))
+    blocks.append(("checks to run before shipping (ai ship gates on the drift checks and api-cases only)", [check_line(c) for c in checks]))
 
     out, left, deferred = [], cap, []
     for title, lines in blocks:

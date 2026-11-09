@@ -10,7 +10,7 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 from lib.common import AiError, REPOS  # noqa: E402
-from lib import (apitester, coderabbit, context, cost, designreview, doctor, kb, mergegate, mergereviewer, rabbitbudget,  # noqa: E402
+from lib import (apitester, coderabbit, context, cost, designreview, doctor, gaiadev, kb, mergegate, mergereviewer, rabbitbudget,  # noqa: E402
                  rabbitdigest, review, screen, ship, tests, workflow)
 
 
@@ -198,6 +198,10 @@ def build_parser():
     sp = add("api-cases", apitester.cmd_api_cases, "append api-tester cases (JSON list file) to client|acl|live")
     sp.add_argument("catalog", choices=["client", "acl", "live"])
     sp.add_argument("file")
+
+    sp = add("gaia-dev", gaiadev.cmd_gaia_dev, "run an allowlisted gaia-dev generator, check or query on this "
+             "workspace's gaia checkout (throwaway container when it has no vendor folder; never a database)")
+    sp.add_argument("args", nargs=argparse.REMAINDER, help="e.g. docs generate, graph export --check, check resource Report")
 
     sp = add("call", apitester.cmd_call, "call Gaia: test API as an api-tester profile, or dev as Agent Odysseus")
     sp.add_argument("method")
