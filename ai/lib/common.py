@@ -59,6 +59,38 @@ def run_workspace():
     return Path(path) if path else None
 
 
+def expected_run_workspace(cwd=None):
+    """The <workspace>/.runs/issue-N folder the cwd is inside, or None when it is not inside one."""
+    here = Path(cwd or Path.cwd()).resolve()
+    for folder in (here, *here.parents):
+        if folder.parent.name == ".runs" and re.fullmatch(r"issue-\d+", folder.name):
+            return folder
+    return None
+
+
+def require_matching_workspace(cwd=None):
+    """Refuse to run from a .runs/issue-N folder when P4M_WORKSPACE is unset or points elsewhere: the checkout
+    comes from the variable, not the cwd, so ai would silently act on another branch's tree."""
+    expected = expected_run_workspace(cwd)
+    if expected is None:
+        return
+    actual = run_workspace()
+    if actual is None or actual.resolve() != expected:
+        shown = f"'{actual}'" if actual else "unset"
+        raise AiError(f"cwd is inside the run workspace {expected} but P4M_WORKSPACE is {shown}: ai would target "
+                      f"the wrong checkout. Set P4M_WORKSPACE={expected} and run again.")
+
+
+def announce_checkout(repo):
+    """Print the checkout ai test / ai ship act on, so a wrong tree is visible at the start."""
+    folder = repo_dir(repo)
+    try:
+        branch = run(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=folder)
+    except AiError:
+        branch = "?"
+    print(f"checkout: {folder} (branch {branch})")
+
+
 def checkout_state_file(stem, suffix):
     """A file in STATE_DIR owned by this checkout: `<stem>-issue-N<suffix>` in a Talos run (named after its
     run workspace), else `<stem><suffix>`. Talos runs issues in parallel, so test logs and results keyed only

@@ -107,3 +107,36 @@ class StartInRunWorkspaceTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RunWorkspaceGuardTest(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name).resolve()
+        self.run_ws = self.root / ".runs" / "issue-7"
+        self.cwd = self.run_ws / "gaia"
+        self.cwd.mkdir(parents=True)
+
+    def check(self, env):
+        with mock.patch.dict(os.environ, env, clear=False):
+            if "P4M_WORKSPACE" not in env:
+                os.environ.pop("P4M_WORKSPACE", None)
+            common.require_matching_workspace(self.cwd)
+
+    def test_refused_when_variable_unset(self):
+        with self.assertRaises(common.AiError) as ctx:
+            self.check({})
+        self.assertIn(f"P4M_WORKSPACE={self.run_ws}", str(ctx.exception))
+
+    def test_runs_when_variable_matches(self):
+        self.check({"P4M_WORKSPACE": str(self.run_ws)})
+
+    def test_refused_when_variable_points_elsewhere(self):
+        with self.assertRaises(common.AiError):
+            self.check({"P4M_WORKSPACE": str(self.root / ".runs" / "issue-8")})
+
+    def test_runs_in_the_workspace_itself(self):
+        self.cwd = self.root / "gaia"
+        self.cwd.mkdir()
+        self.check({})

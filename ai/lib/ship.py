@@ -29,7 +29,8 @@ import json
 from pathlib import Path
 
 from . import coderabbit, cost, gaiapack, mergereviewer, results, reviewrecord, sizecheck, workflow
-from .common import (AiError, PROJECT_FOR_REPO, REPOS, STATE_DIR, base_branch, config, git, ody, say, tracker_call)
+from .common import (AiError, PROJECT_FOR_REPO, REPOS, STATE_DIR, announce_checkout, base_branch, config, git, ody,
+                     require_matching_workspace, say, tracker_call)
 
 SHORTCODE = {"A Gaia": "agaia", "A Prometheus": "aprom", "A Hermes": "ah", "A Ares": "aa", "A Dev Tool": "adt"}
 REQUIRED = ("title", "files", "what", "why")
@@ -165,6 +166,8 @@ def size_result(repo, issue, spec):
 
 def cmd_ship(args):
     repo, issue = args.repo, args.issue
+    require_matching_workspace()
+    announce_checkout(repo)
     spec = load_spec(args.file)
     size = size_result(repo, issue, spec)
     ref = issue_ref(repo, issue)

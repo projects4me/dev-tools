@@ -444,7 +444,10 @@ class RunWorkspaceSrcTest(unittest.TestCase):
                 return 0
 
             args = Namespace(repo="gaia", explain=None, case=None, changed=False, filter=None)
-            with mock.patch.dict(os.environ, {"P4M_WORKSPACE": str(ws)}),                     mock.patch.object(tests, "_run_and_record", record):
+            with mock.patch.dict(os.environ, {"P4M_WORKSPACE": str(ws)}), \
+                    mock.patch.object(tests, "_run_and_record", record), \
+                    mock.patch.object(tests, "require_matching_workspace"), \
+                    mock.patch.object(tests, "announce_checkout"):
                 tests.cmd_test(args)
             self.assertEqual(Path(seen["src"]), ws / "gaia")
             with mock.patch.object(tests, "_run_logged", return_value=(0, "OK (1 test)", Path(d))) as logged:

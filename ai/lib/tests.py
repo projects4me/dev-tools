@@ -21,8 +21,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import baseline, results, testmap
-from .common import (STATE_DIR, WORKSPACE, base_branch, checkout_state_file, config, git, kill_tree, p4m, repo_dir,
-                     say)
+from .common import (STATE_DIR, WORKSPACE, announce_checkout, base_branch, checkout_state_file, config, git, kill_tree,
+                     p4m, repo_dir, require_matching_workspace, say)
 
 PHPUNIT_FOLDERS = ("tests/libraries/security", "tests/libraries/utils", "tests/libraries/authorization",
                   "tests/models", "tests/services", "tests/tools")
@@ -365,6 +365,7 @@ def cmd_case(args):
 
 def cmd_test(args):
     repo = args.repo
+    require_matching_workspace()
     if args.explain:
         return cmd_explain(args)
     if args.case:
@@ -376,6 +377,7 @@ def cmd_test(args):
     if repo not in SUITES:
         say(f"no test recipe for {repo}")
         return 2
+    announce_checkout(repo)
     src = repo_dir(repo)
     targets, notes = (targets_for(repo, src) if args.changed else ({}, []))
     if args.filter:

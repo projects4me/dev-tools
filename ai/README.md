@@ -77,6 +77,9 @@ dev-tools/ai/ai sync gaia              # after merge (start does this too)
 
 ## Running tests safely
 
+- `ai test` and `ai ship` take the checkout from `P4M_WORKSPACE`, not the cwd. From inside a `.runs/issue-N` folder
+  they refuse to run when it is unset or points elsewhere (the error names the value to set), and they print the
+  resolved checkout path and branch first.
 - Don't pipe `ai test` through `tail`/`head`: the log `state/test-<repo>-<suite>.log` is written as the run
   progresses, so read that instead. Prefer `--changed` or a plain-text `--filter`.
 - From PowerShell or cmd run `dev-toolsii ...` (`ai.cmd`, same runtime-copy selection and `P4M_RUNTIME=off`). A bare
