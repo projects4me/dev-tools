@@ -18,6 +18,7 @@ Agents come in two kinds (`kind` in agent.json): **issues** (the default; Odysse
 ```bash
 dev-tools/talos/talos check                    # Claude CLI, node + socket.io-client, Hermes, agent sign-in
 dev-tools/talos/talos agents                   # the registry, with Gaia user and project ids resolved
+dev-tools/talos/talos enroll                   # register Talos in Gaia as a runtime service client (once per machine)
 dev-tools/talos/talos run [--dry-run]          # listen until Ctrl+C (Windows: talos.cmd)
 dev-tools/talos/talos dispatch odysseus 3714 [--dry-run]   # work one issue now, as if just assigned
 dev-tools/talos/talos status [--steps 20]                  # what is running now (issues, idea turns) + the latest steps
@@ -32,6 +33,32 @@ Only one `talos run` per workspace (`--dry-run` too): a second one exits with "T
 
 `--dry-run` decides and logs everything but never starts Claude or writes to the tracker. First-time setup:
 `npm install` in this folder (the listener needs `socket.io-client`); `p4m runtime setup` does it for the runtime copy.
+
+### Talos as a runtime service client in Gaia
+
+Talos registers itself in Gaia (`gaiaUrl` in config.json) as a service client of kind `runtime`, without a
+hand-copied secret (Gaia rbac decisions D-066, D-068, D-070), the first step towards running agents Gaia declares.
+`lib/service_identity.py` does it through gaia-mcp's `service_client.py`; `lib/service_credential.py` keeps the file:
+
+- **Enrollment**: `talos enroll`, or `talos run` when there is no credential (in the background; the agents start
+  anyway). With `TALOS_ENROLLMENT_TOKEN` set (a single-use token an admin issued, `POST serviceenrollmenttoken`,
+  valid 15 minutes) the request is approved at once. Otherwise Talos prints a user code (`XXX-XXX`) and the expiry;
+  an admin approves that code in Prometheus and Talos, polling every 5 seconds, receives the
+  client id and secret once (a few failed polls in a row are retried, so a network blip doesn't waste the approval or
+  token). The name is `Talos on <hostname>`. Only one process enrolls at a time (a lock file next to the credential).
+- **Credential**: `<workspace>/dev-tools/talos/state/service-client.json` (git-ignored), readable only by its owner
+  (`chmod 600`; on Windows `icacls` removes inherited access and grants the current user alone). It holds the Gaia
+  URL, client id and secret, the Serviceclient id and when the secret was issued; a credential for another Gaia URL
+  counts as none. If the permissions can't be set, the credential is still kept (Gaia delivers it once) and Talos
+  says so. Neither the secret nor the poll token is ever logged or printed. A restart reuses it.
+- **Token**: client_credentials, no user; a new token is requested when the current one is about to expire
+  (service tokens have no refresh token).
+- **Rotation**: `talos run` checks hourly and rotates the secret once it is a week old (`PATCH serviceclient/{id}`
+  with `rotateSecret`); the new secret is stored at once (the previous one is valid only 10 more minutes), and kept in
+  memory and saved again on the next check when the write fails. Rotation
+  needs the Serviceclient id from the enrollment delivery; without it Talos logs once and keeps the secret.
+
+Agent discovery (which Gaia agents to run) is a later step.
 
 ### The runtime copy: Talos runs `main`, not the checkout being worked
 
@@ -811,6 +838,8 @@ The pre-SQLite `state/sessions.json` is imported when `talos run`/`dispatch` sta
 | `lib/memory.py` | the workspace's Claude auto-memory folder, which every run is pointed at |
 | `lib/mcp.py` | the agent's MCP config: only the gaia server from the copy Talos runs from |
 | `lib/tracker.py` | Gaia as one agent, through the `gaia-mcp` client |
+| `lib/service_identity.py` | Talos as a runtime service client: enrollment (one process at a time), sign-in, weekly secret rotation, the `talos run` keeper |
+| `lib/service_credential.py` | the service credential file: atomic write, owner-only permissions (chmod / icacls) |
 | `lib/db.py` | SQLite connection, schema, one-time import of `sessions.json` |
 | `lib/sessions.py` | issue state (`issues` table): session, run count, escalation, in-flight flag |
 | `lib/runs.py` | run records (`runs` table) and the per-run cost calculation |

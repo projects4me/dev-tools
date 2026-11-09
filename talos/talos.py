@@ -14,7 +14,7 @@ import time
 import urllib.request
 from datetime import datetime
 
-from lib import agent_spec, container, db, docker_free, docker_state, policy, runner, sessions, workflow_steps, workspace_gc, workspaces
+from lib import agent_spec, container, db, docker_free, docker_state, policy, runner, service_identity, sessions, workflow_steps, workspace_gc, workspaces
 from lib import runs as run_log
 from lib.agamemnon import journal as agamemnon_journal
 from lib.agamemnon import undo as agamemnon_undo
@@ -64,6 +64,11 @@ def _run(args):
                 log(f"gc: {action} #{issue} ({reason})")
     except Exception as e:              # housekeeping never keeps Talos from starting
         log(f"gc failed: {e}")
+    if not args.dry_run:
+        try:
+            service_identity.start_keeper(service_identity.ServiceIdentity.from_settings(cfg, announce=log))
+        except TalosError as e:         # the service identity never keeps Talos from starting
+            log(f"service identity: {e}")
     log(f"starting with {len(agents)} agent(s): {', '.join(a.name for a in agents)}; claude {claude}")
     dispatchers, orchestrators, event_workers = [], [], []
     merge_routes = orchestrator_setup.merge_routes(agents)     # worker -> its orchestrator's automatic merges
@@ -518,6 +523,18 @@ def cmd_check(args):
     return 0 if ok else 1
 
 
+def cmd_enroll(args):
+    """Enroll Talos in Gaia as a runtime service client (no-op when it already holds a credential)."""
+    identity = service_identity.ServiceIdentity.from_settings(settings())
+    existing = identity.credential()
+    credential = identity.ensure()
+    if existing:
+        print(f"already enrolled in {identity.gaia_url} as service client {credential['clientId']}")
+    identity.token()
+    print("service sign-in ok")
+    return 0
+
+
 def build_parser():
     p = argparse.ArgumentParser(prog="talos", description="Dispatch Projects4Me issues to headless Claude Code agents.")
     sub = p.add_subparsers(dest="command", required=True)
@@ -526,6 +543,10 @@ def build_parser():
     sp.add_argument("--agent", help="only this agent")
     sp.add_argument("--dry-run", action="store_true", help="decide and log, but don't start Claude")
     sp.set_defaults(func=cmd_run)
+
+    sp = sub.add_parser("enroll", help="enroll Talos in Gaia as a runtime service client (prints a code for an admin "
+                                       "to approve, or uses TALOS_ENROLLMENT_TOKEN) and check its sign-in")
+    sp.set_defaults(func=cmd_enroll)
 
     sp = sub.add_parser("dispatch", help="work one issue now, as if it had just been assigned (issue agents)")
     sp.add_argument("agent")
