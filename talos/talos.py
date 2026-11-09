@@ -14,7 +14,7 @@ import time
 import urllib.request
 from datetime import datetime
 
-from lib import container, db, delegated_tokens, docker_free, docker_state, gaia_agents, policy, runner, service_identity, sessions, workflow_steps, workspace_gc, workspaces
+from lib import container, db, delegated_tokens, docker_free, docker_state, gaia_agents, policy, runner, runtime_requests, service_identity, sessions, workflow_steps, workspace_gc, workspaces
 from lib import runs as run_log
 from lib.agamemnon import journal as agamemnon_journal
 from lib.agamemnon import undo as agamemnon_undo
@@ -120,9 +120,10 @@ def _run(args):
     return 0
 
 
-def _start_issues_agent(agent, tracker, cfg, claude, dry_run, merge_route=None):
+def _start_issues_agent(agent, tracker, cfg, claude, dry_run, merge_route=None, router=None):
     """Start an issues agent: its dispatcher, its Hermes listener and, for workflow dispatch, its step runner.
-    Returns (dispatcher, the calls that stop its intake)."""
+    With a `router` (the runtime's run-request socket) the step runner takes its requests from it, not from a
+    socket of its own. Returns (dispatcher, the calls that stop its intake)."""
     dispatcher = Dispatcher(agent, tracker, claude, dry_run=dry_run,
                             mcp=mcp_config(STATE_DIR / agent.name / "mcp.json"),
                             collector=lambda issue: gc_workspaces(only=issue), merge_route=merge_route,
@@ -132,7 +133,7 @@ def _start_issues_agent(agent, tracker, cfg, claude, dry_run, merge_route=None):
     if agent.dispatch == "workflow":    # Gaia's workflows say what to run: no assignments, only Run agent steps
         steps = workflow_steps.StepRunner(agent, tracker, dispatcher, dry_run=dry_run)
         listener = Listener(agent, tracker, [policy.STATUS_EVENT], steps.on_event, steps.reconcile, *hermes,
-                            extra_intents=workflow_steps.intents(dispatcher.user_id))
+                            extra_intents=[] if router else workflow_steps.intents(dispatcher.user_id))
     else:
         listener = Listener(agent, tracker, [policy.ASSIGNEE_EVENT, policy.STATUS_EVENT], dispatcher.on_event,
                             dispatcher.reconcile, *hermes)
@@ -145,6 +146,9 @@ def _start_issues_agent(agent, tracker, cfg, claude, dry_run, merge_route=None):
             steps.recover_interrupted()
             steps.start()
             started.append(steps.stop)
+            if router:
+                router.register(steps)
+                started.append(lambda: router.unregister(steps))
         listener.start()
         started.append(listener.stop)
     except Exception:
@@ -155,6 +159,8 @@ def _start_issues_agent(agent, tracker, cfg, claude, dry_run, merge_route=None):
                 log(f"stop failed: {e}", agent.name)
         raise
     stoppers = [steps.stop] if steps else []
+    if steps and router:
+        stoppers.append(lambda: router.unregister(steps))
     return dispatcher, stoppers + [listener.stop, dispatcher.stop]
 
 
@@ -178,7 +184,7 @@ def _gaia_agents(cfg, claude, identity, args):
                                             STATE_DIR / agent.name / "gaia-token" / "token")
         token()                         # refused or unreachable: not started, discovery tries again
         tracker = Tracker.delegated(agent, identity.gaia_url, token)
-        _, stoppers = _start_issues_agent(agent, tracker, cfg, claude, False)
+        _, stoppers = _start_issues_agent(agent, tracker, cfg, claude, False, router=router)
         return gaia_agents.AgentRun(agent, token, stoppers)
 
     discovery = gaia_agents.Discovery(identity.gaia, template, start,
