@@ -178,6 +178,9 @@ def _gaia_agents(cfg, claude, identity, args):
         log("Gaia agents: not discovered (dry run, or Talos has no service identity)")
         return None
     tokens = delegated_tokens.TokenCache.for_identity(identity)
+    router = runtime_requests.Router()
+    requests = runtime_requests.listener(router, identity, cfg["hermesUrl"], cfg.get("nodeBin", "node"),
+                                         cfg.get("reconnectSeconds", 10))
 
     def start(agent):
         token = delegated_tokens.AgentToken(tokens, agent.gaia_agent_id,
@@ -188,7 +191,9 @@ def _gaia_agents(cfg, claude, identity, args):
         return gaia_agents.AgentRun(agent, token, stoppers)
 
     discovery = gaia_agents.Discovery(identity.gaia, template, start,
-                                      poll_seconds=cfg.get("gaiaAgentsPollSeconds", gaia_agents.POLL_SECONDS))
+                                      poll_seconds=cfg.get("gaiaAgentsPollSeconds", gaia_agents.POLL_SECONDS),
+                                      closers=[requests.stop])
+    requests.start()
     gaia_agents.start_discovery(discovery)
     return discovery
 

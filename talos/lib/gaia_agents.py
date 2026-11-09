@@ -73,12 +73,14 @@ class AgentRun:
 class Discovery:
     """The Gaia agents this Talos runs, kept in step with Gaia's list."""
 
-    def __init__(self, gaia, template, start, poll_seconds=POLL_SECONDS, renew_seconds=RENEW_SECONDS):
+    def __init__(self, gaia, template, start, poll_seconds=POLL_SECONDS, renew_seconds=RENEW_SECONDS,
+                 closers=()):
         self.gaia = gaia                # gaia() -> a gaia-mcp client signed in as Talos' service client
         self.template = template
         self.start = start              # start(agent) -> AgentRun; TalosError when it can't run
         self.poll_seconds = poll_seconds
         self.renew_seconds = renew_seconds
+        self.closers = list(closers)    # what else shuts down with discovery (the runtime's request listener)
         self.running = {}               # Gaia agent id -> AgentRun
         self._lock = threading.RLock()
         self._closed = False            # set by shutdown(): no agent starts after it
@@ -139,6 +141,11 @@ class Discovery:
         with self._lock:
             self._closed = True
             self.stop_all()
+        for close in self.closers:
+            try:
+                close()
+            except Exception as e:      # noqa: BLE001  (keep closing the rest)
+                log(f"stop failed: {e}")
 
     def _start(self, agent_id, row, spec):
         try:
