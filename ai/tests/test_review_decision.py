@@ -74,6 +74,8 @@ class ShipTest(unittest.TestCase):
                 mock.patch.object(ship, "cost_note", return_value=""), \
                 mock.patch.object(ship, "base_branch", return_value="dev"), \
                 mock.patch.object(ship, "_progress_file"), \
+                mock.patch.object(ship, "require_matching_workspace"), \
+                mock.patch.object(ship, "announce_checkout"), \
                 mock.patch.object(workflow, "review_decision", return_value=decision) as ask, \
                 mock.patch.object(workflow, "pr_hand_off", hand_off):
             ship.cmd_ship(args)
