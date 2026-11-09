@@ -29,14 +29,35 @@ class TalosError(Exception):
     """A step failed; the message says which and why."""
 
 
-def settings():
-    """config.json, overlaid by the engineer's config.local.json (git-ignored, written by `p4m configure`)."""
+def _env_value(path, key):
+    """One KEY from an env file (empty when the file or key is missing)."""
+    try:
+        lines = Path(path).read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return ""
+    for line in lines:
+        name, sep, value = line.strip().partition("=")
+        if sep and name.strip() == key:
+            return value.strip().strip('"').strip("'")
+    return ""
+
+
+def settings(local_dir=None):
+    """config.json, overlaid by the engineer's config.local.json (git-ignored, written by `p4m configure`).
+
+    One Gaia URL: when config.local.json has no gaiaUrl, Talos uses GAIA_URL from gaia-mcp.env (the one the agents
+    use) before the config.json default."""
+    local_dir = Path(local_dir) if local_dir else LOCAL_DIR
     with open(CONFIG_FILE, encoding="utf-8") as f:
         cfg = json.load(f)
-    local = LOCAL_DIR / "talos" / "config.local.json"
+    local_cfg = {}
+    local = local_dir / "talos" / "config.local.json"
     if local.exists():
         with open(local, encoding="utf-8") as f:
-            cfg.update(json.load(f))
+            local_cfg = json.load(f)
+    cfg.update(local_cfg)
+    if not local_cfg.get("gaiaUrl"):
+        cfg["gaiaUrl"] = _env_value(local_dir / "gaia-mcp" / "gaia-mcp.env", "GAIA_URL") or cfg.get("gaiaUrl")
     return cfg
 
 
