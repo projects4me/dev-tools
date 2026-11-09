@@ -12,7 +12,7 @@ the `dev-tools/gaia-mcp` client (same credentials and code as the `gaia` MCP ser
 | Command | Replaces |
 |---|---|
 | `start <repo> <issue>` | fetch, checkout dev, ff-merge, create `claude-issue-N`, set `in_progress`, start timer, compact issue view |
-| `sync <repo>` | fetch + fast-forward local dev after a merge |
+| `sync <repo>` / `sync --all [--check]` | fast-forward local dev (main for dev-tools) to origin for one repo or for gaia, prometheus, hermes, ares and dev-tools, **without switching branches or touching the working tree**: a checkout on an issue branch updates `dev` with `git fetch origin dev:dev`; a clean checkout of `dev` is fast-forwarded; a dirty or diverged repo is skipped with a `WARNING` and the others still sync. In a Talos run worktree it only fetches. `ai merge` syncs the merged repo, and `talos run` runs `sync --all` every 10 minutes. `--check` only prints `behind origin/<base>: N` per repo. Agents that read merged code should read `origin/dev` after a fetch, not local `dev` |
 | `issue <n> [--full]` | plain-text issue view (no HTML/JSON), last 10 comments |
 | `time <issue> "<what>"` | logs **actual elapsed** time since the issue's last checkpoint ("Actual elapsed HH:MM-HH:MM PKT: …") and moves the checkpoint |
 | `timer <issue>` | reset the checkpoint (e.g. when resuming an issue later) |
@@ -78,7 +78,7 @@ Repos: `gaia`, `prometheus`, `hermes`, `ares` (base `dev`), `dev-tools` and `pr4
 … implement; ai test gaia --changed while fixing …
 /ship-issue 3960                       # test-runner (full ai test), design-reviewer, ai ship (after approval)
 /address-review gaia 180 3960          # after the reviewer comments
-dev-tools/ai/ai sync gaia              # after merge (start does this too)
+dev-tools/ai/ai sync --all              # every repo's dev to origin, branches untouched (merge and Talos do this too)
 ```
 
 ## Running tests safely

@@ -36,8 +36,10 @@ def build_parser():
     sp.add_argument("--since", metavar="DATE", help="sessions started on or after YYYY-MM-DD")
     sp.add_argument("--json", action="store_true", help="machine-readable report")
 
-    sp = add("sync", workflow.cmd_sync, "fetch origin and fast-forward local dev (after a merge)")
-    sp.add_argument("repo", choices=repos)
+    sp = add("sync", workflow.cmd_sync, "fast-forward local dev (main for dev-tools) to origin without switching branches")
+    sp.add_argument("repo", nargs="?", choices=repos)
+    sp.add_argument("--all", action="store_true", help="every repo (gaia, prometheus, hermes, ares, dev-tools)")
+    sp.add_argument("--check", action="store_true", help="only show how far each local base branch is behind origin")
 
     sp = add("issue", workflow.cmd_issue, "compact issue view (plain text, recent comments)")
     sp.add_argument("issue", type=int)
