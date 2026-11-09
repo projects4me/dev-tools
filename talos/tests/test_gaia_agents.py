@@ -351,5 +351,88 @@ class RuntimeStartTest(unittest.TestCase):
         agent_listener.return_value.stop.assert_called_once_with()
 
 
+class IsolationTest(unittest.TestCase):
+    """The local agents must keep running whatever Gaia agent discovery does: a failure is only logged."""
+
+    def setUp(self):
+        self.fake = FakeGaia()
+        self.fake.secrets["svc-1"] = ["secret-1"]
+        self.fake.agents = {"a-1": {"name": "Agent Hera", "userId": "u-1", "spec": spec()}}
+        self.g = service_client.service_gaia("https://gaia.test", "svc-1", "secret-1")
+        self.g._http = self.fake.http
+        self.identity = mock.Mock(gaia=lambda: self.g, gaia_url="https://gaia.test")
+        self.logged = []
+        for target in (talos, gaia_agents):
+            p = mock.patch.object(target, "log", side_effect=lambda m, *a: self.logged.append(m))
+            p.start()
+            self.addCleanup(p.stop)
+
+    def discover(self, identity="default", template_effect=None, args=None):
+        identity = self.identity if identity == "default" else identity
+        template_patch = mock.patch.object(talos, "load_gaia_template", **(
+            {"side_effect": template_effect} if template_effect else {"return_value": template()}))
+        with template_patch, mock.patch.object(talos.runtime_requests, "listener"),                 mock.patch.object(talos.delegated_tokens, "TokenCache"),                 mock.patch.object(talos.gaia_agents, "start_discovery"):
+            return talos._discover_gaia_agents({"hermesUrl": "http://h"}, "claude", identity,
+                                               args or mock.Mock(dry_run=False))
+
+    def test_no_template_means_no_discovery(self):
+        self.assertIsNone(self.discover(template_effect=lambda: None))
+
+    def test_a_broken_template_is_only_logged(self):
+        self.assertIsNone(self.discover(template_effect=TalosError("bad agent.local.json")))
+        self.assertIsNone(self.discover(template_effect=ValueError("not json")))
+        self.assertTrue(any("not discovered" in m or "bad agent.local.json" in m for m in self.logged))
+
+    def test_no_service_identity_means_no_discovery(self):
+        self.assertIsNone(self.discover(identity=None))
+
+    def test_a_failure_wiring_discovery_is_only_logged(self):
+        with mock.patch.object(talos.runtime_requests, "listener", side_effect=RuntimeError("boom")),                 mock.patch.object(talos, "load_gaia_template", return_value=template()),                 mock.patch.object(talos.delegated_tokens, "TokenCache"):
+            self.assertIsNone(talos._discover_gaia_agents({"hermesUrl": "h"}, "claude", self.identity,
+                                                          mock.Mock(dry_run=False)))
+        self.assertTrue(any("boom" in m for m in self.logged))
+
+    def discovery(self, start):
+        return gaia_agents.Discovery(lambda: self.g, template(), start)
+
+    def test_a_failure_listing_agents_is_raised_for_the_loop_to_log(self):
+        d = self.discovery(lambda a: None)
+        d.gaia = mock.Mock(side_effect=RuntimeError("down"))
+        stop = threading.Event()
+        clock = Clock()
+        d.renew_seconds = 0
+        calls = []
+        d.sync = lambda: (calls.append(1), stop.set(), (_ for _ in ()).throw(RuntimeError("down")))[-1]
+        d.loop(stop, clock)             # does not raise
+        self.assertEqual([1], calls)
+        self.assertTrue(any("down" in m for m in self.logged))
+
+    def test_a_spec_that_cannot_be_built_is_only_logged_and_the_rest_start(self):
+        self.fake.agents["a-2"] = {"name": "Agent Iris", "userId": "u-2", "spec": spec(rolePrompt="You are Iris.")}
+        started = []
+        d = self.discovery(lambda a: started.append(a.name) or gaia_agents.AgentRun(a, mock.Mock(), []))
+        with mock.patch.object(gaia_agents, "build", side_effect=[TalosError("bad spec"), mock.DEFAULT]) as b:
+            b.side_effect = [TalosError("bad spec"), gaia_agents.dataclasses.replace(template(), name="gaia-x",
+                                                                                   gaia_agent_id="a-2")]
+            self.assertEqual(["gaia-x"], d.sync()[0])
+        self.assertTrue(any("bad spec" in m for m in self.logged))
+
+    def test_a_start_that_raises_is_only_logged(self):
+        def start(agent):
+            raise TalosError("no hermes")
+        d = self.discovery(start)
+        self.assertEqual(([], []), d.sync())
+        self.assertEqual({}, d.running)
+
+    def test_a_lost_delegated_token_stops_only_that_agent(self):
+        token = mock.Mock(side_effect=delegated_tokens.Refused("revoked"))
+        stopped = []
+        d = self.discovery(lambda a: gaia_agents.AgentRun(a, token, [lambda: stopped.append(a.name)]))
+        d.sync()
+        d.renew()
+        self.assertEqual(["gaia-agent-hera"], stopped)
+        self.assertEqual({}, d.running)
+
+
 if __name__ == "__main__":
     unittest.main()

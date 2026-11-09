@@ -69,7 +69,7 @@ def _run(args):
         try:
             identity = service_identity.ServiceIdentity.from_settings(cfg, announce=log)
             service_identity.start_keeper(identity)
-        except TalosError as e:         # the service identity never keeps Talos from starting
+        except Exception as e:          # noqa: BLE001  (the service identity never keeps Talos from starting)
             log(f"service identity: {e}")
     log(f"starting with {len(agents)} agent(s): {', '.join(a.name for a in agents)}; claude {claude}")
     dispatchers, orchestrators, event_workers = [], [], []
@@ -103,7 +103,7 @@ def _run(args):
             log(f"not started: {e}", agent.name)
             continue
         dispatchers.append(dispatcher)
-    discovery = _gaia_agents(cfg, claude, identity, args) if not args.agent else None
+    discovery = _discover_gaia_agents(cfg, claude, identity, args) if not args.agent else None
     try:
         while True:
             time.sleep(3600)
@@ -162,6 +162,15 @@ def _start_issues_agent(agent, tracker, cfg, claude, dry_run, merge_route=None, 
     if steps and router:
         stoppers.append(lambda: router.unregister(steps))
     return dispatcher, stoppers + [listener.stop, dispatcher.stop]
+
+
+def _discover_gaia_agents(cfg, claude, identity, args):
+    """_gaia_agents, where any failure is only logged: the local agents (already started) must keep running."""
+    try:
+        return _gaia_agents(cfg, claude, identity, args)
+    except Exception as e:              # noqa: BLE001  (Gaia agents are additive; they never stop the local ones)
+        log(f"Gaia agents: not discovered: {e}")
+        return None
 
 
 def _gaia_agents(cfg, claude, identity, args):
