@@ -84,6 +84,22 @@ class AgamemnonStepTest(unittest.TestCase):
         self.assertEqual({"enabled": False, "acceptAssignmentsFrom": ["5"], "handoffTo": "5", "reviewerName": "Eng"},
                          json.loads(configure.GAIA_AGENTS_LOCAL.read_text(encoding="utf-8")))
 
+    def test_gaia_agents_step_writes_only_its_file(self):
+        configure.write_json(configure.GAIA_AGENTS_LOCAL, {"enabled": False})
+        configure.write_json(configure.AGENT_LOCAL, {"acceptAssignmentsFrom": ["5"]})
+        env = self.tools / "gaia-mcp" / "gaia.env"
+        env.parent.mkdir(parents=True, exist_ok=True)
+        env.write_bytes(b"GAIA_PASSWORD=x\n")
+        others = [configure.AGENT_LOCAL, env]
+        before = {p: p.read_bytes() for p in others}
+        answers = self.tools / "answers.json"
+        answers.write_text(json.dumps({"name": "Eng", "gaiaUserId": 5}), encoding="utf-8")
+        with mock.patch.object(configure, "ANSWERS", self.tools / "none.json"):
+            self.assertEqual(0, configure.main(["gaia-agents", "--answers", str(answers)]))
+        self.assertEqual({"enabled": False, "acceptAssignmentsFrom": ["5"], "handoffTo": "5", "reviewerName": "Eng"},
+                         json.loads(configure.GAIA_AGENTS_LOCAL.read_text(encoding="utf-8")))
+        self.assertEqual(before, {p: p.read_bytes() for p in others})
+
     def test_skip_leaves_agamemnon_disabled(self):
         configure.setup_agamemnon(dict(self.a, agamemnon=False), "5")
         self.assertFalse(configure.AGAMEMNON_LOCAL.exists())

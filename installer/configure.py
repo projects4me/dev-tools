@@ -336,10 +336,31 @@ def write_engineer_settings(a, user_id):
                 "handoffTo": user_id, "reviewerName": a["name"]})
     write_json(AGENT_LOCAL, ody)
     _ok(f"Talos acts on issues you assign and hands back to you -> {AGENT_LOCAL.relative_to(TOOLS_DIR)}")
+    write_gaia_agent_settings(a["name"], user_id)
+
+
+def write_gaia_agent_settings(name, user_id):
+    """The reviewer settings of Gaia-declared agents, merged into agents/gaia-runtime/agent.local.json."""
     gaia_agents = json.loads(GAIA_AGENTS_LOCAL.read_text(encoding="utf-8")) if GAIA_AGENTS_LOCAL.exists() else {}
-    gaia_agents.update({"acceptAssignmentsFrom": [user_id], "handoffTo": user_id, "reviewerName": a["name"]})
+    gaia_agents.update({"acceptAssignmentsFrom": [user_id], "handoffTo": user_id, "reviewerName": name})
     write_json(GAIA_AGENTS_LOCAL, gaia_agents)
     _ok(f"Gaia-declared agents hand back to you -> {GAIA_AGENTS_LOCAL.relative_to(TOOLS_DIR)}")
+
+
+def configure_gaia_agents(argv):
+    """`p4m configure gaia-agents`: only the Gaia-agent runtime settings. Name and Gaia user id default to the
+    previous configure run's answers; no credential or other config file is touched."""
+    import argparse
+    p = argparse.ArgumentParser(prog="p4m configure gaia-agents", description=configure_gaia_agents.__doc__.splitlines()[0])
+    p.add_argument("--answers", help="JSON file with name and gaiaUserId for a non-interactive run")
+    args = p.parse_args(argv)
+    answers = json.loads(Path(args.answers).read_text(encoding="utf-8")) if args.answers else None
+    previous = json.loads(ANSWERS.read_text(encoding="utf-8")) if ANSWERS.exists() else {}
+    name = ask("Your name", previous.get("name"), answers=answers, key="name")
+    user_id = str(ask("Your Projects4Me user id on this environment", previous.get("gaiaUserId"),
+                      answers=answers, key="gaiaUserId"))
+    write_gaia_agent_settings(name, user_id)
+    return 0
 
 
 def setup_agamemnon(a, user_id):
@@ -467,6 +488,8 @@ def verify(a):
 
 def main(argv=None):
     import argparse
+    if argv and argv[0] == "gaia-agents":
+        return configure_gaia_agents(argv[1:])
     p = argparse.ArgumentParser(prog="p4m configure", description=__doc__.splitlines()[0])
     p.add_argument("--answers", help="JSON file with answers (keys as in workspace.local.json plus "
                                      "agentClientId, agentClientSecret, ghToken, sshKey) for a non-interactive run")
