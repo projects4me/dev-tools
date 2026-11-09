@@ -69,6 +69,20 @@ point that file at the environment whose Hermes Talos listens to (`hermesUrl` in
 The local p4m CA comes from the system store (`p4m trust`); set `GAIA_CA_FILE` if your proxy's CA isn't there.
 Live uses a public certificate and needs nothing.
 
+## Service clients (`service_client.py`)
+
+For a service that acts as itself rather than as an agent user (Talos as a runtime: `talos/lib/service_identity.py`):
+
+- `Enrollment(gaia).request(name, kind, enrollment_token=None)` makes the anonymous enrollment request (user code,
+  expiry, poll token); `wait(requested)` polls until an admin approves (or at once with a valid enrollment token) and
+  returns `clientId`, `clientSecret` and `serviceClientId`, delivered once. Denied, expired and already-delivered
+  requests raise `GaiaError`.
+- `service_gaia(base, client_id, client_secret)` is a `Gaia` signed in with client_credentials and no user; it asks
+  for a new token when the current one expires.
+- `rotate_secret(gaia, service_client_id)` rotates the signed-in service's own secret and returns the new one.
+
+Stdlib only; errors carry Gaia's message, never the request (secrets, poll tokens).
+
 ## Notes
 
 - The Claude user must be a member of a project to create issues in it (Gaia's project-scoped ACL).

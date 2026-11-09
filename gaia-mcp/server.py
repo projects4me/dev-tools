@@ -194,6 +194,10 @@ class Gaia:
             raise GaiaError(f"Gaia {method} {path} returned {status}: {json.dumps(payload)[:1500]}", status)
         return payload
 
+    def anonymous(self, method, path, params=None, body=None):
+        """A call without a token (e.g. a service's enrollment request and poll). Returns (status, payload)."""
+        return self._http(method, path, params=params, body=body, auth=False)
+
     # -- Auth --------------------------------------------------------------------------------
 
     def token(self):
