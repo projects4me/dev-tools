@@ -71,6 +71,12 @@ class Tracker:
         env["GAIA_EMAIL"] = g.email
         return cls(agent, gaia=g, env=env)
 
+    def fresh_token(self):
+        """A newly granted delegated token for the agent's next run; returns the scope names it carries, or None
+        when the agent has no delegated token (a local agent). Raises TalosError (Refused) when Gaia says no."""
+        source = getattr(self.gaia, "token_source", None)
+        return source.fresh() if hasattr(source, "fresh") else None
+
     def _call(self, fn, *args, **kwargs):
         with self._lock:
             try:

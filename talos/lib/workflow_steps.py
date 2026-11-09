@@ -184,6 +184,13 @@ class StepRunner:
         if refusal:
             return self._report(sid, "failed", f"<p>{html.escape(refusal)}</p>")
         try:
+            scopes = self.tracker.fresh_token() if hasattr(self.tracker, "fresh_token") else None
+        except TalosError as e:
+            return self._report(sid, "failed", f"<p>Talos could not get a delegated token for the run: "
+                                               f"{html.escape(str(e))}</p>")
+        if scopes is not None:      # names only, never the token: a 403 can be traced to the scopes in use
+            log(f"step {sid} runs on a token with scopes: {', '.join(scopes) or '(none reported)'}", self.agent.name)
+        try:
             spec = self.tracker.agent_spec(str(step.get("agentId") or ""))
         except TalosError as e:
             return self._report(sid, "failed", f"<p>Talos could not read the agent spec: {html.escape(str(e))}</p>")

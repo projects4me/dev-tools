@@ -150,7 +150,8 @@ class DelegationTest(unittest.TestCase):
         self.assertEqual([("a-1", "Agent Hera", "u-1")], [(a["id"], a["name"], a["userId"]) for a in agents])
 
     def test_a_delegated_token_is_got_with_the_runtimes_own_credentials(self):
-        self.assertEqual({"accessToken": "agent-a-1-1", "expiresIn": 3600},
+        self.fake.agents["a-1"]["delegationScopes"] = ["issue.read", "issuestatus.read"]
+        self.assertEqual({"accessToken": "agent-a-1-1", "expiresIn": 3600, "scopes": ["issue.read", "issuestatus.read"]},
                          service_client.delegated_token(self.g, "a-1"))
         self.assertIn(("POST", "token", False), self.fake.calls)
 

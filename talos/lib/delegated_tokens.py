@@ -31,7 +31,7 @@ class TokenCache:
         self.grant = grant              # grant(agent_id) -> {"accessToken", "expiresIn"}, as service_client returns
         self.clock = clock
         self.renew_before = renew_before
-        self._tokens = {}               # agent id -> (token, expires at)
+        self._tokens = {}               # agent id -> (token, expires at, scope names)
         self._lock = threading.Lock()
 
     @classmethod
@@ -56,8 +56,22 @@ class TokenCache:
                 if cached and now < cached[1]:
                     return cached[0]        # Gaia unreachable for a moment: the next call tries again
                 raise TalosError(f"no delegated token for agent {agent_id}: {e}")
-            self._tokens[agent_id] = (granted["accessToken"], now + granted["expiresIn"])
+            self._tokens[agent_id] = (granted["accessToken"], now + granted["expiresIn"],
+                                      list(granted.get("scopes") or []))
             return granted["accessToken"]
+
+    def fresh(self, agent_id):
+        """A newly granted token, whatever the cache holds: the agent's delegation scopes may have changed since the
+        cached token was issued (Gaia fixes a token's scopes when it issues it). Returns the scope names it carries."""
+        self.forget(agent_id)
+        self.token(agent_id)
+        return self.scopes(agent_id)
+
+    def scopes(self, agent_id):
+        """The scope names the agent's cached token carries (names only)."""
+        with self._lock:
+            cached = self._tokens.get(agent_id)
+            return list(cached[2]) if cached else []
 
     def forget(self, agent_id):
         with self._lock:
@@ -85,6 +99,16 @@ class AgentToken:
                 write_token(self.path, token, self.restrict)
                 self._written = token
         return token
+
+    def fresh(self):
+        """Replace the token with a newly granted one (written to the file); returns the scope names it carries."""
+        scopes = self.cache.fresh(self.agent_id)
+        self()
+        return scopes
+
+    def drop(self):
+        """Forget the cached token: the next call gets a new grant (the agent's delegation scopes changed)."""
+        self.cache.forget(self.agent_id)
 
     def close(self):
         """The agent stopped: drop its cached token and grant no new one. The file keeps the last token, so a run in
