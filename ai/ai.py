@@ -176,6 +176,14 @@ def build_parser():
              "the tier, the next free slot and the deferred PRs")
     sp.add_argument("--json", action="store_true")
 
+    sp = add("rabbit-off", rabbitbudget.cmd_off, "(ai rabbit off) stop every agent CodeRabbit submission: "
+             "rabbit request answers human and defers nothing until `ai rabbit on`")
+    sp.add_argument("--reason", default="", help="why it is off (shown by rabbit budget and in the request reason)")
+
+    sp = add("rabbit-on", rabbitbudget.cmd_on, "(ai rabbit on) allow CodeRabbit submissions again; clears the "
+             "deferred list unless --keep-deferred")
+    sp.add_argument("--keep-deferred", action="store_true", help="keep the deferred PRs for the backlog sweep")
+
     sp = add("rabbit-digest", rabbitdigest.cmd_digest, "(ai rabbit digest) CodeRabbit's findings across Agent Odysseus "
              "PRs, categorised, as a markdown report")
     sp.add_argument("--repo", choices=repos, help="one repo (default: every codeRabbitRepos entry)")
@@ -216,7 +224,8 @@ def build_parser():
 
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else list(argv)
-    if argv[:2] in (["rabbit", "digest"], ["rabbit", "request"], ["rabbit", "budget"]):  # `ai rabbit <sub>` is `rabbit-<sub>`
+    if argv[:2] in (["rabbit", "digest"], ["rabbit", "request"], ["rabbit", "budget"], ["rabbit", "off"],
+                    ["rabbit", "on"]):  # `ai rabbit <sub>` is `rabbit-<sub>`
         argv = [f"rabbit-{argv[1]}", *argv[2:]]
     args = build_parser().parse_args(argv)
     try:

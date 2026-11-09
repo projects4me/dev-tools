@@ -114,3 +114,46 @@ class LedgerTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SwitchTest(LedgerTest):
+    def test_missing_file_means_on(self):
+        self.assertEqual(rb.switch(), {"off": False, "since": None, "reason": None})
+
+    def test_round_trip(self):
+        rb.turn_off("rate limited")
+        sw = rb.switch()
+        self.assertTrue(sw["off"])
+        self.assertEqual(sw["reason"], "rate limited")
+        self.assertRegex(sw["since"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
+        rb.turn_on()
+        self.assertFalse(rb.switch()["off"])
+
+    def test_request_while_off_is_human_for_every_source(self):
+        rb.turn_off("rate limited")
+        for source in rb.SOURCES:
+            r = rb.request("gaia", 5, source, files=50, rereview=True, issue=9)
+            self.assertEqual(r["decision"], "human")
+            self.assertEqual(r["reason"], "CodeRabbit is off (rate limited)")
+        self.ody.assert_not_called()
+        self.assertEqual(rb._read(), {"sent": [], "deferred": []})
+
+    def test_on_clears_deferred_by_default(self):
+        self.seed(deferred=[{"at": "x", "repo": "gaia", "pr": 1, "issue": 2, "files": 1}])
+        rb.turn_off()
+        self.assertEqual(rb.turn_on(), 1)
+        self.assertEqual(rb._read()["deferred"], [])
+
+    def test_on_keep_deferred(self):
+        self.seed(deferred=[{"at": "x", "repo": "gaia", "pr": 1, "issue": 2, "files": 1}])
+        rb.turn_off()
+        self.assertEqual(rb.turn_on(keep_deferred=True), 0)
+        self.assertEqual(len(rb._read()["deferred"]), 1)
+
+    def test_budget_reports_switch(self):
+        self.assertFalse(rb.budget()["off"])
+        rb.turn_off("why")
+        b = rb.budget()
+        self.assertTrue(b["off"])
+        self.assertEqual(b["offReason"], "why")
+        self.assertEqual(b["offSince"], rb.switch()["since"])
