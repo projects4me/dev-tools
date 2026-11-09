@@ -192,6 +192,20 @@ class StepRunnerTest(unittest.TestCase):
         self.assertEqual(tracker.reports, [("s-1", "done", "")])
         self.assertEqual(self.dispatcher.released, [42])
 
+    def test_each_step_run_starts_on_a_fresh_token_and_logs_its_scopes(self):
+        tracker = StepTracker(make_issue())
+        tracker.fresh_token = mock.Mock(return_value=["issue.read", "issuestatus.read"])
+        with mock.patch.object(workflow_steps, "log") as log:
+            self.assertEqual(self.runner(tracker=tracker).handle("s-1"), "done")
+        tracker.fresh_token.assert_called_once_with()
+        self.assertTrue(any("issue.read, issuestatus.read" in c.args[0] for c in log.call_args_list))
+
+    def test_a_step_whose_fresh_token_is_refused_is_reported_failed(self):
+        tracker = StepTracker(make_issue())
+        tracker.fresh_token = mock.Mock(side_effect=TalosError("Gaia refused a token"))
+        self.assertEqual(self.runner(tracker=tracker).handle("s-1"), "failed")
+        self.assertEqual(self.dispatcher.runs, [])
+
     def test_a_stopped_runner_takes_no_new_steps_and_leaves_them_pending(self):
         steps = self.runner()
         steps.stop()

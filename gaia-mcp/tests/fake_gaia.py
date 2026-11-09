@@ -33,7 +33,8 @@ class FakeGaia:
         if method == "PATCH" and path.startswith("serviceclient/"):
             return self._rotate(path.split("/", 1)[1], body)
         if method == "GET" and path == "agent":
-            return 200, {"data": [{"type": "agent", "id": i, "attributes": {"name": a["name"], "userId": a["userId"]}}
+            return 200, {"data": [{"type": "agent", "id": i, "attributes": {"name": a["name"], "userId": a["userId"],
+                                                                       "delegationScopes": a.get("delegationScopes")}}
                                   for i, a in self.agents.items() if a.get("delegable", True)]}
         if method == "GET" and path.startswith("agentspec/"):
             agent = self.agents.get(path.split("/", 1)[1])
@@ -59,7 +60,7 @@ class FakeGaia:
             return 401, {"errors": [{"detail": "The agent does not exist, is not active or cannot be delegated."}]}
         self.delegations += 1
         return 200, {"access_token": f"agent-{form['agent_id']}-{self.delegations}", "expires_in": 3600,
-                     "token_type": "Bearer"}
+                     "token_type": "Bearer", "scope": " ".join(agent.get("delegationScopes") or [])}
 
     def _request(self, attributes):
         token = attributes.get("enrollmentToken")

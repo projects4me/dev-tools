@@ -89,7 +89,9 @@ agent.json stays for Talos' own agents (Odysseus, Nestor, Agamemnon), which keep
   takes work from Gaia's workflow run requests only (see Workflow steps). `"enabled": false` in the overlay runs none.
 - **Delegated tokens** (`lib/delegated_tokens.py`). Each agent acts on its own token from the agent-delegation grant
   (Talos' client id and secret plus the `agent_id`; one hour, no refresh token), cached and renewed 5 minutes before
-  it expires; tokens are checked every minute. Talos' own Gaia calls and the agent's Hermes connection use it. Its
+  it expires; tokens are checked every minute. Gaia fixes a token's scopes when it issues it, so each workflow step run starts on a newly granted token
+  (its scope names are logged, never the token), and discovery drops an agent's cached token when its
+  `delegationScopes` change. Talos' own Gaia calls and the agent's Hermes connection use it. Its
   runs' child processes (the gaia MCP server, `ai`) get `GAIA_URL`, `GAIA_EMAIL` (the agent user's, read once on
   the token) and `GAIA_TOKEN_FILE`, never a secret: the token is written, owner-only, to
   `state/<agent>/gaia-token/token`, which gaia-mcp reads on every call, so a run longer than an hour keeps working.

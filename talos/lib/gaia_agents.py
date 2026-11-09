@@ -9,6 +9,7 @@ emptied) stops taking new runs while a run in progress finishes, and a spec edit
 are checked every minute; a refused token stops the agent until discovery lists it and Gaia grants it again."""
 
 import dataclasses
+import json
 import re
 import sys
 import threading
@@ -52,6 +53,17 @@ def keep_visible(agent, visible, skipped):
     return dataclasses.replace(agent, projects={n: r for n, r in agent.projects.items() if n in visible})
 
 
+def _scopes(row):
+    """The agent's delegationScopes from the list row, comparable (a list or a JSON string, in any order)."""
+    value = row.get("delegationScopes")
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except ValueError:
+            value = value.split()
+    return sorted(str(s) for s in value) if isinstance(value, (list, tuple)) else value
+
+
 def build(template, row, spec, name):
     """The Agent for a listed Gaia agent (`row`: id, name, userId) and its spec."""
     return dataclasses.replace(template, name=name, display_name=str(row.get("name") or name),
@@ -68,6 +80,7 @@ class AgentRun:
     stoppers: list
     projects: tuple = ()                # the template projects it started on
     visible: object = None              # visible() -> the template projects visible now (None: not re-checked)
+    scopes: object = None               # the agent's delegationScopes as discovery last saw them
 
     def renew(self):
         self.token()
@@ -124,6 +137,7 @@ class Discovery:
                 if agent_id in self.running and self._membership_changed(agent_id):
                     stopped.append(self._stop(agent_id, "its visible projects changed"))
                 if agent_id in self.running:
+                    self._check_scopes(self.running[agent_id], row)
                     self._update(self.running[agent_id].agent, spec)
                 else:
                     name = self._start(agent_id, row, spec)
@@ -166,6 +180,7 @@ class Discovery:
             taken = {r.agent.name for r in self.running.values()}
             agent = build(self.template, row, spec, agent_name(row.get("name") or agent_id, agent_id, taken))
             self.running[agent_id] = self.start(agent)
+            self.running[agent_id].scopes = _scopes(row)
         except TalosError as e:         # includes a refused token: discovery tries again next time
             log(f"Gaia agent '{row.get('name')}' not started: {e}")
             return None
@@ -183,6 +198,15 @@ class Discovery:
         except TalosError as e:
             log(f"project visibility not checked: {e}", run.agent.name)
             return False
+
+    def _check_scopes(self, run, row):
+        """Gaia fixes a token's scopes when it issues it: when the agent's delegationScopes changed, forget its cached
+        token so the next grant carries the new scopes."""
+        scopes = _scopes(row)
+        if scopes != run.scopes:
+            run.scopes = scopes
+            run.token.drop()
+            log("delegation scopes changed: the cached token is dropped", run.agent.name)
 
     def _update(self, agent, spec):
         try:

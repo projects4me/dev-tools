@@ -72,6 +72,14 @@ class TokenCacheTest(unittest.TestCase):
         self.assertEqual("t2", self.cache.token("a-1"))
         self.assertEqual(["a-1", "a-1"], self.grants)
 
+    def test_a_fresh_token_is_a_new_grant_with_its_scopes_whatever_is_cached(self):
+        self.reply = lambda agent_id: {"accessToken": f"t{len(self.grants)}", "expiresIn": 3600,
+                                       "scopes": [f"scope{len(self.grants)}"]}
+        self.assertEqual("t1", self.cache.token("a-1"))
+        self.assertEqual(["scope2"], self.cache.fresh("a-1"))
+        self.assertEqual("t2", self.cache.token("a-1"))
+        self.assertEqual(["a-1", "a-1"], self.grants)
+
     def test_each_agent_has_its_own_token(self):
         self.assertNotEqual(self.cache.token("a-1"), self.cache.token("a-2"))
 
@@ -277,6 +285,17 @@ class DiscoveryTest(unittest.TestCase):
         self.assertEqual(([], []), self.discovery.sync())
         self.assertTrue(self.discovery.running["a-1"].agent.role_prompt.startswith("You are Hera."))
         self.assertNotIn("a-3", self.discovery.running)
+
+    def test_changed_delegation_scopes_drop_the_cached_token(self):
+        self.fake.agents["a-1"]["delegationScopes"] = ["issue.read"]
+        self.discovery.sync()
+        run = self.discovery.running["a-1"]
+        self.discovery.sync()
+        run.token.drop.assert_not_called()          # same scopes: the cached token stays
+        self.fake.agents["a-1"]["delegationScopes"] = ["issue.read", "issuestatus.read"]
+        self.discovery.sync()
+        run.token.drop.assert_called_once_with()
+        self.discovery.running["a-2"].token.drop.assert_not_called()
 
     def test_a_list_gaia_cant_give_changes_nothing(self):
         self.discovery.sync()

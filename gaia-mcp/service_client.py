@@ -140,7 +140,7 @@ def delegable_agents(gaia):
 
 def delegated_token(gaia, agent_id):
     """A token acting as the agent, got with the runtime's own client credentials (the agent-delegation grant).
-    Returns {accessToken, expiresIn}; raises DelegationRefused when Gaia says no (400, 401, 403)."""
+    Returns {accessToken, expiresIn, scopes}; raises DelegationRefused when Gaia says no (400, 401, 403)."""
     status, payload = gaia.anonymous("POST", "token", form={
         "grant_type": DELEGATION_GRANT, "agent_id": agent_id,
         "client_id": gaia.client_id, "client_secret": gaia.client_secret})
@@ -148,4 +148,5 @@ def delegated_token(gaia, agent_id):
         raise DelegationRefused(f"Gaia refused a token for agent {agent_id} ({_error_text(status, payload)})", status)
     if status != 200 or not payload.get("access_token"):
         raise GaiaError(f"Gaia's delegation grant failed ({_error_text(status, payload)})", status)
-    return {"accessToken": payload["access_token"], "expiresIn": int(payload.get("expires_in") or 3600)}
+    return {"accessToken": payload["access_token"], "expiresIn": int(payload.get("expires_in") or 3600),
+            "scopes": str(payload.get("scope") or "").split()}
