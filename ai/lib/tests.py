@@ -24,7 +24,8 @@ from . import baseline, results, testmap
 from .common import (STATE_DIR, WORKSPACE, base_branch, checkout_state_file, config, git, kill_tree, p4m, repo_dir,
                      say)
 
-PHPUNIT_FOLDERS = ("tests/libraries/security", "tests/libraries/utils", "tests/services", "tests/tools")
+PHPUNIT_FOLDERS = ("tests/libraries/security", "tests/libraries/utils", "tests/libraries/authorization",
+                  "tests/models", "tests/services", "tests/tools")
 
 
 @dataclass
