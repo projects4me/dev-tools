@@ -76,7 +76,7 @@ class DispatcherTest(unittest.TestCase):
         for p in self.patches:
             p.stop()
 
-    def dispatch(self, issue, outcomes, holder=None, refresh_spec=None, **agent_overrides):
+    def dispatch(self, issue, outcomes, holder=None, **agent_overrides):
         tracker = StubTracker(issue)
         replies = iter(outcomes)
 
@@ -95,7 +95,7 @@ class DispatcherTest(unittest.TestCase):
 
         with mock.patch.object(dispatcher_mod.runner, "run", fake_run), \
                 mock.patch.object(dispatcher_mod.runner, "build_command", fake_build):
-            d = dispatcher_mod.Dispatcher(make_agent(**agent_overrides), tracker, "claude", refresh_spec=refresh_spec)
+            d = dispatcher_mod.Dispatcher(make_agent(**agent_overrides), tracker, "claude")
             if holder is not None:
                 holder["d"] = d
             return d.handle(42), tracker
@@ -250,15 +250,6 @@ class DispatcherTest(unittest.TestCase):
         self.assertEqual(calls, [])                      # nothing is read when queueing
         d.tracker.issue = lambda n: make_issue(priority="blocker" if n == 1 else "low")
         self.assertEqual(d._queue.get(d._rank)[0], 1)    # raised while it waited
-
-    def test_gaia_spec_is_read_again_before_the_run(self):
-        holder = {}
-
-        def refresh():            # Gaia's current spec: a new model since the agent started
-            holder["d"].agent.model_default = "claude-opus-5-5"
-
-        self.dispatch(make_issue(), [result("done")], holder=holder, refresh_spec=refresh)
-        self.assertEqual(self.models, ["claude-opus-5-5"])
 
     def test_warm_session_is_resumed_and_run_cost_is_incremental(self):
         recent = dispatcher_mod._iso(dispatcher_mod._now() - timedelta(minutes=10))

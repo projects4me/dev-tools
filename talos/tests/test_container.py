@@ -136,6 +136,18 @@ class ContainerRunnerTest(unittest.TestCase):
         self.assertEqual(env["GAIA_EMAIL"], "agent@b")
         self.assertNotIn("GAIA_PASSWORD", cmd)
 
+    def test_a_gaia_declared_agent_gets_its_tracker_settings_and_token_folder(self):
+        token = self.tmp / "state" / "gaia-hera" / "gaia-token" / "token"
+        agent = make_agent(env={}, gaia_env="", gaia_agent_id="a-1",
+                           runner={"type": "container", "image": "p4m-talos-runner"})
+        values, files = container.ContainerRunner(agent).environment(job({
+            "GAIA_URL": "https://gaia", "GAIA_EMAIL": "hera@b", "GAIA_TOKEN_FILE": str(token),
+            "GAIA_PASSWORD": "engineer"}))
+        self.assertEqual((values["GAIA_URL"], values["GAIA_EMAIL"]), ("https://gaia", "hera@b"))
+        self.assertEqual(values["GAIA_TOKEN_FILE"], container.GAIA_TOKEN_DIR + "/token")
+        self.assertEqual(files[str(token.parent)], container.GAIA_TOKEN_DIR)
+        self.assertNotIn("GAIA_PASSWORD", values)
+
     def test_a_missing_key_file_fails_the_run(self):
         with self.assertRaises(TalosError):
             self.execute(job({"ODYSSEUS_SSH_KEY": str(self.tmp / "missing")}))

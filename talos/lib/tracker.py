@@ -32,21 +32,44 @@ def read_env_file(path):
 class Tracker:
     """Gaia as one agent. Thread-safe: the listener and the worker share it."""
 
-    def __init__(self, agent):
+    def __init__(self, agent, gaia=None, env=None):
+        """As the agent in its gaiaEnv file, or on a ready client (`gaia`) whose child-process settings are `env`."""
         self.agent = agent
-        self.env = {k: v for k, v in read_env_file(agent.gaia_env).items() if k.startswith("GAIA_")}
-        g = gaia_mcp.Gaia()
-        g.base = self.env.get("GAIA_URL", g.base).rstrip("/")
-        g.email = self.env.get("GAIA_EMAIL", "")
-        g.password = self.env.get("GAIA_PASSWORD", "")
-        g.client_id = self.env.get("GAIA_CLIENT_ID", g.client_id)
-        g.client_secret = self.env.get("GAIA_CLIENT_SECRET", "")
-        if self.env.get("GAIA_CA_FILE"):
-            g.ssl = ssl.create_default_context(cafile=self.env["GAIA_CA_FILE"])
-        self.gaia = g
-        self.tools = gaia_mcp.Tools(g)
+        if gaia is None:
+            env = {k: v for k, v in read_env_file(agent.gaia_env).items() if k.startswith("GAIA_")}
+            gaia = gaia_mcp.Gaia()
+            gaia.base = env.get("GAIA_URL", gaia.base).rstrip("/")
+            gaia.email = env.get("GAIA_EMAIL", "")
+            gaia.password = env.get("GAIA_PASSWORD", "")
+            gaia.client_id = env.get("GAIA_CLIENT_ID", gaia.client_id)
+            gaia.client_secret = env.get("GAIA_CLIENT_SECRET", "")
+            if env.get("GAIA_CA_FILE"):
+                gaia.ssl = ssl.create_default_context(cafile=env["GAIA_CA_FILE"])
+        self.env = env
+        self.gaia = gaia
+        self.tools = gaia_mcp.Tools(gaia)
         self._lock = threading.RLock()
         self._milestones = {}            # project -> (names, read at)
+
+    @classmethod
+    def delegated(cls, agent, gaia_url, token):
+        """Gaia as a Gaia-declared agent, on its delegated token (delegated_tokens.AgentToken): Talos' own calls ask
+        the token for it, child processes read its file (GAIA_TOKEN_FILE). The agent's user is read once on it, for
+        `user_id()` here and GAIA_EMAIL there (gaia-mcp finds the signed-in user by email)."""
+        g = gaia_mcp.Gaia()
+        g.base = gaia_url.rstrip("/")
+        g.email = g.password = g.client_secret = ""
+        g.token_file, g.token_source = None, token
+        env = {"GAIA_URL": g.base, "GAIA_TOKEN_FILE": str(token.path)}
+        try:
+            users = g.find("user", f"(User.id : {agent.gaia_user_id})", limit=1)
+        except gaia_mcp.GaiaError as e:
+            raise TalosError(f"cannot read the agent's user: {e}")
+        if not users or not users[0].get("email"):
+            raise TalosError(f"the agent's user {agent.gaia_user_id} is not readable on its delegated token")
+        g.user, g.email = users[0], str(users[0]["email"])
+        env["GAIA_EMAIL"] = g.email
+        return cls(agent, gaia=g, env=env)
 
     def _call(self, fn, *args, **kwargs):
         with self._lock:
@@ -62,10 +85,6 @@ class Tracker:
 
     def user_id(self):
         return str(self._call(self.gaia.me)["id"])
-
-    def agent_spec(self, name_or_id):
-        """A Gaia agent's spec (role prompt, model config, limits), read as this agent."""
-        return self._call(self.gaia.agent_spec, name_or_id)
 
     def project_ids(self):
         """Project name -> id for the agent's configured projects."""

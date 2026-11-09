@@ -49,7 +49,7 @@ class Dispatcher:
     slot."""
 
     def __init__(self, agent, tracker, claude, dry_run=False, mcp=None, collector=None, merge_route=None,
-                 refresh_spec=None, docker_free=None, idle_free=None):
+                 docker_free=None, idle_free=None):
         self.agent = agent
         self.tracker = tracker
         self.claude = claude
@@ -58,7 +58,6 @@ class Dispatcher:
         self.collector = collector      # collector(issue or None): gc of finished issues, run by the release worker
         self.idle_free = idle_free      # idle_free(): stops idle test containers (docker_free idle rule)
         self._idle_due = 0.0            # time.monotonic() of the next idle sweep
-        self.refresh_spec = refresh_spec    # re-reads the agent's Gaia spec before each run (agent_spec.follow)
         self.runner = runner.for_agent(agent)
         self.user_id = tracker.user_id()
         self._queue = pool.RunQueue()
@@ -300,8 +299,6 @@ class Dispatcher:
     def _work(self, number, issue, decision, action, review=None):
         """Prepare the workspace and run the action, or a bot round when `review` is the record it runs for."""
         bot_round = bool(review)
-        if self.refresh_spec:               # Gaia edits to the role prompt, model and limits apply from this run
-            self.refresh_spec()
         state = sessions.get(self.agent.name, number)
         session_id, why = policy.resume_session(action, state, _now(), self.agent.resume_max_idle_minutes)
         if session_id and not self.runner.resumable:

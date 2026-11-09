@@ -14,6 +14,7 @@ from lib import policy, registry  # noqa: E402
 from lib.config import TalosError  # noqa: E402
 
 ODYSSEUS = Path(__file__).resolve().parent.parent / "agents" / "odysseus"
+SHIPPED_TEMPLATE = registry.GAIA_TEMPLATE
 
 
 class RegistryTest(unittest.TestCase):
@@ -105,43 +106,62 @@ class RegistryTest(unittest.TestCase):
             registry.load_agent(self.folder)
         self.assertIn("GAIA_EMAIL", str(e.exception))
 
-    def gaia_agent_json(self, **changes):
-        raw = json.loads((self.folder / "agent.json").read_text(encoding="utf-8"))
-        raw.pop("model", None), raw.pop("rolePrompt", None)
-        raw.update(gaiaAgent="Agent Achilles", **changes)
-        (self.folder / "agent.json").write_text(json.dumps(raw), encoding="utf-8")
-        (self.local / "agent.local.json").write_text(json.dumps(
-            {"acceptAssignmentsFrom": ["7"], "handoffTo": "7"}), encoding="utf-8")
-
-    def test_agent_without_gaia_agent_takes_role_prompt_and_model_from_agent_json(self):
-        (self.local / "agent.local.json").write_text(json.dumps(
-            {"acceptAssignmentsFrom": ["7"], "handoffTo": "7"}), encoding="utf-8")
+    def test_agent_json_sets_role_prompt_and_model_and_is_not_gaia_declared(self):
+        self.overlay()
         agent = registry.load_agent(self.folder)
-        self.assertEqual(agent.gaia_agent, "")
+        self.assertEqual(agent.gaia_agent_id, "")
         self.assertEqual(agent.role_prompt, (ODYSSEUS / "role.md").read_text(encoding="utf-8"))
         self.assertTrue(agent.model_default)
 
-    def test_gaia_agent_needs_no_role_prompt_or_model_and_keeps_local_settings(self):
-        self.gaia_agent_json()
-        agent = registry.load_agent(self.folder)
-        self.assertEqual((agent.gaia_agent, agent.role_prompt, agent.model_default), ("Agent Achilles", "", ""))
-        self.assertTrue(agent.allowed_tools)
-        self.assertTrue(agent.projects)
-
-    def test_gaia_agent_with_role_prompt_or_model_in_agent_json_is_refused(self):
-        self.gaia_agent_json(model={"default": "sonnet"})
-        with self.assertRaisesRegex(TalosError, "gaiaAgent takes model from Gaia"):
+    def test_gaia_agent_in_agent_json_is_refused_with_where_it_went(self):
+        self.overlay(gaiaAgent="Agent Hera")
+        with self.assertRaisesRegex(TalosError, "gaiaAgent was removed.*Agents declared in Gaia"):
             registry.load_agent(self.folder)
 
-    def test_gaia_agent_is_for_issues_agents_only(self):
-        for kind in ("ideas", "events", "orchestrator"):
-            self.gaia_agent_json(kind=kind)
-            with self.assertRaisesRegex(TalosError, "issues agents only"):
-                registry.load_agent(self.folder)
+    def gaia_template(self, raw=None, local=None):
+        """Point the registry at a template (the shipped one when `raw` is None) and its agent.local.json."""
+        folder = Path(tempfile.mkdtemp()) / "gaia-runtime"
+        folder.mkdir()
+        path = folder / "template.json"
+        if raw is None:
+            shutil.copy(SHIPPED_TEMPLATE, path)
+        elif raw is not False:
+            path.write_text(json.dumps(raw), encoding="utf-8")
+        overlay = registry.LOCAL_DIR / "talos" / "agents" / "gaia-runtime"
+        overlay.mkdir(parents=True, exist_ok=True)
+        if local is not None:
+            (overlay / "agent.local.json").write_text(json.dumps(local), encoding="utf-8")
+        patcher = mock.patch.object(registry, "GAIA_TEMPLATE", path)
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
-    def test_shipped_agents_are_configured_in_agent_json(self):
-        for path in (ODYSSEUS.parent).glob("*/agent.json"):
-            self.assertNotIn("gaiaAgent", json.loads(path.read_text(encoding="utf-8")), path.parent.name)
+    def test_the_shipped_template_makes_workflow_agents_whose_identity_comes_from_gaia(self):
+        self.gaia_template(local={"acceptAssignmentsFrom": ["7"], "handoffTo": "7", "reviewerName": "Ayesha"})
+        template = registry.load_gaia_template()
+        self.assertEqual((template.kind, template.dispatch, template.gaia_env), ("issues", "workflow", ""))
+        self.assertEqual((template.role_prompt, template.model_default), ("", ""))
+        self.assertEqual((template.handoff_to, template.reviewer_name), ("7", "Ayesha"))
+        self.assertTrue(template.projects)
+        self.assertTrue(template.allowed_tools)
+
+    def test_no_template_or_a_disabled_one_runs_no_gaia_agents(self):
+        self.gaia_template(raw=False)
+        self.assertIsNone(registry.load_gaia_template())
+        self.gaia_template(local={"acceptAssignmentsFrom": ["7"], "handoffTo": "7", "enabled": False})
+        self.assertIsNone(registry.load_gaia_template())
+
+    def test_a_template_may_not_set_what_gaia_owns(self):
+        for key, value in (("model", {"default": "sonnet"}), ("rolePrompt", "role.md"), ("gaiaEnv", "x.env"),
+                           ("name", "hera")):
+            self.gaia_template(raw={"projects": {"A Gaia": "gaia"}, key: value},
+                               local={"acceptAssignmentsFrom": ["7"], "handoffTo": "7"})
+            with self.assertRaisesRegex(TalosError, f"{key} come from Gaia"):
+                registry.load_gaia_template()
+
+    def test_a_template_needs_a_reviewer(self):
+        self.gaia_template(local={"acceptAssignmentsFrom": [], "handoffTo": ""})
+        with self.assertRaisesRegex(TalosError, "p4m configure"):
+            registry.load_gaia_template()
 
     def test_runner_is_local_unless_a_container_is_configured(self):
         local = {"acceptAssignmentsFrom": ["7"], "handoffTo": "7"}

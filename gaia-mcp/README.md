@@ -80,6 +80,13 @@ For a service that acts as itself rather than as an agent user (Talos as a runti
 - `service_gaia(base, client_id, client_secret)` is a `Gaia` signed in with client_credentials and no user; it asks
   for a new token when the current one expires.
 - `rotate_secret(gaia, service_client_id)` rotates the signed-in service's own secret and returns the new one.
+- `delegable_agents(gaia)` lists the agents a runtime may run; `delegated_token(gaia, agent_id)` gets a token acting
+  as one of them with the agent-delegation grant (`{accessToken, expiresIn}`), raising `DelegationRefused` when Gaia
+  says no.
+
+A process that acts on a token someone else keeps fresh (a Talos run of a Gaia-declared agent) sets
+`GAIA_TOKEN_FILE` to the file holding it: `Gaia.token()` reads the file on every call and never signs in. In the
+same process, `Gaia.token_source` (a function returning the token) does the same.
 
 Stdlib only; errors carry Gaia's message, never the request (secrets, poll tokens).
 

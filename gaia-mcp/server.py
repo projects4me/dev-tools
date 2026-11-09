@@ -85,6 +85,17 @@ class GaiaError(Exception):
 # Gaia client
 # ---------------------------------------------------------------------------------------------
 
+def read_token_file(path):
+    """The access token in GAIA_TOKEN_FILE. Read on every call: its owner renews it while the process runs."""
+    try:
+        token = open(path, encoding="utf-8").read().strip()
+    except OSError as e:
+        raise GaiaError(f"Cannot read GAIA_TOKEN_FILE {path}: {e.strerror or e}")
+    if not token:
+        raise GaiaError(f"GAIA_TOKEN_FILE {path} is empty.")
+    return token
+
+
 class Gaia:
     def __init__(self):
         self.base = os.environ.get("GAIA_URL", "https://api.local-projects4.me").rstrip("/")
@@ -99,6 +110,10 @@ class Gaia:
         self.access_token = None
         self.refresh_token = None
         self.expires_at = 0
+        # A token someone else keeps fresh (Talos' delegated token for an agent): read before each call, never signed
+        # in for. GAIA_TOKEN_FILE names a file holding it; a caller in the same process sets token_source instead.
+        self.token_file = os.environ.get("GAIA_TOKEN_FILE") or None
+        self.token_source = None
         self.user = None
         self._projects = None
         self._type_labels = None
@@ -194,13 +209,17 @@ class Gaia:
             raise GaiaError(f"Gaia {method} {path} returned {status}: {json.dumps(payload)[:1500]}", status)
         return payload
 
-    def anonymous(self, method, path, params=None, body=None):
+    def anonymous(self, method, path, params=None, body=None, form=None):
         """A call without a token (e.g. a service's enrollment request and poll). Returns (status, payload)."""
-        return self._http(method, path, params=params, body=body, auth=False)
+        return self._http(method, path, params=params, body=body, form=form, auth=False)
 
     # -- Auth --------------------------------------------------------------------------------
 
     def token(self):
+        if self.token_source:
+            return self.token_source()
+        if self.token_file:
+            return read_token_file(self.token_file)
         if self.access_token and time.time() < self.expires_at - 60:
             return self.access_token
         if self.refresh_token and self._grant({"grant_type": "refresh_token",

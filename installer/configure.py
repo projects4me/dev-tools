@@ -36,6 +36,7 @@ AI_LOCAL = TOOLS_DIR / "ai" / "config.local.json"
 TALOS_LOCAL = TOOLS_DIR / "talos" / "config.local.json"
 AGENT_LOCAL = TOOLS_DIR / "talos" / "agents" / "odysseus" / "agent.local.json"
 AGAMEMNON_ENV = TOOLS_DIR / "gaia-mcp" / "agamemnon.env"
+GAIA_AGENTS_LOCAL = TOOLS_DIR / "talos" / "agents" / "gaia-runtime" / "agent.local.json"   # Gaia-declared agents
 AGAMEMNON_LOCAL = TOOLS_DIR / "talos" / "agents" / "agamemnon" / "agent.local.json"
 SSH_DIR = Path.home() / ".ssh"
 AGENT_KEY = SSH_DIR / "agent_odysseus"
@@ -264,6 +265,10 @@ def write_engineer_settings(a, user_id):
                 "handoffTo": user_id, "reviewerName": a["name"]})
     write_json(AGENT_LOCAL, ody)
     _ok(f"Talos acts on issues you assign and hands back to you -> {AGENT_LOCAL.relative_to(TOOLS_DIR)}")
+    gaia_agents = json.loads(GAIA_AGENTS_LOCAL.read_text(encoding="utf-8")) if GAIA_AGENTS_LOCAL.exists() else {}
+    gaia_agents.update({"acceptAssignmentsFrom": [user_id], "handoffTo": user_id, "reviewerName": a["name"]})
+    write_json(GAIA_AGENTS_LOCAL, gaia_agents)
+    _ok(f"Gaia-declared agents hand back to you -> {GAIA_AGENTS_LOCAL.relative_to(TOOLS_DIR)}")
 
 
 def setup_agamemnon(a, user_id):

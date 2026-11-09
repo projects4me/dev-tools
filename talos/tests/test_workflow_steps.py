@@ -192,6 +192,13 @@ class StepRunnerTest(unittest.TestCase):
         self.assertEqual(tracker.reports, [("s-1", "done", "")])
         self.assertEqual(self.dispatcher.released, [42])
 
+    def test_a_stopped_runner_takes_no_new_steps_and_leaves_them_pending(self):
+        steps = self.runner()
+        steps.stop()
+        self.assertFalse(steps.submit("s-1", "requested"))
+        self.assertIsNone(steps.handle("s-1"))
+        self.assertEqual((self.tracker.claims, self.tracker.reports, self.dispatcher.runs), ([], [], []))
+
     def test_a_hand_off_recorded_by_the_run_is_its_report(self):
         class Recording(FakeDispatcher):
             def run_step(self, issue, repo, prompt, resume, model, run):

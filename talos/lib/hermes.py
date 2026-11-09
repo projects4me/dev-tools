@@ -8,7 +8,6 @@ import json
 import os
 import subprocess
 import threading
-import time
 
 from .config import LISTENER, TALOS_DIR, log
 
@@ -27,17 +26,26 @@ class Listener:
         self.retry_seconds = retry_seconds
         self.project_ids = tracker.project_ids()
         self.intents = intents(self.project_ids, events) + list(extra_intents)
+        self._stopped = threading.Event()
+        self._proc = None
 
     def start(self):
         threading.Thread(target=self._loop, name=f"hermes-{self.agent.name}", daemon=True).start()
 
+    def stop(self):
+        """Disconnect and stay disconnected (the agent left Gaia's list)."""
+        self._stopped.set()
+        proc = self._proc
+        if proc and proc.poll() is None:
+            proc.terminate()
+
     def _loop(self):
-        while True:
+        while not self._stopped.is_set():
             try:
                 self._listen_once()
             except Exception as e:
                 log(f"listener error: {e}", self.agent.name)
-            time.sleep(self.retry_seconds)
+            self._stopped.wait(self.retry_seconds)
 
     def _listen_once(self):
         env = {**os.environ, "TALOS_TOKEN": self.tracker.token()}
@@ -45,6 +53,9 @@ class Listener:
                "--hermes-url", self.hermes_url, "--intents", json.dumps(self.intents)]
         proc = subprocess.Popen(cmd, cwd=TALOS_DIR, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                 stdin=subprocess.DEVNULL, text=True, encoding="utf-8", errors="replace")
+        self._proc = proc
+        if self._stopped.is_set():
+            proc.terminate()
         for line in proc.stdout:
             try:
                 msg = json.loads(line)

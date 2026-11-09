@@ -30,7 +30,8 @@ class AgamemnonStepTest(unittest.TestCase):
         patches = {"TOOLS_DIR": self.tools,
                    "AGAMEMNON_ENV": self.tools / "gaia-mcp" / "agamemnon.env",
                    "AGAMEMNON_LOCAL": self.tools / "talos" / "agents" / "agamemnon" / "agent.local.json",
-                   "AGENT_LOCAL": self.tools / "talos" / "agents" / "odysseus" / "agent.local.json"}
+                   "AGENT_LOCAL": self.tools / "talos" / "agents" / "odysseus" / "agent.local.json",
+                   "GAIA_AGENTS_LOCAL": self.tools / "talos" / "agents" / "gaia-runtime" / "agent.local.json"}
         for name, value in patches.items():
             p = mock.patch.object(configure, name, value)
             p.start()
@@ -71,6 +72,14 @@ class AgamemnonStepTest(unittest.TestCase):
                 mock.patch.object(configure, "TALOS_LOCAL", self.tools / "talos.json"):
             configure.write_engineer_settings(self.a, "5")
         self.assertEqual(self.accepted(), ["5", "77"])
+
+    def test_engineer_settings_make_gaia_agents_hand_back_to_the_engineer(self):
+        configure.write_json(configure.GAIA_AGENTS_LOCAL, {"enabled": False})
+        with mock.patch.object(configure, "AI_LOCAL", self.tools / "ai.json"), \
+                mock.patch.object(configure, "TALOS_LOCAL", self.tools / "talos.json"):
+            configure.write_engineer_settings(self.a, "5")
+        self.assertEqual({"enabled": False, "acceptAssignmentsFrom": ["5"], "handoffTo": "5", "reviewerName": "Eng"},
+                         json.loads(configure.GAIA_AGENTS_LOCAL.read_text(encoding="utf-8")))
 
     def test_skip_leaves_agamemnon_disabled(self):
         configure.setup_agamemnon(dict(self.a, agamemnon=False), "5")

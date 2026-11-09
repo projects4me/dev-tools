@@ -12,7 +12,7 @@ import queue
 import threading
 import time
 
-from . import policy, record_runs
+from . import agent_spec, policy, record_runs
 from .config import TalosError, log
 
 STEP_EVENT = "workflow.agent.run.requested"
@@ -64,13 +64,14 @@ def granted_tools(spec):
 
 
 def with_spec(agent, spec):
-    """The agent as its spec says: role prompt, turn cap, runs per issue and permission mode where the spec sets
-    them, and the granted tools on top of agent.json's allowedTools."""
+    """The agent as its spec says: role prompt (with its granted skills), turn cap, runs per issue and permission
+    mode where the spec sets them, and the granted tools on top of agent.json's allowedTools."""
     config = spec.get("config") or {}
     granted = [t for t in granted_tools(spec) if t not in agent.allowed_tools]
     return dataclasses.replace(
         agent,
-        role_prompt=config.get("rolePrompt") or agent.role_prompt,
+        role_prompt=(config["rolePrompt"] + agent_spec.skills_prompt(spec) if config.get("rolePrompt")
+                     else agent.role_prompt),
         max_turns=int(config.get("maxTurns") or agent.max_turns),
         max_iterations=int(config.get("maxRunsPerIssue") or agent.max_iterations),
         permission_mode=config.get("permissionMode") or agent.permission_mode,
@@ -100,6 +101,11 @@ class StepRunner:
         self._queue = queue.Queue()
         self._pending = set()
         self._lock = threading.Lock()
+        self._stopped = threading.Event()
+
+    def stop(self):
+        """Take no new steps (the agent left Gaia's list): they stay pending in Gaia; a step running finishes."""
+        self._stopped.set()
 
     def on_event(self, envelope):
         """A run request from Hermes; other envelopes go to the dispatcher (status changes)."""
@@ -110,6 +116,8 @@ class StepRunner:
         self.submit(sid, "requested")
 
     def submit(self, sid, source):
+        if self._stopped.is_set():
+            return False
         with self._lock:
             if sid in self._pending:
                 return False
@@ -156,6 +164,9 @@ class StepRunner:
 
     def handle(self, sid):
         """Claim the step, run it and report its outcome; returns the outcome reported, or None when skipped."""
+        if self._stopped.is_set():
+            log(f"step {sid} left pending: the agent takes no new runs", self.agent.name)
+            return None
         step = self.tracker.actor_step(sid)
         if step.get("status") != PENDING or str(step.get("actorUserId") or "") != self.user_id:
             log(f"step {sid} skipped: {step.get('status')}, for user {step.get('actorUserId')}", self.agent.name)

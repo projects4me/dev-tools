@@ -121,8 +121,8 @@ class Agent:
                                         # "workflow": runs the Run agent steps Gaia's workflows send it (workflow_steps.py)
     extra: dict = field(default_factory=dict)
     orchestration: Orchestration = None     # kind orchestrator only
-    gaia_agent: str = ""                # the Gaia agent (name, email or id) whose spec sets the role prompt, model
-                                        # and limits (agent_spec.py); "" = they come from agent.json
+    gaia_agent_id: str = ""             # a Gaia-declared agent (gaia_agents.py): its agents row; "" = from agent.json
+    gaia_user_id: str = ""              # and the user it acts as, on a delegated token
     docker_memory_high_percent: float = 85   # Docker memory used/total (%) at or above which Docker is pressured
     docker_memory_ok_percent: float = 70     # once pressured, Docker is ok again only below this (%)
     docker_start_command: list = None        # argv that starts the Docker engine (docker_engine.py); None = default
@@ -143,7 +143,8 @@ class Agent:
 
 
 REQUIRED = ("name", "gaiaEnv", "projects", "acceptAssignmentsFrom", "handoffTo", "actions", "model", "rolePrompt")
-FROM_GAIA = ("model", "rolePrompt")     # set by the Gaia agentspec when gaiaAgent is given
+FROM_GAIA = ("name", "displayName", "gaiaEnv", "model", "rolePrompt", "kind", "dispatch")   # not in the template
+GAIA_TEMPLATE = AGENTS_DIR / "gaia-runtime" / "template.json"
 REQUIRED_ORCHESTRATOR = ("name", "gaiaEnv", "worker")
 REQUIRED_EVENTS = ("name", "gaiaEnv", "projects", "triggers", "model", "rolePrompt")
 KINDS = ("issues", "ideas", "orchestrator", "events")
@@ -189,32 +190,54 @@ def load_agent(folder):
     if local.exists():
         with open(local, encoding="utf-8") as f:
             raw.update(json.load(f))
-    gaia_agent = str(raw.get("gaiaAgent") or "").strip()
-    if gaia_agent and raw.get("kind", "issues") != "issues":
-        raise TalosError(f"{path}: gaiaAgent is supported for issues agents only")
+    if "gaiaAgent" in raw:
+        raise TalosError(f"{folder.name}: gaiaAgent was removed; Talos now runs the agents Gaia lets it delegate "
+                         f"(talos/README.md, 'Agents declared in Gaia'): remove the folder or the key")
     if raw.get("kind") == "orchestrator":
         return _load_orchestrator(path, raw)
     if raw.get("kind") == "events":
         return _load_events(folder, path, raw)
-    missing = [k for k in REQUIRED if k not in raw and not (gaia_agent and k in FROM_GAIA)]
+    missing = [k for k in REQUIRED if k not in raw]
     if missing:
         raise TalosError(f"{path}: missing {', '.join(missing)}")
-    if not raw["acceptAssignmentsFrom"] or not raw["handoffTo"]:
-        raise TalosError(f"{folder.name}: no reviewer configured (acceptAssignmentsFrom/handoffTo); "
-                         f"run `dev-tools/installer/p4m configure`, which writes {local.name}")
-    if gaia_agent:
-        both = [k for k in FROM_GAIA if k in raw]
-        if both:
-            raise TalosError(f"{path}: gaiaAgent takes {', '.join(both)} from Gaia; remove them from agent.json")
-        role_prompt, model = "", {"default": ""}     # filled from the spec before the agent starts
-    else:
-        role_file = folder / raw["rolePrompt"]
-        if not role_file.exists():
-            raise TalosError(f"{path}: rolePrompt {role_file.name} not found")
-        role_prompt, model = role_file.read_text(encoding="utf-8"), raw["model"]
+    role_file = folder / raw["rolePrompt"]
+    if not role_file.exists():
+        raise TalosError(f"{path}: rolePrompt {role_file.name} not found")
     env_file = LOCAL_DIR / raw["gaiaEnv"]
     if not env_file.exists():
         raise TalosError(f"{path}: gaiaEnv {env_file} not found")
+    return _issues_agent(folder, path, local, raw, role_file.read_text(encoding="utf-8"), raw["model"], str(env_file))
+
+
+def load_gaia_template():
+    """The machine-local settings every Gaia-declared agent runs with (agents/gaia-runtime/template.json, overlaid
+    by its agent.local.json): agent.json's issues-agent keys without the ones Gaia owns. None when there is no
+    template or it is disabled: Talos then runs no Gaia agents."""
+    if not GAIA_TEMPLATE.exists():
+        return None
+    with open(GAIA_TEMPLATE, encoding="utf-8") as f:
+        raw = json.load(f)
+    local = LOCAL_DIR / "talos" / "agents" / GAIA_TEMPLATE.parent.name / "agent.local.json"
+    if local.exists():
+        with open(local, encoding="utf-8") as f:
+            raw.update(json.load(f))
+    if not raw.get("enabled", True):
+        return None
+    owned = [k for k in FROM_GAIA if k in raw]
+    if owned:
+        raise TalosError(f"{GAIA_TEMPLATE}: {', '.join(owned)} come from Gaia or are fixed; remove them")
+    missing = [k for k in ("projects", "acceptAssignmentsFrom", "handoffTo") if k not in raw]
+    if missing:
+        raise TalosError(f"{GAIA_TEMPLATE}: missing {', '.join(missing)}")
+    raw = dict(raw, name="gaia-runtime", kind="issues", dispatch="workflow", actions=raw.get("actions", {}))
+    return _issues_agent(GAIA_TEMPLATE.parent, GAIA_TEMPLATE, local, raw, "", {"default": ""}, "")
+
+
+def _issues_agent(folder, path, local, raw, role_prompt, model, gaia_env):
+    """An issues agent from its merged settings (`raw`); `local` is the agent.local.json the reviewer comes from."""
+    if not raw["acceptAssignmentsFrom"] or not raw["handoffTo"]:
+        raise TalosError(f"{folder.name}: no reviewer configured (acceptAssignmentsFrom/handoffTo); "
+                         f"run `dev-tools/installer/p4m configure`, which writes {local.name}")
     reserved = [k for k in raw.get("env", {}) if str(k).upper().startswith("GAIA_")]
     if reserved:
         raise TalosError(f"{path}: env may not set {', '.join(reserved)} (the agent's credentials come from gaiaEnv)")
@@ -244,7 +267,7 @@ def load_agent(folder):
         name=raw["name"],
         display_name=raw.get("displayName", raw["name"]),
         role=raw.get("role", ""),
-        gaia_env=str(env_file),
+        gaia_env=gaia_env,
         projects=raw["projects"],
         accept_from=[str(u) for u in raw["acceptAssignmentsFrom"]],
         handoff_to=str(raw["handoffTo"]),
@@ -284,7 +307,6 @@ def load_agent(folder):
         runner=dict(runner),
         dispatch=dispatch,
         extra={k: raw[k] for k in ("knowledgeMap", "ideaSource") if k in raw},
-        gaia_agent=gaia_agent,
         hold_max_hours=float(raw.get("holdMaxHours", 72)),
         **docker_settings(raw),
     )
