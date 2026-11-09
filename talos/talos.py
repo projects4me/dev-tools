@@ -601,6 +601,7 @@ def cmd_check(args):
 def cmd_enroll(args):
     """Enroll Talos in Gaia as a runtime service client (no-op when it already holds a credential)."""
     identity = service_identity.ServiceIdentity.from_settings(settings())
+    print(f"enrolling with Gaia {identity.gaia_url}")
     existing = identity.credential()
     credential = identity.ensure()
     if existing:

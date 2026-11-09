@@ -76,6 +76,14 @@ class AgamemnonStepTest(unittest.TestCase):
             configure.write_engineer_settings(self.a, "5")
         self.assertEqual(self.accepted(), ["5", "77"])
 
+    def test_engineer_settings_write_gaia_url_and_keep_hermes_url(self):
+        talos_local = self.tools / "talos.json"
+        configure.write_json(talos_local, {"hermesUrl": "https://old", "claudeBin": "c"})
+        with mock.patch.object(configure, "AI_LOCAL", self.tools / "ai.json"),                 mock.patch.object(configure, "TALOS_LOCAL", talos_local):
+            configure.write_engineer_settings(self.a, "5")
+        self.assertEqual({"hermesUrl": "https://h", "claudeBin": "c", "gaiaUrl": "https://api.x"},
+                         json.loads(talos_local.read_text(encoding="utf-8")))
+
     def test_engineer_settings_make_gaia_agents_hand_back_to_the_engineer(self):
         configure.write_json(configure.GAIA_AGENTS_LOCAL, {"enabled": False})
         with mock.patch.object(configure, "AI_LOCAL", self.tools / "ai.json"), \

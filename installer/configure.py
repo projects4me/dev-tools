@@ -329,6 +329,7 @@ def write_engineer_settings(a, user_id):
     _ok(f"PR reviewer and time-log timezone -> {AI_LOCAL.relative_to(TOOLS_DIR)}")
     talos = json.loads(TALOS_LOCAL.read_text(encoding="utf-8")) if TALOS_LOCAL.exists() else {}
     talos["hermesUrl"] = a["hermesUrl"]
+    talos["gaiaUrl"] = a["gaiaUrl"]   # the Gaia the agents use (GAIA_URL in gaia-mcp.env), so Talos enrolls there
     write_json(TALOS_LOCAL, talos)
     ody = json.loads(AGENT_LOCAL.read_text(encoding="utf-8")) if AGENT_LOCAL.exists() else {}
     accepted = [str(x) for x in ody.get("acceptAssignmentsFrom", [])]   # keep ids added earlier (Agamemnon's)
