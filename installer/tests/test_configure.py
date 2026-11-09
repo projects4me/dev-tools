@@ -18,6 +18,9 @@ class FakeServer:
 
 
 class FakeGaia:
+    def token(self):
+        return "t"
+
     def find(self, module, query=None, limit=None):
         return [{"id": 77, "name": "Agent Agamemnon"}]
 
@@ -39,7 +42,7 @@ class AgamemnonStepTest(unittest.TestCase):
         p = mock.patch.object(configure, "gaia_client", return_value=(FakeServer, FakeGaia()))
         p.start()
         self.addCleanup(p.stop)
-        self.a = {"agamemnon": True, "agamemnonEmail": "agent.agamemnon@projects4.me", "agamemnonClientId": "cid", "agamemnonClientSecret": "sec",
+        self.a = {"agamemnon": True, "agamemnonSignIn": "client", "agamemnonEmail": "agent.agamemnon@projects4.me", "agamemnonClientId": "cid", "agamemnonClientSecret": "sec",
                   "gaiaUrl": "https://api.x", "appUrl": "https://app.x",
                   "name": "Eng", "timezoneLabel": "UTC", "hermesUrl": "https://h"}
 
@@ -127,3 +130,65 @@ class BackupTest(unittest.TestCase):
         self.assertEqual(len(baks), configure.BACKUPS_KEPT)
         self.assertEqual(baks[0].name, "gaia-mcp.env.20200101-000004.bak")
         self.assertEqual(baks[-1].read_bytes(), b"v0\n")
+
+
+class EnvMergeTest(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.path = Path(tmp.name) / "gaia-mcp.env"
+        p = mock.patch.object(configure, "GAIA_ENV", self.path)
+        p.start()
+        self.addCleanup(p.stop)
+        self.a = {"gaiaUrl": "https://api.x", "appUrl": "https://app.x", "agentEmail": "a@x.me", "ghToken": "gh",
+                  "agentSignIn": "client", "agentClientId": "cid", "agentClientSecret": "sec"}
+        patches = [mock.patch.object(configure, "ODYSSEUS_ENV", Path(tmp.name) / "ody.env"),
+                   mock.patch.object(configure, "TOOLS_DIR", Path(tmp.name)),
+                   mock.patch.object(configure, "backup_file", return_value=None)]
+        for q in patches:
+            q.start()
+            self.addCleanup(q.stop)
+
+    def write(self, a, gaia=None):
+        gaia = gaia or FakeGaia()
+        with mock.patch.object(configure, "gaia_client", return_value=(FakeServer, gaia)):
+            configure.write_credentials(a)
+        return configure.read_env(self.path)
+
+    def test_rerun_keeps_password_and_unknown_keys(self):
+        self.path.write_text("GAIA_EMAIL=old@x.me\nGAIA_PASSWORD=pw\nCUSTOM=1\n", encoding="utf-8")
+        env = self.write(self.a)
+        self.assertEqual("pw", env["GAIA_PASSWORD"])
+        self.assertEqual("1", env["CUSTOM"])
+        self.assertEqual("a@x.me", env["GAIA_EMAIL"])
+        self.assertEqual("sec", env["GAIA_CLIENT_SECRET"])
+
+    def test_password_mode_writes_the_password(self):
+        env = self.write(dict(self.a, agentSignIn="password", agentPassword="new"))
+        self.assertEqual("new", env["GAIA_PASSWORD"])
+
+    def test_client_mode_keeps_client_keys_of_other_mode(self):
+        self.path.write_text("GAIA_PASSWORD=pw\nGAIA_CLIENT_ID=x\n", encoding="utf-8")
+        env = self.write(self.a)
+        self.assertEqual("pw", env["GAIA_PASSWORD"])
+        self.assertEqual("cid", env["GAIA_CLIENT_ID"])
+
+    def test_failed_sign_in_leaves_file_unchanged(self):
+        self.path.write_text("GAIA_PASSWORD=pw\n", encoding="utf-8")
+
+        class Bad(FakeGaia):
+            def token(self):
+                raise FakeServer.GaiaError("Client credentials are only for active agents")
+        with self.assertRaises(SystemExit) as cm:
+            self.write(self.a, Bad())
+        self.assertIn("only for active agents", str(cm.exception))
+        self.assertEqual("GAIA_PASSWORD=pw\n", self.path.read_text(encoding="utf-8"))
+
+    def test_sign_in_mode_defaults_to_the_existing_files(self):
+        a = {}
+        configure.ask_sign_in(a, "agent", "Agent", {"GAIA_PASSWORD": "pw", "GAIA_CLIENT_ID": "c",
+                                                    "GAIA_CLIENT_SECRET": "s"}, {})
+        self.assertEqual(("password", "pw"), (a["agentSignIn"], a["agentPassword"]))
+        b = {}
+        configure.ask_sign_in(b, "agent", "Agent", {"GAIA_CLIENT_ID": "c", "GAIA_CLIENT_SECRET": "s"}, {})
+        self.assertEqual("client", b["agentSignIn"])

@@ -40,7 +40,7 @@ Supported on Windows 10/11 (Git Bash + Docker Desktop), macOS and Ubuntu/Debian.
      and its SSH private key.
 
    - **Agent Agamemnon (optional):** answer `yes` to switch on the orchestrator that feeds issues to Odysseus, then
-     give its email, client id and client secret. It writes `gaia-mcp/agamemnon.env`, checks the sign-in and reads its Gaia user id,
+     say whether it signs in with a password (a Gaia user) or client credentials (an Agent record), and give its email, the OAuth client id and secret (and the password). `configure` verifies the sign-in before writing and keeps every other key already in the env file. It writes `gaia-mcp/agamemnon.env`, checks the sign-in and reads its Gaia user id,
      writes `talos/agents/agamemnon/agent.local.json` (`enabled: true`, owned by you) and adds its user id to
      `acceptAssignmentsFrom` in Odysseus' `agent.local.json`, keeping the ids already there. Skipping leaves
      Agamemnon disabled; re-running is safe.
