@@ -99,8 +99,19 @@ class MemoryLimitTest(unittest.TestCase):
 
 
 class ClassifyRunTest(unittest.TestCase):
-    def test_exit_137_is_oom(self):
+    def test_exit_137_with_a_new_oom_kill_is_oom(self):
+        self.assertEqual(testenv.classify_run(137, 0, 1), "oom")
+
+    def test_exit_137_with_an_unreadable_count_is_oom(self):
         self.assertEqual(testenv.classify_run(137, None, None), "oom")
+
+    def test_exit_137_without_an_oom_kill_is_killed(self):
+        self.assertEqual(testenv.classify_run(137, 0, 0), "killed")
+
+    def test_a_container_stopped_mid_run_is_stopped_not_oom(self):
+        """The 4439 case: Talos' idle sweep ran `docker stop`; exit 137, no oom_kill, container gone."""
+        self.assertEqual(testenv.classify_run(137, 0, None, running=False), "stopped")
+        self.assertEqual(testenv.classify_run(1, 0, None, "Browser exited unexpectedly", running=False), "stopped")
 
     def test_browser_gone_with_a_new_oom_kill_is_oom(self):
         self.assertEqual(testenv.classify_run(1, 0, 1, "Browser exited unexpectedly"), "oom")

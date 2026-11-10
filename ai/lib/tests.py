@@ -38,7 +38,7 @@ class SuiteResult:
     failed_count: int = None     # failures the runner itself reported, when it reports a count
     ran: int = None              # tests executed, when known
     skipped: bool = False        # not run on purpose (e.g. a folder this checkout doesn't have): neither pass nor fail
-    oom: bool = False            # the kernel killed the run for memory: no verdict, run it again
+    interrupted: bool = False    # killed mid-run (out of memory, container stopped): no verdict, run it again
 
 
 def _run_logged(name, cmd, cwd=WORKSPACE):
@@ -161,7 +161,11 @@ def api(src, api_filter=None, prepare=True, slot=None):
                        re.findall(r"^FAIL (\S+)", out, flags=re.M), log, code, failed, ran)
 
 
-OOM_MARKER = "killed: out of memory"     # printed by p4m test ember (installer/testenv.py)
+# "p4m: killed [oom|stopped|killed]: ...": printed by p4m test ember (installer/testenv.py KILLED_LINE)
+KILLED_MARKER = re.compile(r"^p4m: killed \[(\w+)\]:", re.M)
+KILLED_CAUSES = {"oom": "out of memory (limit: PROMETHEUS_TEST_MEMORY in p4m.env)",
+                 "stopped": "the test container was stopped during the run",
+                 "killed": "SIGKILL, not from the out-of-memory killer"}
 
 
 def ember(src, qunit_filter=None):
@@ -173,10 +177,12 @@ def ember(src, qunit_filter=None):
     failed = _int(re.search(r"^# fail\s+(\d+)", out, flags=re.M))
     # "not ok 340 Chrome 97.0 - [41 ms] - Integration | Component | role/card: it renders"
     failures = [m.strip() for m in re.findall(r"^not ok \d+ .*? - (?:\[[^\]]*\] - )?(.*)$", out, flags=re.M)]
-    if OOM_MARKER in out:
+    killed = KILLED_MARKER.search(out)
+    if killed:
         # the partial results say nothing: never a pass, never matched against known failures
-        return SuiteResult("ember", "ember: killed: out of memory, not a test result: run it again "
-                           "(limit: PROMETHEUS_TEST_MEMORY in p4m.env)", [], log, code or 137, oom=True)
+        cause = KILLED_CAUSES.get(killed.group(1), killed.group(1))
+        return SuiteResult("ember", f"ember: killed: {cause}; not a test result: run it again",
+                           [], log, code or 137, interrupted=True)
     if "No tests matched the filter" in out:
         return SuiteResult("ember", "ember: the filter matched no test (see log)", [], log, code or 1, None, 0)
     if passed is None and failed is None:
@@ -275,7 +281,7 @@ def judge(r, known):
     explained by the failures the runner reported, and a run must have executed something."""
     if r.skipped:
         return True, []
-    if r.oom:
+    if r.interrupted:
         return False, []
     unexpected = [f for f in r.failures if f not in known]
     if r.summary.startswith("no summary") or unexpected:

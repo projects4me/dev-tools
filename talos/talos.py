@@ -35,6 +35,7 @@ from lib.pool import LeaseFile
 from lib.tracker import Tracker
 
 import filelock  # noqa: E402
+import inuse  # noqa: E402  (installer/: which p4m test containers a run is using)
 import testenv  # noqa: E402  (installer/, put on the path by lib.registry: the p4m test containers the gc removes)
 
 
@@ -475,7 +476,7 @@ def free_idle(agent, dry_run=False):
     """Stop the test containers of issues with no Talos run for docker.idleTestContainerMinutes (see lib/docker_free);
     with dry_run only list them. Returns [(issue, name, reason)]. Docker unreachable: nothing is stopped."""
     return _stop_containers(agent, "idle containers", dry_run, lambda: docker_free.plan_idle(
-        WORKSPACE, sessions.all_entries(), testenv, agent.docker_idle_minutes))
+        WORKSPACE, sessions.all_entries(), testenv, inuse, agent.docker_idle_minutes))
 
 
 def _stop_containers(agent, what, dry_run, choose):

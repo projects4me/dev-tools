@@ -6,7 +6,9 @@ in flight that is deferred, won't fix or has not changed for a while are stopped
 next `ai test` still work).
 
 Without memory pressure, the idle rule stops the test container of an issue whose last Talos run (or Agamemnon
-`resolve-conflict` test) ended more than idleTestContainerMinutes ago and that has nothing in flight.
+`resolve-conflict` test) ended more than idleTestContainerMinutes ago and that has nothing in flight. A container a
+`p4m test` run is using (from any session, e.g. a ship run by hand in the issue's workspace) or used within those
+minutes is not idle: p4m marks its use (installer/inuse).
 """
 
 import re
@@ -76,13 +78,14 @@ def _conflict_testing(state, now):
     return since is not None and now - since < CONFLICT_TEST_MAX
 
 
-def idle(containers, entries, now, minutes=DEFAULT_IDLE_MINUTES):
+def idle(containers, entries, now, minutes=DEFAULT_IDLE_MINUTES, usage_of=lambda name: (False, None)):
     """[(issue, names, reason)] of the issues whose running test containers have been idle more than `minutes`.
 
     containers: {issue: [names]} of running containers in Talos workspaces; entries: the sessions entries
-    {(agent, issue): state} of talos.db. An issue qualifies when no agent has a run in flight on it, no resolve-conflict
-    test is using it, and the latest end of its runs and conflict tests is more than `minutes` ago. An issue with no
-    recorded end is left alone; minutes <= 0 turns the rule off."""
+    {(agent, issue): state} of talos.db; usage_of(name) -> (in use now, last use as epoch seconds or None), the p4m
+    test marks (inuse.usage). An issue qualifies when no agent has a run in flight on it, no resolve-conflict test or
+    p4m test run is using it, and the latest end of its runs, conflict tests and test container uses is more than
+    `minutes` ago. An issue with no recorded Talos end is left alone; minutes <= 0 turns the rule off."""
     if minutes <= 0:
         return []
     chosen = []
@@ -90,14 +93,19 @@ def idle(containers, entries, now, minutes=DEFAULT_IDLE_MINUTES):
         states = [state for (_, number), state in entries.items() if number == issue]
         if not names or any(s.get("running") or _conflict_testing(s, now) for s in states):
             continue
+        used = [usage_of(name) for name in names]
+        if any(busy for busy, _ in used):
+            continue
         ends = [parse_time(s.get(key)) for s in states for key in ("last_ended_at", "conflict_test_at")]
         ends = [end for end in ends if end is not None]
+        if ends:      # a container use only restarts the window of an issue Talos has worked on
+            ends += [datetime.fromtimestamp(last, timezone.utc) for _, last in used if last is not None]
         if ends and now - max(ends) > timedelta(minutes=minutes):
             chosen.append((issue, names, f"idle for {(now - max(ends)) // timedelta(minutes=1)}m"))
     return chosen
 
 
-def plan_idle(root, entries, testenv, minutes=DEFAULT_IDLE_MINUTES, now=None, run=subprocess.run):
+def plan_idle(root, entries, testenv, inuse, minutes=DEFAULT_IDLE_MINUTES, now=None, run=subprocess.run):
     """idle() for the running test containers under <root>/.runs (a checkout used interactively or a gaia slot
     container never matches). Raises OSError when docker can't be asked."""
     if minutes <= 0:
@@ -105,7 +113,8 @@ def plan_idle(root, entries, testenv, minutes=DEFAULT_IDLE_MINUTES, now=None, ru
     live = running(run)
     boxes = {issue: [n for n in names if n in live]
              for issue, names in workspace_gc.test_containers(root, testenv).items()}
-    return idle(boxes, entries, now or datetime.now(timezone.utc), minutes)
+    state = inuse.state_dir(root)
+    return idle(boxes, entries, now or datetime.now(timezone.utc), minutes, lambda name: inuse.usage(state, name))
 
 
 def running(run=subprocess.run):

@@ -58,11 +58,20 @@ STOP_BUILDER_SCRIPT = (f"{{ {RECORDED_BUILDER} && kill \"$p\"; }}; pkill -f '[e]
 # Babel worker threads of the watch build (broccoli reads JOBS, default os.cpus().length = 24 in Docker). Each
 # worker keeps its own V8 heap: 24 of them hold ~4 GiB idle, JOBS=4 about 1.3 GiB with the same build time.
 PROMETHEUS_JOBS = 4
-# Memory limit of a Prometheus test container (page cache counts): with JOBS=4 a cold full suite peaks at ~3.5 GiB.
+# Memory limit of a Prometheus test container (page cache counts). Measured 2026-11-10 (1290 tests, JOBS=4): a cold
+# full suite peaks at ~3.5 GiB during the first build (anon 3.2, page cache 0.2); a warm run peaks at ~3.1 GiB, the
+# idle watch build holding ~1.0 GiB and Chrome growing to ~1.5 GiB through the run. Page cache stays ~0.25 GiB.
 # Without a limit one runaway container takes down Docker's whole VM. Override with PROMETHEUS_TEST_MEMORY in p4m.env.
 PROMETHEUS_MEMORY = "4.5g"
-OOM_MESSAGE = ("killed: out of memory (container limit {limit}; raise PROMETHEUS_TEST_MEMORY in p4m.env "
+OOM_MESSAGE = ("out of memory (container limit {limit}; raise PROMETHEUS_TEST_MEMORY in p4m.env "
                "if the suite has grown). Not a test failure: run it again")
+STOPPED_MESSAGE = ("the test container was stopped during the run (docker stop, e.g. Talos' idle sweep). "
+                   "Not a test failure: run it again")
+KILLED_MESSAGE = ("ember test got SIGKILL, not from the out-of-memory killer (another `p4m test ember` "
+                  "on this checkout?). Not a test failure: run it again")
+RUN_ENDS = {"oom": OOM_MESSAGE, "stopped": STOPPED_MESSAGE, "killed": KILLED_MESSAGE}
+# printed as "p4m: killed [<end>]: <message>"; `ai test` reads the token, not the wording (ai/lib/tests.py)
+KILLED_LINE = "p4m: killed [{end}]: {message}"
 CGROUP_EVENTS = ("/sys/fs/cgroup/memory.events", "/sys/fs/cgroup/memory/memory.oom_control")
 # testem's report of a browser that went away
 BROWSER_GONE = re.compile(r"browser (exited|disconnected)|Browser .*(crashed|disconnected)|"
@@ -142,12 +151,18 @@ def memory_bytes(text):
     return int(float(m.group(1)) * {"": 1, "k": 1024, "m": 1024 ** 2, "g": 1024 ** 3}[m.group(2).lower()])
 
 
-def classify_run(code, oom_before, oom_after, output=""):
-    """Why an `ember test` run ended: "oom" when the kernel killed a process of the container (exit 137, or
-    the oom_kill count rose while testem reports its browser gone), else None."""
+def classify_run(code, oom_before, oom_after, output="", running=True):
+    """Why an `ember test` run ended, when it was not the tests: "stopped" when the container is no longer running
+    (someone stopped it mid-run), "oom" when the kernel's out-of-memory killer struck (the oom_kill count rose
+    with exit 137 or testem reporting its browser gone, or exit 137 when the count can't be read), "killed" for an
+    exit 137 the count doesn't explain, else None."""
+    if not running:
+        return "stopped"
+    counted = oom_before is not None and oom_after is not None
+    rose = counted and oom_after > oom_before
     if code == 137:
-        return "oom"
-    if oom_before is not None and oom_after is not None and oom_after > oom_before and BROWSER_GONE.search(output):
+        return "oom" if rose or not counted else "killed"
+    if rose and BROWSER_GONE.search(output):
         return "oom"
     return None
 
@@ -482,6 +497,10 @@ class PrometheusTestContainer(CopiedSourceContainer):
         m = re.search(r"^oom_kill\s+(\d+)", r.stdout or "", re.M)
         return int(m.group(1)) if m else None
 
+    def is_running(self):
+        """Whether the container is running (False once something stopped or removed it)."""
+        return _running(inspect(self.name))
+
     @staticmethod
     def has_jobs(info):
         """True when a container's environment carries JOBS=PROMETHEUS_JOBS."""
@@ -653,12 +672,15 @@ class PrometheusTestContainer(CopiedSourceContainer):
             print(f"\np4m: stopped ember test: {reason}", flush=True)
             return 1
         code = proc.wait()
-        if classify_run(code, oom_before, self.oom_kills(), "".join(output)) == "oom":
-            message = OOM_MESSAGE.format(limit=self.memory)
-            print(f"\np4m: {message}", flush=True)
+        end = None
+        if code != 0:
+            end = classify_run(code, oom_before, self.oom_kills(), "".join(output), self.is_running())
+        if end:
+            line = KILLED_LINE.format(end=end, message=RUN_ENDS[end].format(limit=self.memory))
+            print(f"\n{line}", flush=True)
             if log:
                 with open(log, "a", encoding="utf-8") as f:
-                    f.write(f"\n# p4m: {message}\n")
+                    f.write(f"\n# {line}\n")
             return code if code else 137
         return code
 
@@ -699,3 +721,4 @@ def remove(names):
     """Remove the named test containers (`containers` finds them). Raises TestEnvError when one can't be removed."""
     for n in names:
         _docker("rm", "-f", n)
+

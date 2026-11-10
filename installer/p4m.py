@@ -53,6 +53,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import filelock
+import inuse
 import runtime
 import testenv
 import testslots
@@ -66,6 +67,7 @@ TOOLS_DIR = INSTALLER_DIR.parent                   # the dev-tools copy this run
 ROOT = TOOLS_DIR.parent                            # <workspace>: the repos live here
 LOCAL_DIR = ROOT / "dev-tools"                     # local state lives here, whichever copy runs (`p4m runtime`)
 STATE_DIR = LOCAL_DIR / ".p4m"
+TEST_STATE_DIR = inuse.state_dir(ROOT)             # STATE_DIR / "test", read by Talos too
 ENV_FILE = LOCAL_DIR / "p4m.env"
 LOG_DIR = LOCAL_DIR / "logs"
 CERT_DIR = STATE_DIR / "certs"
@@ -1513,7 +1515,7 @@ def test_slots() -> testslots.Slots:
         count, keep = testslots.slot_count(cfg), testslots.template_count(cfg)
     except testslots.SlotError as e:
         raise P4MError(str(e))
-    return testslots.Slots(testslots.PsqlGateway(PG_CONTAINER, PG_USER), STATE_DIR / "test" / "slots", count,
+    return testslots.Slots(testslots.PsqlGateway(PG_CONTAINER, PG_USER), TEST_STATE_DIR / "slots", count,
                            seed=lambda src, db, fixtures, source: prepare_test_db(src, db, fixtures, source),
                            migrate=migrate_scratch, keep=keep)
 
@@ -1589,7 +1591,7 @@ def _slots_status(slots: testslots.Slots, src: Path) -> None:
         if not templates:
             print("  none yet")
         for k, db, exists in slots.status():
-            box = testenv.GaiaTestContainer(src, STATE_DIR / "test", slot=k)
+            box = testenv.GaiaTestContainer(src, TEST_STATE_DIR, slot=k)
             container = testenv.inspect(box.name)
             try:
                 holds = box.checkout_file.read_text(encoding="utf-8").strip()
@@ -1623,11 +1625,15 @@ def _test_container(base: str, src: Path, dest: str, wait_port: int | None = Non
     return name
 
 
-def _gaia_test_box(src: Path, slot: int | None = None) -> testenv.GaiaTestContainer:
+def _gaia_test_box(src: Path, slot: int | None = None,
+                   held: contextlib.ExitStack | None = None) -> testenv.GaiaTestContainer:
     """`src`'s own Gaia test container (source copied in, OPcache on, Xdebug off), created if needed; in a slot,
-    the slot's container on the slot's database."""
-    box = testenv.GaiaTestContainer(src, STATE_DIR / "test", slot=slot,
+    the slot's container on the slot's database. With `held`, the container is marked in use (inuse) for that
+    stack's life, before it is created or started."""
+    box = testenv.GaiaTestContainer(src, TEST_STATE_DIR, slot=slot,
                                     db_name=testslots.db_name(slot) if slot else None)
+    if held is not None:
+        held.enter_context(inuse.using(TEST_STATE_DIR, box.name))
     try:
         if box.ensure():
             info(f"prepared {box.name} for {src} (source copied in; the first sync copies everything)")
@@ -1711,7 +1717,7 @@ def cmd_test(args) -> None:
         with contextlib.ExitStack() as held:
             if t == "api" or slot:                # before the box: a slot's container is emptied for a new checkout
                 held.enter_context(test_db_lock(slot))   # the run owns its database (and slot) until it ends
-            box = _gaia_test_box(src, slot)
+            box = _gaia_test_box(src, slot, held)
             rc = _run_api(args, src, slot, box) if t == "api" else _run_phpunit(args, slot, box)
         if t == "api":
             ok(f"reports in {src / 'output'}") if rc == 0 else err(f"api tests failed - reports in {src / 'output'}")
@@ -1720,21 +1726,23 @@ def cmd_test(args) -> None:
         src = _test_checkout(args, "prometheus")
         try:
             box = testenv.PrometheusTestContainer(
-                src, STATE_DIR / "test", memory=settings().get("PROMETHEUS_TEST_MEMORY", testenv.PROMETHEUS_MEMORY))
+                src, TEST_STATE_DIR, memory=settings().get("PROMETHEUS_TEST_MEMORY", testenv.PROMETHEUS_MEMORY))
         except ValueError as e:
             raise P4MError(f"PROMETHEUS_TEST_MEMORY: {e}")
-        try:
-            if box.ensure(fresh=args.fresh):
-                info(f"started {box.name} for {src} (the first build takes a few minutes)")
-            before = box.build_count()      # before the copy: a fast rebuild would otherwise be missed
-            changed = box.sync()
-            built, message = box.build(changed, before)
-        except testenv.TestEnvError as e:
-            raise P4MError(str(e))
-        if not built:
-            raise P4MError(message)
-        info(f"{len(changed)} file(s) synced, {message}")
-        sys.exit(box.run_tests(args.filter))
+        with inuse.using(TEST_STATE_DIR, box.name):
+            try:
+                if box.ensure(fresh=args.fresh):
+                    info(f"started {box.name} for {src} (the first build takes a few minutes)")
+                before = box.build_count()      # before the copy: a fast rebuild would otherwise be missed
+                changed = box.sync()
+                built, message = box.build(changed, before)
+            except testenv.TestEnvError as e:
+                raise P4MError(str(e))
+            if not built:
+                raise P4MError(message)
+            info(f"{len(changed)} file(s) synced, {message}")
+            rc = box.run_tests(args.filter)
+        sys.exit(rc)
     if t == "ares":
         if not is_running("ares-dev"):
             raise P4MError("ares is not running - `p4m up ares`")
@@ -1743,7 +1751,8 @@ def cmd_test(args) -> None:
         return
     if t == "hermes":
         name = _test_container("hermes", _test_checkout(args, "hermes"), "/app")
-        rc = run(["docker", "exec", name, "npm", "test"], check=False).returncode
+        with inuse.using(TEST_STATE_DIR, name):
+            rc = run(["docker", "exec", name, "npm", "test"], check=False).returncode
         sys.exit(rc)
 
 
