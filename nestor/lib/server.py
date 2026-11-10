@@ -48,6 +48,7 @@ def make_handler(cfg, allowed_hosts):
                 super().log_message(fmt, *args)
 
         def _dispatch(self):
+            self._drain_body()
             if self.headers.get("Host", "").lower() not in allowed_hosts:
                 return self._json(421, {"error": "unexpected Host"})
             path = urlparse(self.path).path
@@ -63,6 +64,16 @@ def make_handler(cfg, allowed_hosts):
 
         do_GET = do_POST = do_PATCH = _dispatch
 
+        def _drain_body(self):
+            """Read a small request body before answering, so a refusal never closes on unread data (Windows
+            then resets the client's connection mid-send). _forward still gets the body from self.body."""
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+            except ValueError:
+                length = -1
+            self.body = self.rfile.read(length) if 0 < length <= MAX_BODY else b""
+            self.body_length = length
+
         def _json(self, status, payload):
             data = json.dumps(payload).encode("utf-8")
             self.send_response(status)
@@ -73,15 +84,9 @@ def make_handler(cfg, allowed_hosts):
             self.wfile.write(data)
 
         def _forward(self, path):
-            length = 0
-            if self.command != "GET":
-                try:
-                    length = int(self.headers.get("Content-Length") or 0)
-                except ValueError:
-                    length = -1
-                if length < 0 or length > MAX_BODY:
-                    return self._json(400, {"error": "bad or too large Content-Length"})
-            body = self.rfile.read(length) if length else None
+            if self.command != "GET" and not 0 <= self.body_length <= MAX_BODY:
+                return self._json(400, {"error": "bad or too large Content-Length"})
+            body = (self.body or None) if self.command != "GET" else None
             query = urlparse(self.path).query
             req = urllib.request.Request(f"{sim}{path[len('/sim'):]}" + (f"?{query}" if query else ""), data=body,
                                          method=self.command,
