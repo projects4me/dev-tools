@@ -350,7 +350,10 @@ The default, `"dispatch": "status"`, is the assignment flow below. `talos dispat
    | crash or no outcome | comments the error and log name, status `pending`, assigns `handoffTo` |
 
    You answer by commenting and assigning the issue back; the status picks the action (`feedback` and
-   `pending` resume the session, `in_review` runs `/address-review`).
+   `pending` resume the session, `in_review` runs `/address-review`). An address-review run reads the open GitHub
+   threads, the people's Gaia comments since the agent's last comment and the CI of the PR head (`ai review --open
+   --issue N`), ends `done` without touching the status, and Talos hands the issue back itself (`ai handoff`; for an
+   auto-merge milestone back into the merge loop). `done` with the issue still `in_progress` is flagged `not_handed_back`.
 
 **CodeRabbit loop.** Your reviewer receives the issue only after CodeRabbit is done with the PR. The ship session
 ships with `ai ship --defer-handoff` and ends with `awaiting_bot_review`; the issue stays `in_progress` and

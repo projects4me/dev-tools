@@ -345,7 +345,12 @@ def cmd_issue(args):
 
 
 def cmd_comment(args):
-    text = Path(args.file).read_text(encoding="utf-8") if args.file != "-" else sys.stdin.read()
+    if args.text is not None:
+        text = args.text
+    elif not args.file:
+        raise AiError("give a comment file (or - for stdin), or --text")
+    else:
+        text = Path(args.file).read_text(encoding="utf-8") if args.file != "-" else sys.stdin.read()
     tracker_call("add_comment", issue_number=args.issue, comment=text.strip())
     say(f"comment added to #{args.issue}")
 

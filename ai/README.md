@@ -65,7 +65,7 @@ of this public repo).
 |---|---|---|
 | skill | `/start-issue <n>` | `ai start`, then dependency + rule checks before coding |
 | skill | `/ship-issue <n>` | tests (agent), design review (agent), notes, approval, `ai commit`, `ai pr` |
-| skill | `/address-review <repo> <pr> <issue>` | `ai review --open`, changes, re-test, follow-up commit, `ai reply`, `ai pr-body`, tracker |
+| skill | `/address-review <repo> <pr> <issue>` | `ai review --open --issue N` (threads, Gaia comments, CI), changes, re-test, follow-up commit, `ai reply`, `ai pr-body`, tracker |
 | agent | `test-runner` (Haiku) | runs `ai test`, returns pass/fail + unexpected failures only |
 | agent | `design-reviewer` (Sonnet) | reviews the diff against the `### Design` rules (Fowler layering, SOLID) and Gaia review rules |
 
