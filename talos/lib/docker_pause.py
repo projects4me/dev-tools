@@ -18,8 +18,10 @@ class DockerPause:
 
     def __init__(self, read=docker_state.read, high=docker_state.DEFAULT_HIGH, low=docker_state.DEFAULT_OK,
                  check_seconds=CHECK_SECONDS, auto_start=True, start=None, grace_seconds=START_GRACE_SECONDS,
-                 clock=time.monotonic, on_change=None, log=None, poll_seconds=5, free=None):
+                 clock=time.monotonic, on_change=None, log=None, poll_seconds=5, free=None,
+                 pause_one=None, resume=None, max_containers=0):
         self._read, self._high, self._low = read, high, low
+        self._max = max_containers
         self._check, self._grace, self._poll = check_seconds, grace_seconds, poll_seconds
         self._auto_start, self._start = auto_start, start
         self._clock, self._on_change = clock, on_change
@@ -33,6 +35,10 @@ class DockerPause:
         self._tried = False         # start() already called in this hold
         self._free = free           # stops idle test containers; called once per pressured hold
         self._freed = False         # free() already called in this hold
+        self._pause_one = pause_one  # pause_one() -> names of the one container it paused (none when it can't)
+        self._resume = resume       # resume(names): unpauses them when the hold ends
+        self._paused = []           # names paused in this hold
+        self._pause_tried = False   # pause_one() already called in this hold
 
     @property
     def stopped(self):
@@ -56,15 +62,17 @@ class DockerPause:
         if self._read_at is not None and now - self._read_at < self._check:
             return False
         self._read_at = now
-        self._verdict = docker_state.verdict(self._read(), self._high, self._low, was=self._verdict)
+        self._verdict = docker_state.verdict(self._read(), self._high, self._low, was=self._verdict,
+                                             max_containers=self._max)
         holding = self._verdict != docker_state.OK
         if holding and self._since is None:
-            self._since, self._tried, self._freed = now, False, False
+            self._since, self._tried, self._freed, self._pause_tried = now, False, False, False
             self._since_text = time.strftime("%Y-%m-%dT%H:%M:%S%z")
             self._log(f"Docker {self._verdict}: dispatching held")
             self._changed()
         elif not holding and self._since is not None:
             self._since = self._since_text = None
+            self._unpause()
             self._log("Docker ok again: dispatching resumes")
             self._changed()
             return True
@@ -98,6 +106,33 @@ class DockerPause:
             self._log(f"Docker free failed: {e}")
         self._read_at = None
 
+    def _maybe_pause(self):
+        """Once per pressured hold, after free() had its go, pause one container so the others can finish. Call with
+        the lock held."""
+        if (self._verdict != docker_state.PRESSURED or self._pause_one is None or self._pause_tried
+                or (self._free is not None and not self._freed) or self._read_at is None):
+            return
+        self._pause_tried = True
+        try:
+            self._paused = list(self._pause_one() or [])
+        except Exception as e:      # best effort: the hold carries on
+            self._log(f"Docker pause failed: {e}")
+            return
+        if self._paused:
+            self._log(f"Docker pressured: paused {', '.join(self._paused)} until it is ok again")
+
+    def _unpause(self):
+        """Unpause what this hold paused (also when stop() ends the wait). Call with the lock held."""
+        names, self._paused = self._paused, []
+        if not names or self._resume is None:
+            return
+        try:
+            self._resume(names)
+            self._log(f"unpaused {', '.join(names)}")
+        except Exception as e:
+            self._log(f"Docker unpause failed: {e}")
+            self._paused = names
+
     def wait(self):
         """Block while Docker is down or pressured. True when this call saw the hold end, False when there was
         nothing to wait for or stop() interrupted it."""
@@ -109,8 +144,11 @@ class DockerPause:
                     return False
                 self._maybe_start()
                 self._maybe_free()
+                self._maybe_pause()
             self._stopped.wait(min(self._check, self._poll))
         return False
 
     def stop(self):
         self._stopped.set()
+        with self._lock:
+            self._unpause()

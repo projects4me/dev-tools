@@ -727,8 +727,11 @@ error text), `serverVersion`, `memTotal` (from `docker info`), `memUsed` and per
 Thresholds are set in the agent's `agent.json`; these are the defaults:
 
 ```json
-"docker": {"memoryHighPercent": 85, "memoryOkPercent": 70}
+"docker": {"memoryHighPercent": 85, "memoryOkPercent": 60, "maxTestContainers": 0}
 ```
+
+`memoryOkPercent` 60 means dispatching resumes once 40% of Docker's memory is free. `maxTestContainers` (default 0 =
+off) holds dispatching while that many p4m test containers run: the tally of containers, not just of issues.
 
 `docker.staleHours` (default 72) and `docker.idleTestContainerMinutes` (default 15, 0 = off) are used by the memory
 freeing below; `docker.holdMaxHours` (default 72) by `aga hold-until-docker`.
@@ -798,10 +801,12 @@ talos ALL=(root) NOPASSWD: /usr/bin/systemctl start docker, /usr/bin/systemctl r
 
 `lib/docker_pause.py` `DockerPause` (modelled on `UsagePause`) keeps the last Docker verdict, re-read at most every
 `docker.checkSeconds` (default 30). Before a worker takes a job it waits while the verdict is `down` or `pressured`
-(85% high, 70% ok, hysteresis as above); a hold is logged once when it starts and once when it ends, with no issue
+(85% high, 60% ok, hysteresis as above); a hold is logged once when it starts and once when it ends, with no issue
 comments. When Docker is `down` and `docker.autoStart` is true (default), the engine is started once per hold, after
 a 60 second grace period so a Docker that is still booting isn't started twice; a failed start is logged and the hold
-goes on. Talos never restarts the engine from here. A run already in flight is not touched. `talos status` shows
+goes on. While Docker stays pressured after the idle containers were stopped, the running test container using the most
+memory is paused (`docker pause`, once per hold, only when two or more run) so the others can finish; it is unpaused
+when the hold ends or Talos stops. Talos never restarts the engine from here. A run already in flight is not touched. `talos status` shows
 `DOCKER HOLD <agent>: dispatch held, docker <verdict>, since <time>`.
 
 ```json
