@@ -92,6 +92,48 @@ def _api(repo, path, *extra):
     return json.loads(out) if out else []
 
 
+AGENT_PREFIX = "Agent "      # the tracker shows the agents as "Agent Odysseus", "Agent Achilles", ...
+
+
+def human_comments_since_agent(comments):
+    """Gaia comments (oldest first, each {"by", "date", "comment"}) written by people after the last comment by an
+    agent: what the reviewer said since the agent's last word or hand-off."""
+    last_agent = max((c["date"] for c in comments if c["by"].startswith(AGENT_PREFIX)), default="")
+    return [c for c in comments if not c["by"].startswith(AGENT_PREFIX) and c["date"] > last_agent]
+
+
+def ci_state(repo, pr):
+    """(state, detail) of the PR head's CI, from the merge gate's CI check: ok / pending / fail."""
+    from . import mergegate
+    full = REPOS[repo]
+    sha = _api(repo, f"repos/{full}/pulls/{pr}")["head"]["sha"]
+    payload = _api(repo, f"repos/{full}/commits/{sha}/check-runs")
+    runs = payload.get("check_runs", []) if isinstance(payload, dict) else []
+    check = mergegate.check_ci(runs, _api(repo, f"repos/{full}/commits/{sha}/statuses"))
+    return check["state"], check["detail"]
+
+
+def _issue_comments(issue):
+    from .common import strip_html
+    from .workflow import tracker_call
+    comments = tracker_call("get_issue", issue_number=issue, comments=100).get("comments") or []
+    return [{**c, "comment": strip_html(c["comment"], None)} for c in comments]
+
+
+def feedback_summary(open_count, ci, comments):
+    """The closing line of `ai review --issue`: what needs addressing, or that nothing does."""
+    todo = []
+    if open_count:
+        todo.append(f"{open_count} open review thread(s)")
+    if ci[0] == "fail":
+        todo.append(f"failing CI ({ci[1]})")
+    elif ci[0] == "pending":
+        todo.append(f"CI not finished ({ci[1]})")
+    if comments:
+        todo.append(f"{len(comments)} Gaia comment(s) from people since the agent's last comment")
+    return ("NEEDS ADDRESSING: " + "; ".join(todo)) if todo else         "NOTHING TO ADDRESS: no open threads, no new Gaia comments from people, CI passed"
+
+
 def cmd_review(args):
     """Print reviews and inline comments; mark threads the agent already answered."""
     repo, pr = args.repo, args.pr

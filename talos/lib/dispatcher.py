@@ -550,8 +550,11 @@ class Dispatcher:
         bot_review.drop(self.agent.name, number)       # any other end takes the issue out of the CodeRabbit loop
 
         if outcome == "done":
+            review_run = issue.get("status_before_pickup") == "in_review" and not step   # a reviewer's changes
+            if review_run:
+                self._hand_back_after_review(number)
             self._check_handed_back(number, log_name, step)
-            if issue.get("status") == "in_review" and not step:      # a reviewer's changes were addressed
+            if review_run:
                 self._back_to_merge_loop(issue, repo)
         elif outcome in ("needs_input", "blocked"):
             title = "needs your input" if outcome == "needs_input" else "is blocked"
@@ -643,6 +646,7 @@ class Dispatcher:
     def _mark_picked_up(self, issue):
         """Show on the board that the agent is working it, before Claude starts."""
         status = self.agent.pickup_status
+        issue.setdefault("status_before_pickup", issue["status"])     # the post-run routing needs it
         if not status or issue["status"] == status:
             return
         try:
@@ -720,6 +724,15 @@ class Dispatcher:
             done += 1
         return done
 
+    def _hand_back_after_review(self, number):
+        """An address-review run doesn't set the status itself: if the issue is still with the agent, hand it back
+        with `ai handoff` (in_review, the reviewer), as a deferred ship does."""
+        try:
+            if self.tracker.issue(number)["assignee"] == self.user_id:
+                self.bot_review.handoff(number)
+        except TalosError as e:     # _check_handed_back then reports the issue as not handed back
+            log(f"#{number} hand-back after the review run failed: {e}", self.agent.name)
+
     def _back_to_merge_loop(self, issue, repo):
         """After an address-review run: an issue in an auto-merge milestone goes through the CodeRabbit loop again
         (and on to the orchestrator when clean) instead of waiting for the reviewer."""
@@ -736,7 +749,7 @@ class Dispatcher:
         if step:
             return
         issue = self.tracker.issue(number)
-        if issue["assignee"] == self.user_id:
+        if issue["assignee"] == self.user_id or issue["status"] == self.agent.pickup_status:
             self._hand_off(number, "failed", f"{self.agent.display_name}: finished but did not hand back",
                            f"<p>The run reported done but left the issue assigned to the agent "
                            f"(status '{html.escape(str(issue['status']))}'). Please check it. "

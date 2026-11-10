@@ -17,6 +17,9 @@ from lib.registry import Action  # noqa: E402
 from test_policy import AGENT_ID, make_agent, make_issue  # noqa: E402
 
 
+REVIEW_ACTIONS = {"new": Action("Work #{issue}"), "in_review": Action("Address the review of #{issue}")}
+
+
 class StubTracker:
     def __init__(self, issue):
         self._issue = issue
@@ -435,6 +438,44 @@ class DispatcherTest(unittest.TestCase):
     def test_done_still_assigned_is_not_handed_back(self):
         self.dispatch(make_issue(), [result("done")])
         self.assertEqual(self.reason(), "not_handed_back")
+
+    def test_review_run_still_with_the_agent_is_handed_back_by_talos(self):
+        called = []
+        tracker_holder = {}
+
+        def handoff(env, issue, to=None):
+            called.append(issue)
+            tracker_holder["t"]._issue["assignee"] = "1"
+            tracker_holder["t"]._issue["status"] = "in_review"
+
+        orig = StubTracker.__init__
+
+        def init(t, issue):
+            orig(t, issue)
+            tracker_holder["t"] = t
+
+        with mock.patch.object(StubTracker, "__init__", init),                 mock.patch.object(dispatcher_mod.bot_review, "ai_handoff", handoff):
+            self.dispatch(make_issue(status="in_review"), [result("done")], pickup_status="in_progress", actions=REVIEW_ACTIONS)
+        self.assertEqual(called, [42])
+        self.assertNotEqual(self.reason(), "not_handed_back")
+
+    def test_review_run_that_cannot_be_handed_back_is_flagged(self):
+        with mock.patch.object(dispatcher_mod.bot_review, "ai_handoff", side_effect=TalosError("down")):
+            self.dispatch(make_issue(status="in_review"), [result("done")], pickup_status="in_progress",
+                          actions=REVIEW_ACTIONS)
+        self.assertEqual(self.reason(), "not_handed_back")
+
+    def test_done_left_in_the_pickup_status_is_not_handed_back(self):
+        tracker = StubTracker(make_issue(status="in_progress", assignee="1"))
+        d = dispatcher_mod.Dispatcher(make_agent(pickup_status="in_progress"), tracker, "claude")
+        d._check_handed_back(42, "log.json")
+        self.assertEqual(self.reason(), "not_handed_back")
+
+    def test_pickup_remembers_the_status_before(self):
+        issue = make_issue(status="in_review")
+        d = dispatcher_mod.Dispatcher(make_agent(pickup_status="in_progress"), StubTracker(issue), "claude")
+        d._mark_picked_up(issue)
+        self.assertEqual((issue["status"], issue["status_before_pickup"]), ("in_progress", "in_review"))
 
     def test_interrupted_run_records_its_reason(self):
         sessions.update("odysseus", 42, running=True)

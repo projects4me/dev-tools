@@ -73,7 +73,7 @@ Shipping re-reads the whole conversation on every call, so it runs in a new, sma
   starts a bot round ("CodeRabbit left open review threads"): answer only CodeRabbit's threads, push, don't touch
   the tracker, and end with `awaiting_bot_review` again. Talos hands the issue to your reviewer when CodeRabbit is
   settled.
-- Address-review runs your reviewer started (`/address-review`) push their own follow-up and end with `done`.
+- Address-review runs your reviewer started (`/address-review`) push their own follow-up and end with `done`. Feedback there is open GitHub threads, your reviewer's Gaia comments and a failing CI (`ai review --open --issue N` shows all three); don't set the status or assignee, Talos hands the issue back.
 
 ## Finishing
 - `done` means the hand-off already happened through the skills: the PR is open (or review threads
