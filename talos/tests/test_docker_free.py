@@ -45,9 +45,9 @@ def minutes_ago(minutes):
     return (NOW - timedelta(minutes=minutes)).isoformat(timespec="seconds")
 
 
-def pick_idle(entries, boxes=None, minutes=15):
+def pick_idle(entries, boxes=None, minutes=15, usage_of=lambda name: (False, None)):
     boxes = boxes or {issue: [f"c{issue}"] for _, issue in entries}
-    return [i for i, _, _ in docker_free.idle(boxes, entries, NOW, minutes)]
+    return [i for i, _, _ in docker_free.idle(boxes, entries, NOW, minutes, usage_of)]
 
 
 class IdleTest(unittest.TestCase):
@@ -89,6 +89,22 @@ class IdleTest(unittest.TestCase):
         self.assertEqual(pick_idle({("odysseus", 1): {"last_ended_at": None}}), [])
         self.assertEqual(pick_idle({}, boxes={1: ["c1"]}), [])
 
+    def test_a_p4m_test_run_in_use_keeps_it(self):
+        """The 4439 case: a ship run by hand in the issue's workspace, hours after its last Talos run."""
+        entries = {("odysseus", 1): {"last_ended_at": minutes_ago(467)}}
+        self.assertEqual(pick_idle(entries, usage_of=lambda name: (True, None)), [])
+
+    def test_a_recent_p4m_test_use_restarts_the_window(self):
+        entries = {("odysseus", 1): {"last_ended_at": minutes_ago(467)}}
+        recent = (NOW - timedelta(minutes=5)).timestamp()
+        self.assertEqual(pick_idle(entries, usage_of=lambda name: (False, recent)), [])
+        old = (NOW - timedelta(minutes=20)).timestamp()
+        self.assertEqual(pick_idle(entries, usage_of=lambda name: (False, old)), [1])
+
+    def test_a_p4m_test_use_alone_does_not_make_it_idle(self):
+        old = (NOW - timedelta(minutes=600)).timestamp()
+        self.assertEqual(pick_idle({}, boxes={1: ["c1"]}, usage_of=lambda name: (False, old)), [])
+
     def test_zero_minutes_turns_it_off(self):
         self.assertEqual(pick_idle({("odysseus", 1): {"last_ended_at": minutes_ago(600)}}, minutes=0), [])
 
@@ -108,13 +124,32 @@ class PlanIdleTest(unittest.TestCase):
                 asked.append(Path(under))
                 return [("p4m-test-a", "issue-1/prometheus"), ("p4m-test-b", "issue-2/prometheus")]
 
+        class FakeInUse:
+            state_dir = staticmethod(lambda workspace: Path(workspace) / "state")
+            usage = staticmethod(lambda state, name: (False, None))
+
         def ps(argv, **kw):
             return subprocess.CompletedProcess(argv, 0, "p4m-test-a\ngaia-test-slot-1\n", "")
         entries = {("odysseus", 1): {"last_ended_at": minutes_ago(30)},
                    ("odysseus", 2): {"last_ended_at": minutes_ago(30)}}
-        chosen = docker_free.plan_idle(root, entries, FakeTestEnv, 15, now=NOW, run=ps)
+        chosen = docker_free.plan_idle(root, entries, FakeTestEnv, FakeInUse, 15, now=NOW, run=ps)
         self.assertEqual(chosen, [(1, ["p4m-test-a"], "idle for 30m")])
         self.assertEqual(asked, [root / ".runs"])
+
+    def test_a_container_in_use_is_not_chosen(self):
+        class FakeTestEnv:
+            TestEnvError = RuntimeError
+            containers = staticmethod(lambda under: [("p4m-test-a", "issue-1/prometheus")])
+
+        class FakeInUse:
+            state_dir = staticmethod(lambda workspace: Path(workspace) / "state")
+            usage = staticmethod(lambda state, name: (state == Path("/ws/state") and name == "p4m-test-a", None))
+
+        def ps(argv, **kw):
+            return subprocess.CompletedProcess(argv, 0, "p4m-test-a\n", "")
+        entries = {("odysseus", 1): {"last_ended_at": minutes_ago(30)}}
+        self.assertEqual(docker_free.plan_idle(Path("/ws"), entries, FakeTestEnv, FakeInUse, 15, now=NOW,
+                                                   run=ps), [])
 
     def test_docker_ps_failing_raises_oserror(self):
         with self.assertRaises(OSError):

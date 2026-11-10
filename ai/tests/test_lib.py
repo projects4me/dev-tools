@@ -160,15 +160,27 @@ class JudgeTest(unittest.TestCase):
         self.assertTrue(tests.judge(self.r(failures=["k"], rc=1, failed_count=1), {"k"})[0])
 
     def test_oom_kill_is_never_a_pass(self):
-        self.assertFalse(tests.judge(self.r(suite="ember", rc=137, oom=True, failed_count=None, ran=None), set())[0])
-        self.assertFalse(tests.judge(self.r(suite="ember", rc=0, oom=True), set())[0])
+        self.assertFalse(tests.judge(self.r(suite="ember", rc=137, interrupted=True, failed_count=None, ran=None),
+                                     set())[0])
+        self.assertFalse(tests.judge(self.r(suite="ember", rc=0, interrupted=True), set())[0])
 
     def test_ember_oom_marker_gives_an_oom_result(self):
-        out = "ok 1 a\n\np4m: killed: out of memory (container limit 4.5g)\n"
+        out = "ok 1 a\n\np4m: killed [oom]: out of memory (container limit 4.5g)\n"
         with mock.patch.object(tests, "_run_logged", return_value=(137, out, Path("x.log"))),                 mock.patch.object(tests, "_p4m", return_value=["p4m"]):
             r = tests.ember(".")
-        self.assertTrue(r.oom)
+        self.assertTrue(r.interrupted)
         self.assertEqual(r.failures, [])
+        self.assertIn("out of memory", r.summary)
+
+    def test_ember_stopped_container_marker_gives_an_interrupted_result(self):
+        out = ("ok 1 a\n\np4m: killed [stopped]: the test container was stopped during the run (docker stop, e.g. Talos' "
+               "idle sweep). Not a test failure: run it again\n")
+        with mock.patch.object(tests, "_run_logged", return_value=(137, out, Path("x.log"))), \
+                mock.patch.object(tests, "_p4m", return_value=["p4m"]):
+            r = tests.ember(".")
+        self.assertTrue(r.interrupted)
+        self.assertIn("container was stopped", r.summary)
+        self.assertNotIn("out of memory", r.summary)
 
     def test_unexpected_failure_fails(self):
         ok, unexpected = tests.judge(self.r(failures=["k", "new"], rc=1, failed_count=2), {"k"})

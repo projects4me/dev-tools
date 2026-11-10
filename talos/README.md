@@ -748,10 +748,13 @@ stopped. The warm ember build inside a container that is otherwise in use is not
 **Idle rule** (no memory pressure needed): at most every 5 minutes, on a wake-up of its release worker (an event or
 its 5-minute timeout, so in practice every 5-10 minutes), each dispatcher stops the running p4m test
 container of an issue whose last use ended more than `docker.idleTestContainerMinutes` (default 15) ago. The last use is
-the latest `last_ended_at` of its Talos runs (any agent, from talos.db, not Gaia's modified time) or the end of an
-Agamemnon `resolve-conflict` test. It is skipped while any agent has a run in flight on the issue or a
-`resolve-conflict` test is using the workspace (`conflict_test_running`; a mark older than 2 h, or with no time, is one
-a stopped process left behind), and for an issue with no recorded end. Every dispatcher sweeps all Talos workspaces,
+the latest `last_ended_at` of its Talos runs (any agent, from talos.db, not Gaia's modified time), the end of an
+Agamemnon `resolve-conflict` test, or the end of a `p4m test` run in the container. It is skipped while any agent has a
+run in flight on the issue, a `resolve-conflict` test is using the workspace (`conflict_test_running`; a mark older than
+2 h, or with no time, is one a stopped process left behind) or a `p4m test` run from any session is using the container
+(a ship run by hand in the issue's workspace, say), and for an issue with no recorded Talos end. `p4m test` marks its use
+in `dev-tools/.p4m/test/in-use/` (a lock held for the run, `<container>.last` touched at its end). A container stopped
+mid-run is reported by `p4m test ember` as stopped, not as out of memory. Every dispatcher sweeps all Talos workspaces,
 so with agents set differently the shortest `idleTestContainerMinutes` wins (as with `staleHours` above). Only containers labelled under `<workspace>/.runs` are touched:
 never a checkout used interactively, never a gaia slot container. Like `ensure()` after any stop, the next `ai test`
 starts cold (about 40-60 s): the price of not holding a container through `awaiting_bot_review`, `in_review`, conflict
