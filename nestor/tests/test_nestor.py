@@ -140,6 +140,15 @@ class NestorServerTest(unittest.TestCase):
         self.assertEqual(self.call("GET", "/api/info", headers={"Host": "evil.example"})[0], 421)
         self.assertEqual(StubSim.seen, [])
 
+    def test_refusal_reads_the_request_body_first(self):
+        body = b"x" * 500_000
+        with socket.create_connection(("127.0.0.1", self.port), timeout=5) as s:
+            s.sendall(b"POST /sim/publish HTTP/1.1\r\nHost: 127.0.0.1:%d\r\nX-Nestor: 1\r\nContent-Length: %d\r\n\r\n"
+                      % (self.port, len(body)))
+            s.sendall(body)
+            self.assertIn(b" 404 ", s.recv(64))
+        self.assertEqual(StubSim.seen, [])
+
     def test_events_are_passed_through(self):
         status, body = self.call("GET", "/sim/hermes/events?intents=%5B%5D")
         self.assertIn(b"event: domain:event", body)
