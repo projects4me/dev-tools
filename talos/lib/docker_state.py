@@ -10,7 +10,7 @@ import subprocess
 TEST_LABEL = "p4m.test"     # the label `p4m test` puts on its containers (installer/testenv.py LABEL)
 TIMEOUT = 30                # seconds per docker call
 DEFAULT_HIGH = 85           # used/total memory (%) at or above which Docker is pressured
-DEFAULT_OK = 70             # once pressured, it stays so until used/total falls below this (%)
+DEFAULT_OK = 60             # once pressured, it stays so until used/total falls below this (%): 40% of Docker free
 OK, PRESSURED, DOWN = "ok", "pressured", "down"
 
 _UNITS = {"b": 1, "kb": 1000, "mb": 1000 ** 2, "gb": 1000 ** 3, "tb": 1000 ** 4,
@@ -39,6 +39,10 @@ def run_info():
 
 def run_stats():
     return _docker("stats", "--no-stream", "--format", "{{json .}}")
+
+
+def run_running_test_containers():
+    return _docker("ps", "--filter", f"label={TEST_LABEL}", "--format", "{{.Names}}")
 
 
 def run_test_containers():
@@ -87,9 +91,9 @@ def parse_stats(text):
 
 def read():
     """Docker's state: {"cli", "daemon", "error", "serverVersion", "memTotal", "memUsed", "containers",
-    "p4mTestContainers"}. Never raises."""
+    "p4mTestContainers", "p4mRunning" (the running ones)}. Never raises."""
     state = {"cli": True, "daemon": False, "error": "", "serverVersion": "", "memTotal": 0, "memUsed": 0,
-             "containers": [], "p4mTestContainers": 0}
+             "containers": [], "p4mTestContainers": 0, "p4mRunning": []}
     try:
         code, out, err = run_info()
     except DockerMissing as e:
@@ -108,6 +112,9 @@ def read():
         code, out, _ = run_test_containers()
         if code == 0:
             state["p4mTestContainers"] = len(out.split())
+        code, out, _ = run_running_test_containers()
+        if code == 0:
+            state["p4mRunning"] = out.split()
     except DockerMissing:
         pass
     return state
@@ -118,12 +125,15 @@ def percent_used(state):
     return 100.0 * (state.get("memUsed") or 0) / total if total else 0.0
 
 
-def verdict(state, high=DEFAULT_HIGH, low=DEFAULT_OK, was=None):
+def verdict(state, high=DEFAULT_HIGH, low=DEFAULT_OK, was=None, max_containers=0):
     """down: no CLI or the daemon is unreachable. pressured: used/total at or above `high`, or, when the previous
-    verdict was pressured, still above `low` (hysteresis, so it doesn't flap around `high`). Otherwise ok."""
+    verdict was pressured, still above `low` (hysteresis, so it doesn't flap around `high`). With max_containers > 0,
+    also pressured while that many p4m test containers run (the tally, not just the issues). Otherwise ok."""
     if not state.get("cli") or not state.get("daemon"):
         return DOWN
     used = percent_used(state)
+    if max_containers > 0 and len(state.get("p4mRunning") or []) >= max_containers:
+        return PRESSURED
     if used >= high or (was == PRESSURED and used > low):
         return PRESSURED
     return OK

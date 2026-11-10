@@ -132,7 +132,8 @@ def _start_issues_agent(agent, tracker, cfg, claude, dry_run, merge_route=None, 
     dispatcher = Dispatcher(agent, tracker, claude, dry_run=dry_run,
                             mcp=mcp_config(STATE_DIR / agent.name / "mcp.json"),
                             collector=lambda issue: gc_workspaces(only=issue), merge_route=merge_route,
-                            docker_free=lambda: free_docker(agent, tracker), idle_free=lambda: free_idle(agent))
+                            docker_free=lambda: free_docker(agent, tracker), idle_free=lambda: free_idle(agent),
+                            docker_pause=lambda: pause_heaviest(agent), docker_resume=lambda names: unpause(agent, names))
     hermes = (cfg["hermesUrl"], cfg.get("nodeBin", "node"), cfg.get("reconnectSeconds", 10))
     steps = None
     if agent.dispatch == "workflow":    # Gaia's workflows say what to run: no assignments, only Run agent steps
@@ -477,6 +478,24 @@ def free_idle(agent, dry_run=False):
     with dry_run only list them. Returns [(issue, name, reason)]. Docker unreachable: nothing is stopped."""
     return _stop_containers(agent, "idle containers", dry_run, lambda: docker_free.plan_idle(
         WORKSPACE, sessions.all_entries(), testenv, inuse, agent.docker_idle_minutes))
+
+
+def pause_heaviest(agent):
+    """docker pause the p4m test container using the most memory, when two or more run (see docker_free.heaviest).
+    Returns the paused names ([] when none or docker can't be asked)."""
+    names = docker_free.heaviest(docker_state.read())
+    try:
+        if names:
+            docker_free.pause(names)
+    except OSError as e:
+        log(f"docker pause: {names} not paused: {e}", agent.name)
+        return []
+    return names
+
+
+def unpause(agent, names):
+    """docker unpause what pause_heaviest paused; raises OSError when docker can't be asked."""
+    docker_free.unpause(names)
 
 
 def _stop_containers(agent, what, dry_run, choose):

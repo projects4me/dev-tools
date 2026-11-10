@@ -40,6 +40,20 @@ class DockerPauseTest(unittest.TestCase):
         self.assertFalse(pause.wait())
         self.assertIsNone(pause.since)
 
+    def test_pauses_one_container_once_and_unpauses_when_ok(self):
+        fake = Fake(state(90))
+        paused, resumed = [], []
+        pause = make(fake, check_seconds=0, free=lambda: None,
+                     pause_one=lambda: paused.append(1) or ["b"], resume=resumed.append)
+        t = threading.Thread(target=pause.wait)
+        t.start()
+        t.join(0.3)
+        self.assertEqual(paused, [1])
+        self.assertEqual(resumed, [])
+        fake.st = state(10)
+        t.join(5)
+        self.assertEqual(resumed, [["b"]])
+
     def test_verdict_is_reread_at_most_every_check_seconds(self):
         fake = Fake(state(10))
         pause = make(fake)

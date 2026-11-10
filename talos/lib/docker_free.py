@@ -136,3 +136,32 @@ def stop(names, run=subprocess.run):
         raise OSError(str(e)) from e
     if cp.returncode != 0:
         raise OSError((cp.stderr or cp.stdout).strip() or "docker stop failed")
+
+
+def heaviest(state, paused=()):
+    """The running p4m test container using the most memory, as a one-name list, when at least two run (pausing the
+    only one frees nothing for the others); else []. state is docker_state.read()'s dict; `paused` names are skipped."""
+    running = set(state.get("p4mRunning") or []) - set(paused)
+    if len(running) < 2:
+        return []
+    usage = {c["name"]: c["memory"] for c in state.get("containers") or [] if c["name"] in running}
+    return [max(usage, key=usage.get)] if usage else []
+
+
+def _docker_each(verb, names, run):
+    try:
+        cp = run(["docker", verb, *names], capture_output=True, text=True, stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError) as e:
+        raise OSError(str(e)) from e
+    if cp.returncode != 0:
+        raise OSError((cp.stderr or cp.stdout).strip() or f"docker {verb} failed")
+
+
+def pause(names, run=subprocess.run):
+    """docker pause the named containers (their memory stays, their processes freeze, so the others can finish)."""
+    _docker_each("pause", names, run)
+
+
+def unpause(names, run=subprocess.run):
+    """docker unpause the named containers. Raises OSError when docker can't be asked."""
+    _docker_each("unpause", names, run)

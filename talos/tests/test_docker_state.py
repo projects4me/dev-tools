@@ -89,6 +89,15 @@ class VerdictTest(unittest.TestCase):
         self.assertEqual(ds.verdict(between, 85, 70, was=ds.PRESSURED), ds.PRESSURED)
         self.assertEqual(ds.verdict(state(5), 85, 70, was=ds.PRESSURED), ds.OK)
 
+    def test_default_ok_is_forty_percent_free(self):
+        self.assertEqual(ds.DEFAULT_OK, 60)
+
+    def test_container_tally_holds_dispatch(self):
+        st = dict(state(1), p4mRunning=["a", "b"])
+        self.assertEqual(ds.verdict(st, max_containers=3), ds.OK)
+        self.assertEqual(ds.verdict(st, max_containers=2), ds.PRESSURED)
+        self.assertEqual(ds.verdict(st, max_containers=0), ds.OK)
+
     def test_zero_total_is_not_pressured(self):
         self.assertEqual(ds.verdict(state(0, total_gib=0)), ds.OK)
 

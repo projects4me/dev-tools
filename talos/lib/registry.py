@@ -124,7 +124,8 @@ class Agent:
     gaia_agent_id: str = ""             # a Gaia-declared agent (gaia_agents.py): its agents row; "" = from agent.json
     gaia_user_id: str = ""              # and the user it acts as, on a delegated token
     docker_memory_high_percent: float = 85   # Docker memory used/total (%) at or above which Docker is pressured
-    docker_memory_ok_percent: float = 70     # once pressured, Docker is ok again only below this (%)
+    docker_memory_ok_percent: float = 60     # once pressured, Docker is ok again only below this (%)
+    docker_max_test_containers: int = 0      # 0 = no cap; else dispatch is held while this many test containers run
     docker_start_command: list = None        # argv that starts the Docker engine (docker_engine.py); None = default
     docker_restart_command: list = None      # argv that restarts it; None = default
     docker_auto_start: bool = True           # the dispatcher starts a stopped engine once per hold (docker_pause.py)
@@ -164,12 +165,13 @@ def _argv(docker, key):
 
 
 def docker_settings(raw):
-    """agent.json `docker: {"memoryHighPercent": 85, "memoryOkPercent": 70, "startCommand": [...],
+    """agent.json `docker: {"memoryHighPercent": 85, "memoryOkPercent": 60, "maxTestContainers": 0, "startCommand": [...],
     "restartCommand": [...], "startTimeoutSeconds": 180, "autoStart": true, "checkSeconds": 30,
     "staleHours": 72, "idleTestContainerMinutes": 15, "holdMaxHours": 72}` -> the Agent fields."""
     docker = raw.get("docker") or {}
     return {"docker_memory_high_percent": float(docker.get("memoryHighPercent", 85)),
-            "docker_memory_ok_percent": float(docker.get("memoryOkPercent", 70)),
+            "docker_memory_ok_percent": float(docker.get("memoryOkPercent", 60)),
+            "docker_max_test_containers": int(docker.get("maxTestContainers", 0)),
             "docker_start_command": _argv(docker, "startCommand"),
             "docker_restart_command": _argv(docker, "restartCommand"),
             "docker_auto_start": bool(docker.get("autoStart", True)),

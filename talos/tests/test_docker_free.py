@@ -172,5 +172,28 @@ class StopTest(unittest.TestCase):
             docker_free.stop(["a"], run=missing)
 
 
+class PauseTest(unittest.TestCase):
+    STATE = {"p4mRunning": ["a", "b", "c"],
+             "containers": [{"name": "a", "memory": 1}, {"name": "b", "memory": 9}, {"name": "c", "memory": 5},
+                            {"name": "gaia", "memory": 99}]}
+
+    def test_heaviest_test_container(self):
+        self.assertEqual(docker_free.heaviest(self.STATE), ["b"])
+        self.assertEqual(docker_free.heaviest(self.STATE, paused=["b"]), ["c"])
+
+    def test_never_pauses_the_only_one(self):
+        self.assertEqual(docker_free.heaviest(dict(self.STATE, p4mRunning=["a"])), [])
+
+    def test_pause_and_unpause_call_docker(self):
+        calls = []
+
+        def run(cmd, **kw):
+            calls.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+        docker_free.pause(["b"], run)
+        docker_free.unpause(["b"], run)
+        self.assertEqual(calls, [["docker", "pause", "b"], ["docker", "unpause", "b"]])
+
+
 if __name__ == "__main__":
     unittest.main()
