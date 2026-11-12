@@ -9,6 +9,7 @@ the workspace itself is kept or already gone.
 
 import re
 import subprocess
+import sys
 from pathlib import Path
 
 from . import workspaces
@@ -134,6 +135,16 @@ def _remove_test_containers(testenv, names):
         testenv.remove(names)
     except testenv.TestEnvError as e:
         raise OSError(str(e)) from e
+
+
+def prune_test_images(testenv):
+    """Remove the p4m test images and dependency volumes no container uses any more (after the gc removed the
+    finished issues' test containers). Returns their names; [] when docker can't be asked, after saying why."""
+    try:
+        return testenv.prune_prometheus()
+    except testenv.TestEnvError as e:
+        print(f"gc: test images not pruned: {e}", file=sys.stderr, flush=True)
+        return []
 
 
 def collect_all(root, entries, agent_for, tracker_for, merged, dry_run=False, only=None, container=None,

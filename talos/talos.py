@@ -548,6 +548,8 @@ def _collect(agent_for, tracker_for, dry_run, only):
         lambda i: workspace_gc.pr_merged(WORKSPACE, i), dry_run, only, container, testenv)
     if not dry_run:
         workspaces.prune(WORKSPACE)
+        if only is None:                # shared by every workspace: only a full gc prunes them
+            workspace_gc.prune_test_images(testenv)
     return results
 
 

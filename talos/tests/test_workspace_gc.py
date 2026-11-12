@@ -48,5 +48,26 @@ class GcTest(unittest.TestCase):
         workspaces.prune(self.root)
 
 
+class PruneTestImagesTest(unittest.TestCase):
+    class Testenv:
+        class TestEnvError(Exception):
+            pass
+
+        def __init__(self, result):
+            self.result = result
+
+        def prune_prometheus(self):
+            if isinstance(self.result, Exception):
+                raise self.result
+            return self.result
+
+    def test_returns_what_was_removed(self):
+        self.assertEqual(workspace_gc.prune_test_images(self.Testenv(["p4m-test-prometheus:a"])),
+                         ["p4m-test-prometheus:a"])
+
+    def test_docker_unreachable_removes_nothing(self):
+        self.assertEqual(workspace_gc.prune_test_images(self.Testenv(self.Testenv.TestEnvError("down"))), [])
+
+
 if __name__ == "__main__":
     unittest.main()

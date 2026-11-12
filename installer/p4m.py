@@ -1704,8 +1704,17 @@ def cmd_test(args) -> None:
     ensure_docker(start=False)
     t = args.test_cmd
     if t == "clean":
-        removed = testenv.clean(getattr(args, "src", None))
+        src = getattr(args, "src", None)
+        removed = testenv.clean(src)
         ok(f"removed {len(removed)} test container(s)" + (f": {', '.join(removed)}" if removed else ""))
+        if src:
+            return                      # the shared images and volumes are pruned only by a full clean
+        try:
+            pruned = testenv.prune_prometheus()
+        except testenv.TestEnvError as e:
+            raise P4MError(str(e))
+        ok(f"removed {len(pruned)} unused prometheus test image(s)/volume(s)"
+           + (f": {', '.join(pruned)}" if pruned else ""))
         return
     if t == "slots":
         cmd_test_slots(args)

@@ -84,10 +84,10 @@ Firefox uses its own certificate store: set `security.enterprise_roots.enabled =
 | `p4m db reset [--with-test]` | Wipe the DB volume, re-import the dump, migrate |
 | `p4m test api --mode backend,acl` | gaia api-tester against gaia-test (`--filter`, `--mode live`) |
 | `p4m test phpunit [path]` / `test hermes` | Unit tests |
-| `p4m test ember [--filter X] [--fresh]` | Prometheus tests in a test container: source copied in, incremental `ember build -e test --watch`, `ember test --path` (reruns in seconds) |
+| `p4m test ember [--filter X] [--fresh]` | Prometheus tests in a test container: source copied in, incremental `ember build -e test --watch`, `ember test --path` (reruns in seconds). Runs on the checkout's own image and node_modules (see below) |
 | `p4m test slots setup\|status\|reset [K…]` | Gaia test slots: `setup` (re)builds the template database if stale (`--force`: always) and clones it into the slots' databases, `reset` only re-clones it; `status` shows the template, each slot's database, container, checkout and lock (`--src`, `--force`) |
 | `p4m test api\|phpunit --slot K` | Run in test slot K: container `p4m-test-gaia-slotK` on database `pr4m_test_K`; `api --prepare` resets the slot from the template instead of re-seeding |
-| `p4m test clean` | remove the throwaway `p4m-test-*` containers (with `--src`, only that checkout's; without, the slot containers too) |
+| `p4m test clean` | remove the throwaway `p4m-test-*` containers (with `--src`, only that checkout's; without, the slot containers too), then (without `--src`) the Prometheus test images and node_modules volumes no container uses |
 
 Every `p4m test` runs against **this workspace's checkout** (or `--src <path>`). The shared containers serve the
 folder `p4m up` ran from; when that is another folder, a throwaway `p4m-test-<service>-<hash>` container is
@@ -154,6 +154,17 @@ take 15+ minutes. Now the source lives inside the container, and `p4m up` starts
 `docker compose watch` in the background, which copies every saved file in within about a second
 (log: `dev-tools/logs/watch-prometheus.log`). `p4m status` shows `[file sync: on]`. If edits don't show up, run
 `p4m watch start`. After changing `package.json`, run `p4m up prometheus`, which reinstalls dependencies.
+
+**Prometheus tests bring their own image and dependencies.** `p4m test ember` (and `ai test prometheus`) never use
+the dev stack's image or its `prometheus_prometheus_node_modules` volume. The test container runs on
+`p4m-test-prometheus:<hash of the checkout's Dockerfile>`, built on first use from a context holding only that
+Dockerfile (and a stub `package.json`), with node_modules in the volume `p4m-test-prometheus-nm-<hash>`, keyed by
+the image and the checkout's `package.json` (+ lockfile) and installed once with that image's
+`npm install --no-audit --no-fund`. Checkouts with the same files share them; a branch that changes `package.json` or
+the Dockerfile gets its own on the next run, with no manual step. Runs preparing the same image or volume wait for each
+other (locks in `<temp>/p4m-test-locks`). `p4m test clean` (without `--src`) and a full `talos gc` remove the ones no container uses. The old
+workaround of reinstalling the shared volume by hand (`npx npm@9 install` in `prometheus_prometheus_node_modules`) is
+no longer needed.
 
 **Live reload.** ember's live-reload server runs on port 443 inside the prometheus container, and the
 proxy forwards `https://app.<domain>/_lr/*` to it. That way the reload snippet ember injects into
