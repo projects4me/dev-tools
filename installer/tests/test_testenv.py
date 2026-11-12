@@ -1,9 +1,11 @@
 """Unit tests for the test-container path logic. Run: python -m unittest discover -s tests"""
 
+import io
 import os
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 import unittest
 from unittest import mock
@@ -11,7 +13,18 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import filelock  # noqa: E402
 import testenv  # noqa: E402
+
+IMAGE, VOLUME = "p4m-test-prometheus:img", "p4m-test-prometheus-nm-vol"
+OWN_MOUNTS = [{"Type": "volume", "Name": VOLUME, "Destination": "/prometheus/node_modules"}]
+
+
+def prepared():
+    """Stub the image and dependency preparation of PrometheusTestContainer.ensure (keys IMAGE, VOLUME)."""
+    return mock.patch.multiple(testenv, prometheus_keys=mock.Mock(return_value=(IMAGE, VOLUME)),
+                               image_exists=mock.Mock(return_value=True), install_deps=mock.Mock(),
+                               build_image=mock.Mock(), _build_image=mock.Mock(), preparing=mock.MagicMock())
 
 
 class PathTest(unittest.TestCase):
@@ -57,7 +70,8 @@ class JobsCapTest(unittest.TestCase):
         testenv.inspect = lambda n: old_env if n == box.name else None
         testenv._docker = lambda *a, **k: calls.append(a)
         try:
-            self.assertTrue(box.ensure())
+            with prepared(), mock.patch.object(testenv, "LOCK_DIR", Path(tempfile.mkdtemp())):
+                self.assertTrue(box.ensure())
         finally:
             testenv.inspect, testenv._docker = old
         self.assertIn(("rm", "-f", box.name), calls)
@@ -83,16 +97,17 @@ class MemoryLimitTest(unittest.TestCase):
         box = testenv.PrometheusTestContainer(".", Path("."))
         box.manifest_file = Path("nonexistent-manifest")
         calls = []
-        info = {"Config": {"Env": [f"JOBS={testenv.PROMETHEUS_JOBS}"]}, "State": {"Running": True},
-                "HostConfig": {"Memory": 0}}
+        info = {"Config": {"Env": [f"JOBS={testenv.PROMETHEUS_JOBS}"], "Image": IMAGE}, "State": {"Running": True},
+                "HostConfig": {"Memory": 0}, "Mounts": OWN_MOUNTS}
         old = (testenv.inspect, testenv._docker)
         testenv.inspect = lambda n: info if n == box.name else None
         testenv._docker = lambda *a, **k: calls.append(a)
         try:
-            self.assertTrue(box.ensure())
-            info["HostConfig"]["Memory"] = box.memory_limit
-            calls.clear()
-            self.assertFalse(box.ensure())
+            with prepared(), mock.patch.object(testenv, "LOCK_DIR", Path(tempfile.mkdtemp())):
+                self.assertTrue(box.ensure())
+                info["HostConfig"]["Memory"] = box.memory_limit
+                calls.clear()
+                self.assertFalse(box.ensure())
         finally:
             testenv.inspect, testenv._docker = old
         self.assertEqual(calls, [])
@@ -538,6 +553,240 @@ class BuilderScriptTest(unittest.TestCase):
             finally:
                 for p in (ember, other):
                     p.kill()
+
+
+class PrometheusKeysTest(unittest.TestCase):
+    """The test image is keyed by the Dockerfile, the node_modules volume by the image and package.json (+ lock)."""
+
+    def setUp(self):
+        self.dir = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.dir, ignore_errors=True)
+        (self.dir / "Dockerfile").write_bytes(b"FROM node:22-bookworm\n")
+        (self.dir / "package.json").write_bytes(b'{"name": "prometheus"}\n')
+
+    def test_names(self):
+        image, volume = testenv.prometheus_keys(self.dir)
+        self.assertRegex(image, r"^p4m-test-prometheus:[0-9a-f]{12}$")
+        self.assertRegex(volume, r"^p4m-test-prometheus-nm-[0-9a-f]{12}$")
+
+    def test_same_files_same_keys_whatever_the_line_endings(self):
+        keys = testenv.prometheus_keys(self.dir)
+        other = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, other, ignore_errors=True)
+        (other / "Dockerfile").write_bytes(b"FROM node:22-bookworm\r\n")
+        (other / "package.json").write_bytes(b'{"name": "prometheus"}\r\n')
+        self.assertEqual(testenv.prometheus_keys(other), keys)
+
+    def test_package_json_changes_only_the_volume(self):
+        image, volume = testenv.prometheus_keys(self.dir)
+        (self.dir / "package.json").write_bytes(b'{"name": "prometheus", "overrides": {}}\n')
+        self.assertEqual(testenv.prometheus_keys(self.dir)[0], image)
+        self.assertNotEqual(testenv.prometheus_keys(self.dir)[1], volume)
+
+    def test_a_lockfile_changes_the_volume(self):
+        volume = testenv.prometheus_keys(self.dir)[1]
+        (self.dir / "package-lock.json").write_bytes(b"{}\n")
+        self.assertNotEqual(testenv.prometheus_keys(self.dir)[1], volume)
+
+    def test_dockerfile_changes_image_and_volume(self):
+        """Another npm resolves the same package.json differently (npm 8 ignored `overrides`)."""
+        image, volume = testenv.prometheus_keys(self.dir)
+        (self.dir / "Dockerfile").write_bytes(b"FROM node:16\n")
+        new_image, new_volume = testenv.prometheus_keys(self.dir)
+        self.assertNotEqual(new_image, image)
+        self.assertNotEqual(new_volume, volume)
+
+    def test_no_dockerfile_is_a_clear_error(self):
+        (self.dir / "Dockerfile").unlink()
+        with self.assertRaisesRegex(testenv.TestEnvError, "no Dockerfile"):
+            testenv.prometheus_keys(self.dir)
+
+
+class PrometheusPrepareTest(unittest.TestCase):
+    """Image build and dependency install: done once per key, reused after, never on the dev stack's volume."""
+
+    def setUp(self):
+        self.dir = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.dir, ignore_errors=True)
+        (self.dir / "Dockerfile").write_text("FROM node:22-bookworm\n", encoding="utf-8")
+        (self.dir / "package.json").write_text('{"name": "prometheus"}\n', encoding="utf-8")
+        patcher = mock.patch.object(testenv, "LOCK_DIR", self.dir / "locks")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_build_uses_a_context_of_the_dockerfile_alone(self):
+        seen = {}
+
+        def docker(*args, check=True, input=None, text=True):
+            if args[0] == "image":
+                return subprocess.CompletedProcess(args, 1, "", "")
+            context = Path(args[-1])
+            seen["files"] = sorted(p.name for p in context.iterdir())
+            seen["dockerfile"] = (context / "Dockerfile").read_text(encoding="utf-8")
+            seen["args"] = args
+            return subprocess.CompletedProcess(args, 0, "", "")
+        with mock.patch.object(testenv, "_docker", docker):
+            self.assertTrue(testenv.build_image(self.dir, "p4m-test-prometheus:abc"))
+        self.assertEqual(seen["files"], ["Dockerfile", "package.json"])
+        self.assertEqual(seen["dockerfile"], "FROM node:22-bookworm\n")
+        self.assertIn(f"{testenv.PROMETHEUS_RESOURCE}=image", seen["args"])
+
+    def test_an_existing_image_is_not_rebuilt(self):
+        calls = []
+
+        def docker(*args, check=True, input=None, text=True):
+            calls.append(args)
+            return subprocess.CompletedProcess(args, 0, "", "")
+        with mock.patch.object(testenv, "_docker", docker):
+            self.assertFalse(testenv.build_image(self.dir, "p4m-test-prometheus:abc"))
+        self.assertEqual([c[0] for c in calls], ["image"])
+
+    def _docker_with_stamp(self, stamp):
+        calls = []
+
+        def docker(*args, check=True, input=None, text=True):
+            calls.append((args, input))
+            out = stamp if args[0] == "run" and "cat" in args else ""
+            return subprocess.CompletedProcess(args, 0, out, "")
+        return calls, docker
+
+    def test_installed_volume_is_reused(self):
+        calls, docker = self._docker_with_stamp(VOLUME + "\n")
+        with mock.patch.object(testenv, "_docker", docker):
+            self.assertFalse(testenv.install_deps(self.dir, IMAGE, VOLUME))
+        self.assertFalse(any("npm install" in " ".join(a) for a, _ in calls))
+
+    def test_install_with_the_images_npm_into_the_keyed_volume(self):
+        calls, docker = self._docker_with_stamp("")
+        with mock.patch.object(testenv, "_docker", docker):
+            self.assertTrue(testenv.install_deps(self.dir, IMAGE, VOLUME))
+        self.assertIn(("volume", "create", "--label", f"{testenv.PROMETHEUS_RESOURCE}=deps", VOLUME),
+                      [a for a, _ in calls])
+        args, tar_bytes = next((a, i) for a, i in calls if "npm install" in " ".join(a))
+        self.assertIn(IMAGE, args)
+        self.assertIn(f"{VOLUME}:/prometheus/node_modules", args)
+        self.assertIn("npm install --no-audit --no-fund", args[-1])
+        self.assertIn(f"echo {VOLUME} > node_modules/{testenv.DEPS_STAMP}", args[-1])
+        self.assertFalse(any("prometheus_prometheus_node_modules" in " ".join(a) for a, _ in calls))
+        with tarfile.open(fileobj=io.BytesIO(tar_bytes)) as tar:
+            self.assertEqual(tar.getnames(), ["package.json"])
+
+
+class PrometheusEnsureTest(unittest.TestCase):
+    """The container is reused while it runs on the checkout's image and volume, and replaced when they change."""
+
+    def setUp(self):
+        self.box = testenv.PrometheusTestContainer(".", Path("."))
+        self.box.manifest_file = Path("nonexistent-manifest")
+        self.info = {"Config": {"Env": [f"JOBS={testenv.PROMETHEUS_JOBS}"], "Image": IMAGE},
+                     "State": {"Running": True}, "HostConfig": {"Memory": self.box.memory_limit},
+                     "Mounts": OWN_MOUNTS}
+        self.calls = []
+        locks = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, locks, ignore_errors=True)
+        for name, value in (("inspect", lambda n: self.info if n == self.box.name else None),
+                            ("_docker", lambda *a, **k: self.calls.append(a)),
+                            ("LOCK_DIR", locks)):
+            p = mock.patch.object(testenv, name, value)
+            p.start()
+            self.addCleanup(p.stop)
+
+    def test_matching_container_is_reused(self):
+        with prepared():
+            self.assertFalse(self.box.ensure())
+            testenv.install_deps.assert_not_called()
+        self.assertEqual(self.calls, [])
+
+    def test_changed_package_json_gets_a_new_container_on_the_new_volume(self):
+        with prepared():
+            testenv.prometheus_keys.return_value = (IMAGE, "p4m-test-prometheus-nm-new")
+            self.assertTrue(self.box.ensure())
+            testenv.install_deps.assert_called_once_with(self.box.checkout, IMAGE, "p4m-test-prometheus-nm-new")
+        self.assertIn(("rm", "-f", self.box.name), self.calls)
+        run = next(c for c in self.calls if c[0] == "run")
+        self.assertIn("p4m-test-prometheus-nm-new:/prometheus/node_modules", run)
+
+    def test_changed_dockerfile_builds_the_new_image(self):
+        with prepared():
+            testenv.prometheus_keys.return_value = ("p4m-test-prometheus:new", VOLUME)
+            self.assertTrue(self.box.ensure())
+            testenv.build_image.assert_called_once_with(self.box.checkout, "p4m-test-prometheus:new")
+            testenv._build_image.assert_called_once_with(self.box.checkout, "p4m-test-prometheus:new")
+            self.assertEqual([c.args[0] for c in testenv.preparing.call_args_list],
+                             [VOLUME, "p4m-test-prometheus:new"])
+        run = next(c for c in self.calls if c[0] == "run")
+        self.assertIn("p4m-test-prometheus:new", run)
+
+
+class PrometheusLockTest(unittest.TestCase):
+    def setUp(self):
+        self.locks = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.locks, ignore_errors=True)
+        p = mock.patch.object(testenv, "LOCK_DIR", self.locks)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def test_preparing_holds_the_lock_and_a_second_run_waits(self):
+        with testenv.preparing(VOLUME):
+            self.assertTrue(filelock.is_held(testenv._lock_file(VOLUME)))
+            with mock.patch.object(testenv, "LOCK_WAIT", 0), mock.patch.object(filelock, "POLL_SECONDS", 0.01):
+                with self.assertRaisesRegex(testenv.TestEnvError, "held by a running process"):
+                    with testenv.preparing(VOLUME):
+                        pass
+        self.assertFalse(filelock.is_held(testenv._lock_file(VOLUME)))
+
+    def test_other_keys_do_not_wait(self):
+        with testenv.preparing(VOLUME), mock.patch.object(testenv, "LOCK_WAIT", 0):
+            with testenv.preparing("p4m-test-prometheus-nm-other"):
+                pass
+
+    def test_lock_file_names_are_safe(self):
+        self.assertEqual(testenv._lock_file("p4m-test-prometheus:abc").name, "p4m-test-prometheus_abc.lock")
+
+    def test_prune_waits_for_preparing_runs(self):
+        calls = []
+        with mock.patch.object(testenv, "_docker", lambda *a, **k: calls.append(a)):
+            with testenv.preparing(VOLUME):
+                self.assertEqual(testenv.prune_prometheus(), [])
+        self.assertEqual(calls, [])
+
+
+class PrometheusPruneTest(unittest.TestCase):
+    def test_removes_only_unused_images_and_volumes(self):
+        used = {"p4m-test-prometheus-nm-a", "p4m-test-prometheus:a"}
+        removed = []
+
+        def docker(*args, check=True, input=None, text=True):
+            out = ""
+            if args[:2] == ("volume", "ls"):
+                out = "p4m-test-prometheus-nm-a\np4m-test-prometheus-nm-b\n"
+            elif args[:2] == ("image", "ls"):
+                out = "p4m-test-prometheus:a\np4m-test-prometheus:b\n<none>:<none>\n"
+            elif args[0] == "ps":
+                out = "abc\n" if args[-1].split("=", 1)[1] in used else ""
+            elif args[1] == "rm":
+                removed.append(args[2])
+            return subprocess.CompletedProcess(args, 0, out, "")
+        locks = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, locks, ignore_errors=True)
+        with mock.patch.object(testenv, "LOCK_DIR", locks), mock.patch.object(testenv, "_docker", docker):
+            self.assertEqual(testenv.prune_prometheus(), ["p4m-test-prometheus-nm-b", "p4m-test-prometheus:b"])
+        self.assertEqual(removed, ["p4m-test-prometheus-nm-b", "p4m-test-prometheus:b"])
+
+    def test_skips_what_a_run_holds(self):
+        locks = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, locks, ignore_errors=True)
+        removed = []
+
+        def docker(*args, check=True, input=None, text=True):
+            out = "p4m-test-prometheus-nm-b\n" if args[:2] == ("volume", "ls") else ""
+            if args[1:2] == ("rm",):
+                removed.append(args[2])
+            return subprocess.CompletedProcess(args, 0, out, "")
+        held = mock.MagicMock(side_effect=filelock.LockTimeout("held"))
+        with mock.patch.object(testenv, "LOCK_DIR", locks), mock.patch.object(testenv, "_docker", docker),                 mock.patch.object(filelock, "held", held):
+            self.assertEqual(testenv.prune_prometheus(), [])
+        self.assertEqual(removed, [])
 
 
 if __name__ == "__main__":

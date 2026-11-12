@@ -14,9 +14,12 @@ Several workspaces can exist on one machine, so `p4m test` checks what the share
   database (DB_NAME), and is emptied and re-filled when another checkout is synced into it.
 - prometheus has no source mount (a Windows bind mount makes the Ember build crawl). Its test container
   gets the source copied in (only changed files on later runs), keeps an incremental
-  `ember build --environment=test --watch` running, and runs `ember test --path` on the result.
+  `ember build --environment=test --watch` running, and runs `ember test --path` on the result. It runs on an
+  image built from the checkout's own Dockerfile, with node_modules in a volume installed from its package.json,
+  both keyed by content hash (see "prometheus image and dependencies"); the dev stack's are never touched.
 
-Containers are labelled `p4m.test` and removed by `p4m test clean`.
+Containers are labelled `p4m.test` and removed by `p4m test clean`, which also prunes the Prometheus test images
+and volumes no container uses (so does `talos gc`).
 """
 
 import hashlib
@@ -26,11 +29,16 @@ import os
 import queue
 import re
 import subprocess
+import shutil
 import tarfile
+import tempfile
 import threading
 import sys
 import time
+from contextlib import contextmanager
 from pathlib import Path
+
+import filelock
 
 IS_WINDOWS = os.name == "nt"
 LABEL = "p4m.test"
@@ -467,6 +475,154 @@ class GaiaTestContainer(CopiedSourceContainer):
         return self.fetch(REPORTS)
 
 
+# --- prometheus image and dependencies -----------------------------------------------------------
+#
+# A Prometheus test container runs on an image built from the checkout's own Dockerfile, with node_modules in a
+# volume installed by that image's npm from the checkout's package.json (+ lockfile). Both are keyed by content
+# hash and shared by every checkout with the same files; the dev stack's image and node_modules volume are never
+# used. The image is built from a context holding only the Dockerfile and a stub package.json, so it depends on
+# the Dockerfile alone (the source is copied in later, the dependencies live in the volume).
+
+PROMETHEUS_IMAGE = "p4m-test-prometheus"            # tag: the Dockerfile's hash
+PROMETHEUS_DEPS = "p4m-test-prometheus-nm-"         # + the hash of the image tag and package.json (+ lockfile)
+PROMETHEUS_RESOURCE = "p4m.test.prometheus"         # label on those images and volumes, for prune_prometheus()
+PROMETHEUS_LOCKFILES = ("package.json", "package-lock.json", "npm-shrinkwrap.json", "yarn.lock")
+STUB_PACKAGE = '{"name": "p4m-test-prometheus-base", "private": true}\n'
+DEPS_STAMP = ".p4m-deps-stamp"                      # in the volume, written after a successful install
+# Locks of the images and volumes being prepared: machine-wide, so runs from any workspace see each other.
+LOCK_DIR = Path(tempfile.gettempdir()) / "p4m-test-locks"
+LOCK_WAIT = 1800                                    # seconds to wait for another run's build or install
+
+
+def _content_hash(*parts):
+    h = hashlib.sha256()
+    for p in parts:
+        h.update(p.replace(b"\r\n", b"\n") if isinstance(p, bytes) else p.encode("utf-8"))
+        h.update(b"\0")
+    return h.hexdigest()[:12]
+
+
+def prometheus_keys(checkout):
+    """(image tag, node_modules volume) for a Prometheus checkout. The volume's key includes the image tag: the
+    same package.json installed by another npm resolves differently."""
+    checkout = Path(checkout)
+    dockerfile = checkout / "Dockerfile"
+    if not dockerfile.is_file():
+        raise TestEnvError(f"{checkout} has no Dockerfile to build the test image from")
+    if not (checkout / "package.json").is_file():
+        raise TestEnvError(f"{checkout} has no package.json")
+    image = f"{PROMETHEUS_IMAGE}:{_content_hash(dockerfile.read_bytes(), STUB_PACKAGE)}"
+    deps = [image]
+    for name in PROMETHEUS_LOCKFILES:
+        f = checkout / name
+        if f.is_file():
+            deps += [name, f.read_bytes()]
+    return image, PROMETHEUS_DEPS + _content_hash(*deps)
+
+
+def _lock_file(name):
+    return LOCK_DIR / (re.sub(r"[^\w.-]", "_", name) + ".lock")
+
+
+def _waiting(path):
+    print(f"waiting for another run preparing the same test image or dependencies ({path.name})",
+          file=sys.stderr, flush=True)
+
+
+@contextmanager
+def preparing(name):
+    """Hold the lock of an image or volume while it is built or installed and the container that uses it is made."""
+    try:
+        with filelock.held(_lock_file(name), wait_seconds=LOCK_WAIT, on_wait=_waiting):
+            yield
+    except filelock.LockTimeout as e:
+        raise TestEnvError(str(e))
+
+
+def image_exists(tag):
+    return _docker("image", "inspect", tag, check=False).returncode == 0
+
+
+def build_image(checkout, tag):
+    """Build `tag` from the checkout's Dockerfile, unless it exists (another run may have built it meanwhile)."""
+    with preparing(tag):
+        return _build_image(checkout, tag)
+
+
+def _build_image(checkout, tag):
+    """build_image() for a caller already holding preparing(tag)."""
+    if image_exists(tag):
+        return False
+    print(f"building test image {tag} from {Path(checkout) / 'Dockerfile'} (takes a few minutes once)",
+          file=sys.stderr, flush=True)
+    with tempfile.TemporaryDirectory(prefix="p4m-test-image-") as context:
+        shutil.copyfile(Path(checkout) / "Dockerfile", Path(context) / "Dockerfile")
+        (Path(context) / "package.json").write_text(STUB_PACKAGE, encoding="utf-8")
+        _docker("build", "-t", tag, "--label", f"{PROMETHEUS_RESOURCE}=image", context)
+    return True
+
+
+def deps_stamp(image, volume):
+    """The key of the install a node_modules volume holds ("" for none or an unfinished one)."""
+    r = _docker("run", "--rm", "-v", f"{volume}:/nm", "--entrypoint", "cat", image, f"/nm/{DEPS_STAMP}",
+                check=False)
+    return (r.stdout or "").strip() if r.returncode == 0 else ""
+
+
+def install_deps(checkout, image, volume):
+    """Install the checkout's package.json (+ lockfile) into `volume` with the image's npm, unless it holds that
+    install already. Call it holding preparing(volume). Returns True if it installed."""
+    _docker("volume", "create", "--label", f"{PROMETHEUS_RESOURCE}=deps", volume)
+    if deps_stamp(image, volume) == volume:
+        return False
+    print(f"installing npm dependencies into {volume} (takes a few minutes once)", file=sys.stderr, flush=True)
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tar:
+        for name in PROMETHEUS_LOCKFILES:
+            if (Path(checkout) / name).is_file():
+                tar.add(str(Path(checkout) / name), arcname=name, recursive=False)
+    # the image's own lockfile is the stub's: drop it so only the checkout's is used
+    script = (f"rm -f {' '.join(PROMETHEUS_LOCKFILES[1:])} && tar -x -C /prometheus "
+              f"&& npm install --no-audit --no-fund && echo {volume} > node_modules/{DEPS_STAMP}")
+    _docker("run", "--rm", "-i", "-v", f"{volume}:/prometheus/node_modules", "-w", "/prometheus",
+            "--entrypoint", "sh", image, "-c", script, input=buf.getvalue(), text=False)
+    return True
+
+
+def _labelled(what):
+    """Names of the Prometheus test images ("image") or node_modules volumes ("deps")."""
+    if what == "image":
+        cmd, fmt = ("image", "ls"), "{{.Repository}}:{{.Tag}}"
+    else:
+        cmd, fmt = ("volume", "ls"), "{{.Name}}"
+    out = _docker(*cmd, "--filter", f"label={PROMETHEUS_RESOURCE}={what}", "--format", fmt).stdout
+    return [n for n in out.split() if "<none>" not in n]
+
+
+def _in_use(what, name):
+    """Whether any container (running or not) is on the image / mounts the volume."""
+    flt = f"ancestor={name}" if what == "image" else f"volume={name}"
+    return bool(_docker("ps", "-a", "-q", "--filter", flt).stdout.strip())
+
+
+def prune_prometheus():
+    """Remove the Prometheus test images and node_modules volumes no container uses. Each is checked and removed
+    holding its lock, and skipped while a run holds it (preparing it, or making a container on it). Returns the
+    names removed."""
+    if any(filelock.is_held(p) for p in LOCK_DIR.glob("*.lock")):
+        return []                       # a run is preparing: leave everything to the next prune
+    removed = []
+    for what, rm in (("deps", ("volume", "rm")), ("image", ("image", "rm"))):   # volumes first
+        for name in _labelled(what):
+            try:
+                with filelock.held(_lock_file(name), wait_seconds=0):
+                    if not _in_use(what, name) and _docker(*rm, name, check=False).returncode == 0:
+                        removed.append(name)
+            except filelock.LockTimeout:
+                continue
+    return removed
+
+
 # --- prometheus ----------------------------------------------------------------------------------
 
 class PrometheusTestContainer(CopiedSourceContainer):
@@ -474,9 +630,8 @@ class PrometheusTestContainer(CopiedSourceContainer):
 
     root = "/prometheus"
 
-    def __init__(self, checkout, state_dir, base="prometheus-dev", memory=PROMETHEUS_MEMORY):
+    def __init__(self, checkout, state_dir, memory=PROMETHEUS_MEMORY):
         super().__init__(checkout, state_dir, "p4m-test-prometheus")
-        self.base = base
         self.memory = memory
         self.memory_limit = memory_bytes(memory)
 
@@ -506,23 +661,36 @@ class PrometheusTestContainer(CopiedSourceContainer):
         """True when a container's environment carries JOBS=PROMETHEUS_JOBS."""
         return f"JOBS={PROMETHEUS_JOBS}" in (info or {}).get("Config", {}).get("Env", [])
 
+    @staticmethod
+    def runs_on(info, image, volume):
+        """True when a container runs on `image` with `volume` as its node_modules."""
+        mounts = (info or {}).get("Mounts", [])
+        return (info or {}).get("Config", {}).get("Image") == image and any(
+            m.get("Type") == "volume" and m.get("Name") == volume and m.get("Destination") == "/prometheus/node_modules"
+            for m in mounts)
+
     # container lifecycle
     def ensure(self, fresh=False):
+        """Create the container unless one runs on the checkout's current image and dependencies (a changed
+        Dockerfile or package.json gets a new one). Returns True if it was (re)created."""
+        image, volume = prometheus_keys(self.checkout)
         own = inspect(self.name)
         if own and (fresh or not _running(own)):
             _docker("rm", "-f", self.name)
             own = None
-        if own and not (self.has_jobs(own) and self.has_memory_limit(own)):
-            _docker("rm", "-f", self.name)      # created before JOBS / the memory limit were set
+        if own and not (self.has_jobs(own) and self.has_memory_limit(own) and self.runs_on(own, image, volume)):
+            _docker("rm", "-f", self.name)      # older settings, or the Dockerfile / package.json changed
             own = None
         if own:
             return False
-        shared = inspect(self.base)
-        image = shared["Config"]["Image"] if shared else "prometheus:latest"
-        volume = next((m["Name"] for m in (shared or {}).get("Mounts", [])
-                       if m["Type"] == "volume" and m["Destination"] == "/prometheus/node_modules"),
-                      "prometheus_prometheus_node_modules")
-        _docker(*self.run_args(image, volume))
+        # Lock order is always volume, then image (here and in build_image), so two runs can't deadlock. Each lock
+        # is held until the container uses its resource, so prune_prometheus() can't remove it before then.
+        with preparing(volume):
+            build_image(self.checkout, image)
+            install_deps(self.checkout, image, volume)
+            with preparing(image):
+                _build_image(self.checkout, image)      # again, in case a prune removed it after the install
+                _docker(*self.run_args(image, volume))
         # The image holds an old copy of the source: start from an empty tree (node_modules is a volume).
         _docker("exec", self.name, "sh", "-c",
                 "find /prometheus -mindepth 1 -maxdepth 1 ! -name node_modules -exec rm -rf {} +")
