@@ -1731,7 +1731,7 @@ def cmd_test(args) -> None:
         if t == "api":
             ok(f"reports in {src / 'output'}") if rc == 0 else err(f"api tests failed - reports in {src / 'output'}")
         sys.exit(rc)
-    if t == "ember":
+    if t in ("ember", "lint"):
         src = _test_checkout(args, "prometheus")
         try:
             box = testenv.PrometheusTestContainer(
@@ -1747,6 +1747,9 @@ def cmd_test(args) -> None:
                 built, message = box.build(changed, before)
             except testenv.TestEnvError as e:
                 raise P4MError(str(e))
+            if t == "lint":
+                rc = box.run_lint()          # lints the synced source: no need to wait for the test build
+                sys.exit(rc)
             if not built:
                 raise P4MError(message)
             info(f"{len(changed)} file(s) synced, {message}")
@@ -2162,6 +2165,10 @@ def build_parser() -> argparse.ArgumentParser:
     t.add_argument("--filter", help="QUnit filter: text, or /regex/")
     t.add_argument("--src", help="checkout to test (default: the workspace's prometheus)")
     t.add_argument("--fresh", action="store_true", help="recreate the test container (full rebuild)")
+    t = tsub.add_parser("lint", help="prometheus lint:js and lint:hbs on the synced source (as CI runs them)")
+    t.add_argument("--src", help="checkout to lint (default: the workspace's prometheus)")
+    t.add_argument("--fresh", action="store_true", help="recreate the test container (full rebuild)")
+    t.set_defaults(filter=None)
     t = tsub.add_parser("hermes", help="hermes node --test"); t.add_argument("--src", help=src_help)
     t = tsub.add_parser("slots", help="gaia test slots: setup (build the checkout's template if missing, reset the slots), "
                                       "status, reset [K ...]")

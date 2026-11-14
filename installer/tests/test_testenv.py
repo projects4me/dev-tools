@@ -1,5 +1,6 @@
 """Unit tests for the test-container path logic. Run: python -m unittest discover -s tests"""
 
+import contextlib
 import io
 import os
 import shutil
@@ -170,6 +171,43 @@ class RunTestsTest(unittest.TestCase):
     def test_normal_run_returns_exit_code(self):
         box = self._box("print('# pass 1');raise SystemExit(0)")
         self.assertEqual(box.run_tests(), 0)
+
+
+class LintRunTest(unittest.TestCase):
+    """run_lint runs lint:js then lint:hbs in the container and returns the worst exit code."""
+
+    def _box(self, codes):
+        box = testenv.PrometheusTestContainer(".", Path("."))
+        box.lint_commands = lambda: [(n, [sys.executable, "-c", f"print({n!r});raise SystemExit({c})"])
+                                     for n, c in zip(testenv.LINT_SCRIPTS, codes)]
+        return box
+
+    def test_all_clean_is_zero(self):
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(self._box([0, 0]).run_lint(), 0)
+
+    def test_one_failing_script_fails_but_both_run(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(self._box([1, 0]).run_lint(), 1)
+        self.assertIn("== lint:hbs (exit 0)", out.getvalue())
+
+    def test_lint_commands_run_npm_scripts(self):
+        box = testenv.PrometheusTestContainer(".", Path("."))
+        self.assertEqual([n for n, _ in box.lint_commands()], ["lint:js", "lint:hbs"])
+        self.assertEqual(box.lint_commands()[0][1][-3:], ["npm", "run", "lint:js"])
+
+
+class LineEndingsTest(unittest.TestCase):
+    def test_crlf_templates_and_scripts_are_copied_as_lf(self):
+        box = testenv.PrometheusTestContainer(".", Path("."))
+        self.assertEqual(box.content("a.hbs", b"<a>\r\n</a>\r\n"), b"<a>\n</a>\n")
+        self.assertEqual(box.content("app/x.js", b"a\r\nb"), b"a\nb")
+
+    def test_other_files_are_untouched(self):
+        box = testenv.PrometheusTestContainer(".", Path("."))
+        self.assertIsNone(box.content("logo.png", b"\r\n"))
+        self.assertIsNone(box.content("a.hbs", b"a\nb"))
 
 
 class BuildWaitTest(unittest.TestCase):

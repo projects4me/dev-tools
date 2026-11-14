@@ -84,7 +84,8 @@ CGROUP_EVENTS = ("/sys/fs/cgroup/memory.events", "/sys/fs/cgroup/memory/memory.o
 # testem's report of a browser that went away
 BROWSER_GONE = re.compile(r"browser (exited|disconnected)|Browser .*(crashed|disconnected)|"
                           r"Chrome (exited|crashed)|disconnected,? .*reconnect", re.I)
-TEST_TIMEOUT = 900        # seconds for one `ember test`
+LINT_SCRIPTS = ("lint:js", "lint:hbs")     # package.json scripts, as Prometheus CI runs them
+TEST_TIMEOUT = 900       # seconds for one `ember test`
 STUCK_GRACE = 20          # seconds after a hang marker before the run is stopped (the other tests may still finish)
 # Output after which testem never reports completion: no test matched, or QUnit/TestLoader failed globally.
 HANG_MARKER = re.compile(r"No tests matched the filter|Global failure|TestLoader Failures", re.I)
@@ -280,6 +281,13 @@ class CopiedSourceContainer:
     root = "/"
     exclude = SYNC_EXCLUDE
     owner = None            # user the copied files belong to (None: the container's default user)
+    lf_suffixes = ()        # text files copied with LF line endings, whatever the checkout has
+
+    def content(self, rel, data):
+        """The bytes to copy for a file when its line endings are normalised, else None (copy it as is)."""
+        if self.lf_suffixes and rel.endswith(self.lf_suffixes) and b"\r\n" in data:
+            return data.replace(b"\r\n", b"\n")
+        return None
 
     def __init__(self, checkout, state_dir, prefix):
         self.checkout = Path(checkout).resolve()
@@ -306,7 +314,7 @@ class CopiedSourceContainer:
             buf = io.BytesIO()
             with tarfile.open(fileobj=buf, mode="w") as tar:
                 for rel in changed:
-                    tar.add(str(self.checkout / rel), arcname=rel, recursive=False)
+                    self._add(tar, rel)
             keep_owner = ["--no-same-owner"] if self.owner else []
             _docker("exec", "-i", *user, self.name, "tar", "-x", *keep_owner, "-C", self.root,
                     input=buf.getvalue(), text=False)
@@ -315,6 +323,16 @@ class CopiedSourceContainer:
         self.manifest_file.parent.mkdir(parents=True, exist_ok=True)
         self.manifest_file.write_text(json.dumps(new), encoding="utf-8")
         return changed + removed
+
+    def _add(self, tar, rel):
+        path = self.checkout / rel
+        data = self.content(rel, path.read_bytes()) if self.lf_suffixes else None
+        if data is None:
+            tar.add(str(path), arcname=rel, recursive=False)
+            return
+        info = tar.gettarinfo(str(path), arcname=rel)
+        info.size = len(data)
+        tar.addfile(info, io.BytesIO(data))
 
     def fetch(self, pattern):
         """Copy the container's files matching a shell glob relative to `root` (e.g. `output/*.json`) back
@@ -629,6 +647,8 @@ class PrometheusTestContainer(CopiedSourceContainer):
     """Source copied in, incremental test build kept warm, `ember test --path` per run."""
 
     root = "/prometheus"
+    # template-lint todos hash the source, line endings included: a CRLF checkout (Windows) must lint as LF
+    lf_suffixes = (".hbs", ".js", ".json")
 
     def __init__(self, checkout, state_dir, memory=PROMETHEUS_MEMORY):
         super().__init__(checkout, state_dir, "p4m-test-prometheus")
@@ -775,6 +795,22 @@ class PrometheusTestContainer(CopiedSourceContainer):
         if filter_text:
             cmd += ["--filter", filter_text]
         return cmd
+
+    def lint_commands(self):
+        """[(script, command)] for the lint scripts CI runs before the tests."""
+        return [(name, ["docker", "exec", "-w", "/prometheus", self.name, "npm", "run", name])
+                for name in LINT_SCRIPTS]
+
+    def run_lint(self):
+        """Run every lint script on the synced source and print its output under a `== <script> (exit N)`
+        header. Returns the worst exit code."""
+        worst = 0
+        for name, cmd in self.lint_commands():
+            r = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                               encoding="utf-8", errors="replace")
+            print(f"== {name} (exit {r.returncode})\n{r.stdout}", flush=True)
+            worst = worst or r.returncode
+        return worst
 
     def kill_tests(self):
         """Stop any `ember test` and its Chrome in the container (a killed caller leaves them running)."""
