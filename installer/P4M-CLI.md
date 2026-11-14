@@ -84,6 +84,7 @@ Firefox uses its own certificate store: set `security.enterprise_roots.enabled =
 | `p4m db reset [--with-test]` | Wipe the DB volume, re-import the dump, migrate |
 | `p4m test api --mode backend,acl` | gaia api-tester against gaia-test (`--filter`, `--mode live`) |
 | `p4m test phpunit [path]` / `test hermes` | Unit tests |
+| `p4m test lint [--fresh]` | Prometheus `npm run lint:js` and `lint:hbs` on the synced source in the same test container (CRLF `.hbs`/`.js`/`.json` are copied as LF, so template-lint todos match). `ai test prometheus` runs it before ember |
 | `p4m test ember [--filter X] [--fresh]` | Prometheus tests in a test container: source copied in, incremental `ember build -e test --watch`, `ember test --path` (reruns in seconds). Runs on the checkout's own image and node_modules (see below) |
 | `p4m test slots setup\|status\|reset [K…]` | Gaia test slots: `setup` (re)builds the template database if stale (`--force`: always) and clones it into the slots' databases, `reset` only re-clones it; `status` shows the template, each slot's database, container, checkout and lock (`--src`, `--force`) |
 | `p4m test api\|phpunit --slot K` | Run in test slot K: container `p4m-test-gaia-slotK` on database `pr4m_test_K`; `api --prepare` resets the slot from the template instead of re-seeding |

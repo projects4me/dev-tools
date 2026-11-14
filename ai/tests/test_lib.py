@@ -182,6 +182,46 @@ class JudgeTest(unittest.TestCase):
         self.assertIn("container was stopped", r.summary)
         self.assertNotIn("out of memory", r.summary)
 
+    def _lint(self, out, code=1):
+        with mock.patch.object(tests, "_run_logged", return_value=(code, out, Path("x.log"))), \
+                mock.patch.object(tests, "_p4m", return_value=["p4m"]):
+            return tests.lint(".")
+
+    def test_lint_clean(self):
+        r = self._lint("== lint:js (exit 0)\n== lint:hbs (exit 0)\n", 0)
+        self.assertEqual((r.summary, r.failures, r.rc), ("lint: OK", [], 0))
+        self.assertTrue(tests.judge(r, set())[0])
+
+    def test_lint_errors_are_named_with_file_and_line(self):
+        out = ("== lint:js (exit 1)\n/prometheus/app/a.js\n  12:3  error  'x' is not defined  no-undef\n"
+               "== lint:hbs (exit 1)\napp/templates/b.hbs\n  4:1  error  Non-translatable  no-bare-strings\n")
+        r = self._lint(out)
+        self.assertEqual(r.failures, ["app/a.js:12:3 'x' is not defined (no-undef)",
+                                      "app/templates/b.hbs:4:1 Non-translatable (no-bare-strings)"])
+        self.assertTrue(r.summary.startswith("lint: 2 errors"))
+        self.assertFalse(tests.judge(r, set())[0])
+
+    def test_stale_suppression_prints_the_prune_command(self):
+        out = ("== lint:js (exit 1)\nThere are suppressions left that do not occur anymore. "
+               "Consider re-running the command with `--prune-suppressions`.\n")
+        r = self._lint(out)
+        self.assertIn("npm run lint:js:prune", r.summary)
+        self.assertEqual(len(r.failures), 1)
+
+    def test_stale_template_todo_prints_clean_todo_for_the_file(self):
+        out = ("== lint:hbs (exit 1)\napp/templates/b.hbs\n  -:-  error  Todo violation passes "
+               "`no-bare-strings` rule. Please run `--clean-todo` to remove this todo from the project.  "
+               "invalid-todo-violation-rule\n")
+        r = self._lint(out)
+        self.assertIn("npx ember-template-lint app/templates/b.hbs --clean-todo", r.summary)
+
+    def test_lint_crash_without_errors_is_a_failure(self):
+        r = self._lint("== lint:js (exit 1)\nnpm ERR! missing script\n")
+        self.assertFalse(tests.judge(r, set())[0])
+
+    def test_lint_runs_before_ember(self):
+        self.assertEqual(tests.SUITES["prometheus"], ["lint", "ember"])
+
     def test_unexpected_failure_fails(self):
         ok, unexpected = tests.judge(self.r(failures=["k", "new"], rc=1, failed_count=2), {"k"})
         self.assertFalse(ok)

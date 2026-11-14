@@ -192,6 +192,57 @@ def ember(src, qunit_filter=None):
                        (passed or 0) + (failed or 0))
 
 
+# "== lint:js (exit 1)": header printed by p4m test lint before each script's output
+LINT_HEADER = re.compile(r"^== (lint:\w+) \(exit (\d+)\)$")
+# "  12:3  error  message  rule" (ESLint stylish and ember-template-lint's default formatter)
+LINT_ERROR = re.compile(r"^\s+(\d+|-):(\d+|-)\s+error\s+(.*?)(?:\s{2,}(\S+))?\s*$")
+LINT_ROOT = "/prometheus/"
+LINT_PRUNE = "npm run lint:js:prune"
+LINT_SHOWN = 5
+
+
+def _lint_failures(out):
+    """([file:line:col message (rule)], [files with a stale template todo], stale js suppressions?)."""
+    failures, stale_todos, stale_js = [], [], False
+    script, path = None, None
+    for raw in out.splitlines():
+        header = LINT_HEADER.match(raw)
+        if header:
+            script, path = header.group(1), None
+            continue
+        err = LINT_ERROR.match(raw)
+        if err and path:
+            line, col, message, rule = err.groups()
+            failures.append(f"{path}:{line}:{col} {message}" + (f" ({rule})" if rule else ""))
+            if rule == "invalid-todo-violation-rule" or "--clean-todo" in message:
+                stale_todos.append(path)
+        elif "suppressions left that do not occur anymore" in raw:
+            stale_js = True
+            failures.append("eslint-suppressions.json has suppressions that no longer occur")
+        elif script and raw and not raw.startswith((" ", "✖", "npm", ">")) and ("." in raw or "/" in raw):
+            path = raw.strip().removeprefix(LINT_ROOT)       # a file heading
+    return failures, sorted(set(stale_todos)), stale_js
+
+
+def lint(src):
+    """lint:js and lint:hbs on the synced source (`p4m test lint`): any error fails, nothing is baselined."""
+    code, out, log = _run_logged(f"prometheus-lint{_tag(src)}", _p4m("test", "lint", "--src", str(src)))
+    failures, todos, stale_js = _lint_failures(out)
+    if not failures:
+        if code:
+            return SuiteResult("lint", f"no summary (see log)\n" + "\n".join(out.strip().splitlines()[-6:]), [], log,
+                               code)
+        return SuiteResult("lint", "lint: OK", [], log, 0, 0)
+    lines = [f"lint: {len(failures)} error{'s' if len(failures) != 1 else ''}"]
+    lines += [f"  {f}" for f in failures[:LINT_SHOWN]]
+    if len(failures) > LINT_SHOWN:
+        lines.append(f"  … {len(failures) - LINT_SHOWN} more (see log)")
+    if stale_js:
+        lines.append(f"fix stale suppressions: {LINT_PRUNE}")
+    lines += [f"fix stale todo: npx ember-template-lint {f} --clean-todo" for f in todos]
+    return SuiteResult("lint", "\n".join(lines), failures, log, code or 1, len(failures))
+
+
 def hermes(src):
     code, out, log = _run_logged(f"hermes{_tag(src)}", _p4m("test", "hermes", "--src", str(src)))
     tail = [l.strip() for l in out.splitlines() if re.search(r"^# (tests|pass|fail)\b", l.strip())]
@@ -226,7 +277,7 @@ FIXTURE_DRIFT = ("fixtures/default.json differs from what prepare-test-db.sh wri
 SUITES = {
     # api first: it prepares the test DB, and the harness rewrites the fixture that tests/tools read (as CI does)
     "gaia": ["api", *(f"phpunit-{f.split('/')[-1]}" for f in PHPUNIT_FOLDERS)],
-    "prometheus": ["ember"],
+    "prometheus": ["lint", "ember"],
     "hermes": ["hermes"],
     "dev-tools": ["unittest"],
 }
@@ -238,6 +289,7 @@ def run_suite(repo, suite, src, targets=None, slot=None):
     if suite.startswith("phpunit-"):
         return phpunit(next(f for f in PHPUNIT_FOLDERS if f.endswith(suite[len("phpunit-"):])), src, slot)
     return {"api": lambda: api(src, targets.get("api"), slot=slot),
+            "lint": lambda: lint(src),
             "ember": lambda: ember(src, targets.get("ember")),
             "hermes": lambda: hermes(src),
             "unittest": lambda: devtools(src)}[suite]()
@@ -414,7 +466,7 @@ def _run_and_record(args, repo, src, targets, full):
     sha = git(repo, "merge-base", "HEAD", f"origin/{base_branch(repo)}", check=False) or ""
     base = baseline.load(repo, sha) if sha else {}
     suspects = [r.suite for r in runs
-                if set(r.failures) - known_failures(repo, r.suite) - set(base.get(r.suite, []))]
+                if r.suite != "lint" and set(r.failures) - known_failures(repo, r.suite) - set(base.get(r.suite, []))]
     if suspects and sha and not args.no_baseline and repo != "dev-tools":
         base = baseline.require(repo, sha, suspects, lambda suite, wt: run_suite(repo, suite, wt, slot=slot))
 
