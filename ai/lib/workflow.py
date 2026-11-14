@@ -172,7 +172,7 @@ def check_commit(repo, issue, files):
 def commit_files(repo, issue, message, files, push=True):
     """Stage exactly `files`, commit as Agent Odysseus with the co-author trailer, push to odysseus."""
     branch = check_commit(repo, issue, files)
-    ody(repo, "git", "add", "--", *files)
+    ody(repo, "git", "add", "-A", "--", *files)   # -A: a removed path stages its deletion
     staged = git(repo, "diff", "--cached", "--name-only").splitlines()
     unexpected = sorted(set(staged) - {f.replace("\\", "/") for f in files})
     if unexpected:

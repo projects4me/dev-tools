@@ -58,5 +58,46 @@ class CommentTextTest(unittest.TestCase):
             workflow.cmd_comment(Namespace(issue=7, file=None, text=None))
 
 
+class CliWiringTest(unittest.TestCase):
+    def test_comment_parses_text_without_a_file(self):
+        import ai
+        args = ai.build_parser().parse_args(["comment", "7", "--text", "<p>hi</p>"])
+        self.assertEqual((args.issue, args.text, args.file), (7, "<p>hi</p>", None))
+
+    def test_comment_still_parses_a_file(self):
+        import ai
+        args = ai.build_parser().parse_args(["comment", "7", "note.html"])
+        self.assertEqual((args.file, args.text), ("note.html", None))
+
+    def test_review_parses_issue(self):
+        import ai
+        args = ai.build_parser().parse_args(["review", "dev-tools", "5", "--open", "--issue", "9"])
+        self.assertEqual(args.issue, 9)
+
+    def test_review_issue_prints_gaia_comments_ci_and_verdict(self):
+        out = []
+        gaia = [c("Hammad", "2026-11-10 12:00", "please fix")]
+        with mock.patch.object(review, "_api", return_value=[]),                 mock.patch.object(review, "resolved_threads", return_value=set()),                 mock.patch.object(review, "_issue_comments", return_value=gaia),                 mock.patch.object(review, "ci_state", return_value=("fail", "failed: build")),                 mock.patch.object(review, "say", out.append):
+            review.cmd_review(Namespace(repo="dev-tools", pr=5, open=True, raw=False, issue=9))
+        text = "\n".join(out)
+        self.assertIn("please fix", text)
+        self.assertIn("NEEDS ADDRESSING", text)
+        self.assertIn("failing CI (failed: build)", text)
+
+    def test_review_without_issue_adds_no_verdict(self):
+        out = []
+        with mock.patch.object(review, "_api", return_value=[]),                 mock.patch.object(review, "resolved_threads", return_value=set()),                 mock.patch.object(review, "say", out.append):
+            review.cmd_review(Namespace(repo="dev-tools", pr=5, open=True, raw=False, issue=None))
+        self.assertNotIn("ADDRESS", "\n".join(out))
+
+
+class CommitDeletionsTest(unittest.TestCase):
+    def test_paths_are_staged_with_add_all_so_deletions_commit(self):
+        calls = []
+        with mock.patch.object(workflow, "check_commit", return_value="claude-issue-1"),                 mock.patch.object(workflow, "ody", lambda repo, *a, **k: calls.append(a)),                 mock.patch.object(workflow, "git", return_value=""),                 mock.patch.object(workflow, "git_dir", return_value=Path(__import__("tempfile").mkdtemp())),                 mock.patch.object(workflow, "say"):
+            workflow.commit_files("dev-tools", 1, "msg", ["gone.txt"], push=False)
+        self.assertEqual(calls[0], ("git", "add", "-A", "--", "gone.txt"))
+
+
 if __name__ == "__main__":
     unittest.main()
