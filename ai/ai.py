@@ -55,9 +55,10 @@ def build_parser():
     sp.add_argument("issue", type=int)
     sp.add_argument("--repo", choices=repos)
 
-    sp = add("comment", workflow.cmd_comment, "add an HTML comment to an issue from a file (or - for stdin)")
+    sp = add("comment", workflow.cmd_comment, "add an HTML comment to an issue from a file (or - for stdin) or --text")
     sp.add_argument("issue", type=int)
-    sp.add_argument("file")
+    sp.add_argument("file", nargs="?")
+    sp.add_argument("--text", help="the HTML comment itself, instead of a file")
 
     sp = add("status", workflow.cmd_status, "set an issue's status (and optionally assignee)")
     sp.add_argument("issue", type=int)
@@ -138,6 +139,8 @@ def build_parser():
     sp.add_argument("pr", type=int)
     sp.add_argument("--open", action="store_true", help="only threads without an agent reply or with follow-ups")
     sp.add_argument("--raw", action="store_true", help="don't fold bot boilerplate (<details> blocks, walkthroughs)")
+    sp.add_argument("--issue", type=int, help="also show the issue's Gaia comments from people since the agent's last "
+                                              "comment and the PR's CI, and end with what needs addressing")
 
     sp = add("rabbit", mergereviewer.cmd_rabbit, "CodeRabbit's state for the PR head: clean/findings/pending/paused/absent "
              "(exit 0/1/2/3/4); for a mergeReviewers repo clean/unreviewed (exit 0/5)")

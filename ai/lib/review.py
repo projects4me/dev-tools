@@ -174,6 +174,14 @@ def cmd_review(args):
             continue
         say(f"\n[PR comment] id={c['id']} {c['user']['login']}: {_show(c, args.raw)}")
     say(f"\n{shown} inline thread(s) shown" + (" (open only)" if args.open else ""))
+    if args.issue:
+        people = human_comments_since_agent(_issue_comments(args.issue))
+        for g in people:
+            say(f"\n[Gaia comment] {g['by']} ({g['date'][:16]}): {g['comment']}")
+        ci = ci_state(repo, pr)
+        say(f"\nCI: {ci[0]}" + (f" ({ci[1]})" if ci[1] else ""))
+        open_count = sum(1 for c in threads if is_open(c, resolved, answered, replies_by_thread))
+        say(feedback_summary(open_count, ci, people))
 
 
 def cmd_reply(args):
