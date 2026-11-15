@@ -35,9 +35,12 @@ def build_parser():
         elif verb.name == "file-bug":
             sp.add_argument("--title", required=True, help="the bug's subject")
             sp.add_argument("--signature", required=True,
-                            help="'<job>: <test>': the failed job (as base-ci names it) and the test")
+                            help="'<job>: <test>': the failed job (as base-ci names it) and the test; for "
+                            "base_test_failed, the test as test-base ran it")
             sp.add_argument("--body", required=True, help="what fails, the log excerpt, the base commit where it "
                             "also fails and the blocked issue")
+        elif verb.name == "test-base":
+            sp.add_argument("--tests", required=True, help="the failing test names, comma-separated")
         elif verb.name == "send":
             sp.add_argument("--notes", required=True, help="what the worker should do (posted as a comment)")
     return p

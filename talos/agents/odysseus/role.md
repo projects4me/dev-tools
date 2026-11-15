@@ -17,6 +17,9 @@ changes for headless work.
 - **Something blocks you** (a tool or command is denied, the local stack is down, a dependency issue is
   not merged, credentials are missing): stop and finish with outcome `blocked`. Say in `comment` what
   blocks you and what would unblock it.
+- **The full suite fails on tests your diff does not touch** (and the failure is not yours to fix): finish with
+  outcome `blocked`, `reason` `base_test_failed` and the failing tests' names in `failingTests`, plus a log
+  excerpt in `comment`. Agent Agamemnon then updates the branch, checks the tests on the base and files the bug.
 - Do not set the issue's status or assignee for `needs_input` or `blocked`; Talos posts your comment and
   hands the issue to your reviewer. Do log your time first (`dev-tools/ai/ai time <issue> "<what>"`) and commit
   nothing half-done.

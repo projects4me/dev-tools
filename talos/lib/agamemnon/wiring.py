@@ -4,13 +4,14 @@ identity of its own)."""
 
 import dataclasses
 import os
+import re
 import subprocess
 from datetime import datetime, timedelta
 
 from .. import bot_review as review_loop
 from .. import db, docker_engine, docker_free, docker_state, sessions, workspaces
 from ..ai_cli import run_ai
-from ..config import LOCAL_DIR, WORKSPACE, TalosError
+from ..config import DEV_TOOLS, LOCAL_DIR, WORKSPACE, TalosError
 from ..orchestrator import github
 from ..orchestrator import state as store
 from ..orchestrator.merge import Merger
@@ -23,7 +24,7 @@ from .tool import PUSH_REMOTE, Ports, Settings
 AGENT = "agamemnon"
 
 
-TEST_TIMEOUT = 1800     # seconds for `ai test <repo> --changed` before resolve-conflict gives up
+TEST_TIMEOUT = 1800     # seconds for `ai test <repo> --changed|--filter` before resolve-conflict or test-base gives up
 
 
 def _run(argv, cwd, args, env=None, check=True):
@@ -112,13 +113,30 @@ def stale_containers(agent, tracker):
     return lambda: docker_free.plan(WORKSPACE, sessions.all_entries(), tracker, testenv, agent.docker_stale_hours)
 
 
+def _repo_of(worker, tracker, issue):
+    repo = worker.repo_for(tracker.issue(issue).get("project"))
+    if not repo:
+        raise TalosError(f"#{issue} is not in one of the worker's projects")
+    return repo
+
+
+def _open_pr(merger, repo, issue):
+    pr = merger.find_pr(repo, issue)
+    return pr if pr and not pr.get("merged") else None
+
+
+def has_pr(worker, tracker, merger):
+    """has_pr(issue): whether the issue has an open PR (the done-hold release updates it, else the workspace)."""
+    return lambda issue: _open_pr(merger, _repo_of(worker, tracker, issue), issue) is not None
+
+
 def update_pr(worker, tracker, merger, gh, agent_name):
     """update_pr(issue): merge the base into the issue's open PR on GitHub and start its CI re-run counts over;
     branch_update.UPDATED or CONFLICT. TalosError when it has no open PR or GitHub fails."""
     def update(issue):
         repo = worker.repo_for(tracker.issue(issue).get("project"))
-        pr = merger.find_pr(repo, issue) if repo else None
-        if not pr or pr.get("merged"):
+        pr = _open_pr(merger, repo, issue) if repo else None
+        if not pr:
             raise TalosError(f"#{issue} has no open PR to update")
         slug = workspaces.ai_common().REPOS[repo]
         head = gh("pr", "view", str(pr["number"]), "--repo", slug, "--json", "headRefOid",
@@ -128,6 +146,44 @@ def update_pr(worker, tracker, merger, gh, agent_name):
             store.reset_ci_rerun(agent_name, issue, pr["number"])
         return result
     return update
+
+
+def update_workspace(worker, tracker):
+    """update_workspace(issue): merge origin/<base> into the issue's workspace branch, nothing pushed (a held issue
+    with no PR yet); branch_update.UPDATED, CURRENT or CONFLICT. TalosError when it has no workspace."""
+    def update(issue):
+        repo = _repo_of(worker, tracker, issue)
+        folder = workspaces.repo_folder(WORKSPACE, issue, repo)
+        if not (folder / ".git").exists():
+            raise TalosError(f"#{issue} has no workspace to update")
+        return branch_update.merge_local(git, ody_git, folder, workspaces.base_branch(repo))[0]
+    return update
+
+
+FAILED_TEST = re.compile(r"^\s+FAIL \S", re.M)     # a failing test in `ai test`'s verdict lines ("  FAIL <name> ...")
+
+
+def test_verdict(returncode, output):
+    """Whether an `ai test --filter` run passed (True) or a test failed (False); None when it did not get to run the
+    tests (a setup error, Docker down, no test slot): exit 2, or exit 1 with no failing test named."""
+    if returncode == 0:
+        return True
+    if returncode == 1 and FAILED_TEST.search(output or ""):
+        return False
+    return None
+
+
+def test_filter(folder, repo, pattern):
+    """(passed, output) of `ai test <repo> --filter <pattern>` in the workspace that holds folder; TalosError when
+    `ai test` did not get to run the tests, so that is never taken for a failing test."""
+    r = run_ai({**os.environ, **workspaces.env(folder.parent)}, "test", repo, "--filter", pattern,
+               timeout=TEST_TIMEOUT)
+    output = f"{r.stdout or ''}{r.stderr or ''}"
+    passed = test_verdict(r.returncode, output)
+    if passed is None:
+        tail = " | ".join(output.splitlines()[-5:])
+        raise TalosError(f"ai test did not run the tests (exit {r.returncode}): {tail}")
+    return passed, output
 
 
 def docker_ok(agent):
@@ -163,5 +219,9 @@ def build(agent_name=AGENT):
                   ody_git=ody_git, test_changed=test_changed, bot_review=bot_review(worker, worker_id, tracker),
                   update_worker_state=lambda issue, **fields: sessions.update(worker.name, issue, **fields),
                   docker_read=docker_state.read, docker_engine=lambda action: docker_engine.for_agent(agent, action),
-                  stale_containers=stale_containers(agent, tracker), stop_containers=docker_free.stop)
+                  stale_containers=stale_containers(agent, tracker), stop_containers=docker_free.stop,
+                  base_checkout=lambda issue, repo: workspaces.base_checkout(WORKSPACE, DEV_TOOLS, issue, repo),
+                  drop_checkout=lambda issue: workspaces.remove_checkout(WORKSPACE,
+                                                                         workspaces.scratch_path(WORKSPACE, issue)),
+                  test_filter=test_filter)
     return settings, ports

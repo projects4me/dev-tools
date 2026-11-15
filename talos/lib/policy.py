@@ -12,6 +12,10 @@ STATUS_EVENT = "issue.status.changed"
 LIMITED = "limited"      # read_outcome's outcome for a Claude usage or rate-limit stop; never a Claude-reported one
 AWAITING_BOT_REVIEW = "awaiting_bot_review"   # PR open, hand-off deferred until CodeRabbit settles (bot_review.py)
 OUTCOMES = ("done", "ready_to_ship", AWAITING_BOT_REVIEW, "needs_input", "blocked", "escalate")
+# the reasons a blocked run may give in its structured output (schema/outcome.json `reason`), kept as its handback
+# reason so triage reads it instead of the free text
+BASE_TEST_FAILED = "base_test_failed"     # the worker's local suite fails on tests its diff does not touch
+WORKER_REASONS = (BASE_TEST_FAILED,)
 
 
 class RunLimits(NamedTuple):
@@ -179,7 +183,8 @@ def read_outcome(result, now=None):
     A usage or rate-limit stop is the outcome LIMITED, with the time it resets (or None).
 
     reason is the handback reason code for a stop that is not Claude's own outcome (turn_budget, cost_budget,
-    talos_error, run_error), else None; Claude's own needs_input and blocked map to agent_* by the caller.
+    talos_error, run_error), or the one a blocked run gave (WORKER_REASONS), else None; Claude's own needs_input
+    and blocked map to agent_* by the caller.
 
     Missing or malformed structured output counts as a failure, never as success.
     """
@@ -207,8 +212,19 @@ def read_outcome(result, now=None):
     out = result.get("structured_output")
     if not isinstance(out, dict) or out.get("outcome") not in OUTCOMES:
         return "failed", "Claude finished without a valid outcome", str(result.get("result") or "")[:1500], "", None, "run_error"
+    reason = out.get("reason") if out["outcome"] == "blocked" and out.get("reason") in WORKER_REASONS else None
     return (out["outcome"], str(out.get("summary") or ""), str(out.get("comment") or ""),
-            str(out.get("handoff") or ""), None, None)
+            str(out.get("handoff") or ""), None, reason)
+
+
+def handback_detail(result):
+    """The detail a blocked run's structured reason carries ({"failingTests": [...]}), or None."""
+    out = result.get("structured_output") if isinstance(result, dict) else None
+    if not isinstance(out, dict) or out.get("outcome") != "blocked" or out.get("reason") not in WORKER_REASONS:
+        return None
+    tests = out.get("failingTests")
+    tests = [str(t).strip() for t in tests if str(t).strip()] if isinstance(tests, list) else []
+    return {"failingTests": tests} if tests else None
 
 
 # -- Claude usage / rate limits ------------------------------------------------------------------

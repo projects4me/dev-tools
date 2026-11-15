@@ -8,8 +8,9 @@ fix, and goes to the owner with a comment when Docker did not come back by the h
 
 A hold until another issue is done (`aga hold-until-done`) keeps its issue with Agamemnon, in review with its open PR.
 When the issue it waits for is done, the base is merged into the PR (the update-branch call; a conflict is left to the
-branch keeper's conflict flow), its CI re-run count starts over and the merge sweep takes it from there. When that
-issue is deferred or won't fix, or is not done by the hold's latest time, the hold goes to the owner with a comment."""
+branch keeper's conflict flow), its CI re-run count starts over and the merge sweep takes it from there. An issue
+held with no PR yet (a base_test_failed handback) gets the base merged into its workspace and goes back to the
+worker. When that issue is deferred or won't fix, or is not done by the hold's latest time, the hold goes to the owner with a comment."""
 
 import html
 
@@ -19,11 +20,13 @@ from . import branch_update, journal
 
 
 def release_due(tracker, worker_id, my_id, now, agent_name, dry_run=False, docker_ok=None, owner=None,
-                update_pr=None, done_statuses=()):
+                update_pr=None, done_statuses=(), has_pr=None, update_workspace=None):
     """Release the due holds; a short note of what was done ("" when nothing was due). docker_ok() tells whether
     Docker's verdict is ok (without it, Docker holds are left alone); owner is who gets an expired Docker or
     done-hold. update_pr(issue) merges the base into the issue's PR and returns branch_update.UPDATED or CONFLICT
-    (without it, done-holds are left alone); done_statuses are the statuses that count as done."""
+    (without it, done-holds are left alone); done_statuses are the statuses that count as done. has_pr(issue) tells
+    whether the issue has an open PR; one without (held with no PR yet) gets update_workspace(issue) instead, which
+    merges the base into its workspace (branch_update.UPDATED, CURRENT or CONFLICT), and goes back to the worker."""
     notes = []
     for hold in journal.due_holds(now):
         number = hold["issue"]
@@ -43,11 +46,15 @@ def release_due(tracker, worker_id, my_id, now, agent_name, dry_run=False, docke
     if docker_ok is not None:
         notes += _release_docker(tracker, worker_id, my_id, now, agent_name, dry_run, docker_ok, owner)
     if update_pr is not None:
-        notes += _release_done(tracker, my_id, now, agent_name, dry_run, owner, update_pr, done_statuses)
+        def update(number, blocker, note):
+            if has_pr is None or has_pr(number):
+                return _update_pr(tracker, number, blocker, update_pr, note)
+            return _give_back_to_worker(tracker, worker_id, number, blocker, update_workspace)
+        notes += _release_done(tracker, my_id, now, agent_name, dry_run, owner, update, done_statuses)
     return ", ".join(notes)
 
 
-def _release_done(tracker, my_id, now, agent_name, dry_run, owner, update_pr, done_statuses):
+def _release_done(tracker, my_id, now, agent_name, dry_run, owner, update, done_statuses):
     notes = []
     done = {_norm(s) for s in done_statuses}
     for hold, blocker in journal.done_holds():
@@ -70,7 +77,7 @@ def _release_done(tracker, my_id, now, agent_name, dry_run, owner, update_pr, do
                 notes.append(note + " (dry run)")
                 continue
             if action == "update":
-                note = _update(tracker, number, blocker, update_pr, note)
+                note = update(number, blocker, note)
             elif action == "owner":
                 if owner:
                     tracker.assign(number, owner)
@@ -85,7 +92,7 @@ def _release_done(tracker, my_id, now, agent_name, dry_run, owner, update_pr, do
     return notes
 
 
-def _update(tracker, number, blocker, update_pr, note):
+def _update_pr(tracker, number, blocker, update_pr, note):
     """Merge the base into the issue's PR and say so; a conflict is left to the branch keeper's conflict flow."""
     if update_pr(number) == branch_update.CONFLICT:
         tracker.comment(number, f"Agent Agamemnon: #{blocker} is done, the PR conflicts",
@@ -95,6 +102,19 @@ def _update(tracker, number, blocker, update_pr, note):
     tracker.comment(number, f"Agent Agamemnon: #{blocker} is done, base merged",
                     f"<p>#{blocker} is done: merged the base branch into the PR, CI runs again.</p>")
     return note
+
+
+def _give_back_to_worker(tracker, worker_id, number, blocker, update_workspace):
+    """Merge the base into the workspace of an issue with no PR and give it back to the worker with a comment; on a
+    conflict the workspace is left as it was and the comment says so."""
+    merged = update_workspace(number) != branch_update.CONFLICT
+    tracker.comment(number, f"Agent Agamemnon: #{blocker} is done, back to the worker",
+                    f"<p>#{blocker} is done: "
+                    + ("merged the base branch into the workspace; run the full suite again.</p>" if merged else
+                       "the base branch does not merge cleanly into the workspace, so it was left as it was: "
+                       "merge it (never rebase), then run the full suite again.</p>"))
+    tracker.assign(number, worker_id)
+    return f"#{number} #{blocker} is done: given back to the worker" + ("" if merged else " (base conflicts)")
 
 
 def _release_docker(tracker, worker_id, my_id, now, agent_name, dry_run, docker_ok, owner):

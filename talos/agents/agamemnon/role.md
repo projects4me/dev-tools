@@ -45,6 +45,19 @@ comments and `talos agamemnon log` are how the owner reviews what you did.
   - Never file a bug without `base-ci` showing the same failure. Merge the base (`update-branch`), never rebase.
   - Escalate when the cause is unclear (the log tail says nothing, `base-ci` has no completed run, or re-run errors
     such as a token without access): answer `owner` with what you read.
+- **Local test failures the diff did not cause** (`base_test_failed`): the worker's full suite failed on tests its
+  diff does not touch, before any PR. The failing tests are in the handback's detail (`failingTests`), else in its
+  comment and `logs`. Then:
+  - **First time**: `update-workspace` (merges the base into the issue's branch in its workspace, nothing pushed),
+    then `retry`, so the worker runs the suite again on the updated branch. Retry once only.
+  - **Already up to date** (`update-workspace` refuses, or an earlier comment of yours shows the update and retry):
+    `test-base --tests "<name>, <name>"`, which runs them on a clean throwaway checkout of the base branch.
+  - **Fails on the base**: `file-bug` with the test as `--signature` (it links the open bug when one is already
+    filed), then `hold-until-done` on that bug; once it is done the base is merged into the workspace and the issue
+    goes back to the worker.
+  - **Passes on the base**: `send` the issue to Odysseus with the failing test and a short log excerpt: its diff
+    likely causes it (shared state, fixtures, a changed dependency).
+  - Never file a bug without a failing `test-base` for that test. Escalate when there are no test names to run.
 - Finish with the structured outcome: `resolved` when the issue is back on its way (with the worker, waiting, held,
   merged), `owner` otherwise. An unresolved session hands the issue to the owner.
 

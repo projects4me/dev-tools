@@ -94,11 +94,12 @@ def start(agent, cfg, dry_run, claude=None):
                           rabbit=RabbitBudget(tracker.child_env))
     backlog = BacklogSender(agent, tracker, github.agamemnon_gh, RabbitBudget(tracker.child_env), dry_run=dry_run)
     overlap = OverlapGate(agent, worker, tracker, IssueFiles(tracker.child_env), dry_run=dry_run)
+    aga_merger = Merger(tracker.child_env, github.agamemnon_gh)
     holds = lambda: release_due(tracker, worker_id, me, _now(), agent.name, dry_run,    # noqa: E731
                                 lambda: wiring.docker_ok(agent), owners[0] if owners else None,
-                                wiring.update_pr(worker, tracker, Merger(tracker.child_env, github.agamemnon_gh),
-                                                 github.agamemnon_gh, agent.name),
-                                worker.dependency_done_statuses)
+                                wiring.update_pr(worker, tracker, aga_merger, github.agamemnon_gh, agent.name),
+                                worker.dependency_done_statuses, wiring.has_pr(worker, tracker, aga_merger),
+                                wiring.update_workspace(worker, tracker))
     triage = _triage(agent, worker, tracker, me, owners, claude, dry_run)
     merges.triage = keeper.triage = triage
     orchestrator = Orchestrator(agent, worker, tracker, worker_id, dry_run=dry_run, merges=merges, keeper=keeper,
