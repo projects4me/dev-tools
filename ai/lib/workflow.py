@@ -10,7 +10,7 @@ from pathlib import Path
 
 import sys
 
-from . import reposync
+from . import branchsync, reposync
 from .common import (AiError, PROJECT_FOR_REPO, REPOS, STATE_DIR, base_branch, config, git, git_dir, issue_repo,
                      devstack_locked, load_timers, now, ody, repo_dir, run_workspace, save_timers, say, start_timer,
                      strip_html, succeeds, timers_locked, tracker_call)
@@ -153,6 +153,21 @@ def with_trailer(text):
     return text + "\n"
 
 
+def bring_up_to_date(repo, issue):
+    """Fetch, then fast-forward a branch with no commits of its own to its moved base, keeping uncommitted work.
+    Returns True when the tree changed (the caller must re-test). A conflicting pop is left in the tree and handed
+    back as a merge conflict."""
+    base = base_branch(repo)
+    git(repo, "fetch", "-q", "origin")
+    state, detail = branchsync.update_unshipped(repo_dir(repo), base, f"{issue}")
+    if state == branchsync.CONFLICT:
+        raise AiError(f"merge conflict after updating to origin/{base}: {detail} (conflict left in the tree; "
+                      f"the pre-update work is kept in stash 'ai-ship-{issue}')")
+    if state == branchsync.UPDATED:
+        say(f"updated {branch_name(issue)} to origin/{base} (no commits of its own); the tree changed")
+    return state == branchsync.UPDATED
+
+
 def check_commit(repo, issue, files):
     """Refuse a commit that would break a house rule: wrong branch, never-commit file, base moved."""
     branch = git(repo, "branch", "--show-current")
@@ -162,7 +177,7 @@ def check_commit(repo, issue, files):
     if blocked:
         raise AiError(f"refusing to commit: {', '.join(blocked)} (house rule)")
     base = base_branch(repo)
-    git(repo, "fetch", "-q", "origin")
+    bring_up_to_date(repo, issue)
     if not succeeds(["git", "merge-base", "--is-ancestor", f"origin/{base}", "HEAD"], cwd=repo_dir(repo)):
         sha = git(repo, "rev-parse", "--short", f"origin/{base}")
         raise AiError(f"origin/{base} ({sha}) has moved past this branch: rebase onto origin/{base} first")

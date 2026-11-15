@@ -181,6 +181,9 @@ def cmd_ship(args):
         test_lines, review = progress["testLines"], progress.get("reviewLine")
         say(f"resuming: {head[:8]} already committed and pushed")
     else:
+        if workflow.bring_up_to_date(repo, issue) and not args.no_tests:
+            raise AiError(f"updated the branch to origin/{base_branch(repo)}, so the tree changed: run the full "
+                          f"`dev-tools/ai/ai test {repo}` again, then ship")
         test_lines = (["(tests not applicable: " + args.no_tests + ")"] if args.no_tests else test_gate(repo))
         review = review_line(repo)            # before the commit, which changes the tree fingerprint
     warning = cost_warning(repo, issue)
