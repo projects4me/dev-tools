@@ -560,7 +560,7 @@ class Dispatcher:
             title = "needs your input" if outcome == "needs_input" else "is blocked"
             self._hand_off(number, outcome, f"{self.agent.display_name} {title}", comment or summary,
                            reason=reason or ("agent_needs_input" if outcome == "needs_input" else "agent_blocked"),
-                           step=step)
+                           detail=policy.handback_detail(result), step=step)
         else:  # failed
             body = (f"<p>{html.escape(summary)}</p>"
                     f"<p>Talos log: <code>dev-tools/talos/state/logs/{html.escape(log_name)}</code></p>")

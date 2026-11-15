@@ -64,6 +64,11 @@ def path(root, issue):
     return Path(root) / RUNS_DIR / f"issue-{issue}"
 
 
+def repo_folder(root, issue, repo):
+    """The repo's folder in the issue's workspace."""
+    return path(root, issue) / REPO_PATH.get(repo, repo)
+
+
 def _git(cwd, *args, check=True):
     cp = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, encoding="utf-8",
                         errors="replace", stdin=subprocess.DEVNULL)
@@ -122,6 +127,12 @@ def ensure(root, tools, issue, repo):
     if not (folder / name / ".git").exists():
         _add_worktree(root / name, folder / name, issue, base_branch(repo))
     follow_remote(folder / name, issue)
+    _share(root, tools, folder, name)
+    return folder
+
+
+def _share(root, tools, folder, name):
+    """Link the tooling and the shared folders into the workspace folder and copy the shared files."""
     # The `ai` wrapper hands over to <its folder>/../../.dev-tools-runtime when that exists, so this link sends
     # the run's `dev-tools/ai/ai` to the tooling Talos runs from, also when dev-tools/ is the issue's worktree.
     links = {RUNTIME_NAME: tools, **{n: root / n for n in LINKED}}
@@ -133,7 +144,43 @@ def ensure(root, tools, issue, repo):
     for file_name in SHARED:
         if (root / file_name).exists():
             shutil.copyfile(root / file_name, folder / file_name)
-    return folder
+
+
+def base_checkout(root, tools, issue, repo):
+    """A throwaway workspace (<root>/.runs/base-issue-N) with the repo detached at origin/<base>, for running tests
+    on the base branch without touching the issue's own workspace; the repo's folder in it. One left over from an
+    earlier check is removed first."""
+    root, tools = Path(root), Path(tools)
+    folder = scratch_path(root, issue)
+    remove_checkout(root, folder)
+    name = REPO_PATH.get(repo, repo)
+    main = root / name
+    if not (main / ".git").exists():
+        raise WorkspaceError(f"no git checkout at {main}")
+    folder.mkdir(parents=True)
+    _git(main, "fetch", "-q", "origin")
+    _git(main, "worktree", "add", "--detach", str(folder / name), f"origin/{base_branch(repo)}")
+    _share(root, tools, folder, name)
+    return folder / name
+
+
+def scratch_path(root, issue):
+    return Path(root) / RUNS_DIR / f"base-issue-{issue}"
+
+
+def remove_checkout(root, folder):
+    """Remove a throwaway workspace: its worktrees (discarding any changes), its links (never their targets) and the
+    folder. Nothing to do when it is gone."""
+    root, folder = Path(root), Path(folder)
+    if not folder.exists():
+        return
+    for child in folder.iterdir():
+        if not is_link(child) and (child / ".git").is_file():
+            _git(root / child.name, "worktree", "remove", "--force", str(child))
+    for child in folder.iterdir():
+        if is_link(child):
+            unlink(child)
+    shutil.rmtree(folder)
 
 
 def _add_worktree(main, dest, issue, base):

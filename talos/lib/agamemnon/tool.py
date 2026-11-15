@@ -6,6 +6,7 @@ The outside world is reached through Ports, so the verbs can be tested without G
 
 import html
 import json
+import re
 import tempfile
 import time
 from dataclasses import dataclass, field
@@ -14,8 +15,10 @@ from pathlib import Path
 from typing import Callable
 
 from .. import docker_state, workspaces
+from ..config import TalosError
+from ..policy import BASE_TEST_FAILED
 from ..orchestrator import state as orchestrator_state
-from . import bugs, conflicts, journal, narrative, verbs
+from . import branch_update, bugs, conflicts, journal, narrative, verbs
 from .verbs import Refused
 
 LOG_LINES = 80
@@ -24,6 +27,7 @@ BACKUP_REF = "refs/agamemnon/backup"
 PUSH_REMOTE = "odysseus"
 REVIEW_STATUS = "in_review"
 CONFLICT_INCIDENT = "merge_conflict"
+BASE_TEST_INCIDENT = BASE_TEST_FAILED      # the incident type is the worker's reason
 CONFLICT_ACTION = "merge_conflict"      # the worker's action for a conflict (orchestrator/keeper.py)
 TEST_LINES = 40
 CI_LOG_LINES = 150
@@ -69,6 +73,10 @@ class Ports:
     docker_engine: Callable = None      # docker_engine("start"|"restart") -> docker_engine's result dict
     stale_containers: Callable = None   # stale_containers() -> [(issue, names, reason)] (docker_free.plan)
     stop_containers: Callable = None    # stop_containers(names): docker stop; raises OSError
+    base_checkout: Callable = None      # base_checkout(issue, repo) -> the repo's folder in a throwaway checkout of
+                                        # origin/<base> (workspaces.base_checkout)
+    drop_checkout: Callable = None      # drop_checkout(issue): remove that throwaway checkout
+    test_filter: Callable = None        # test_filter(folder, repo, filter) -> (passed, output): ai test --filter
 
 
 @dataclass
@@ -137,7 +145,7 @@ class Aga:
         return repo
 
     def folder(self):
-        folder = workspaces.path(self.s.workspace_root, self.number) / self.repo()
+        folder = workspaces.repo_folder(self.s.workspace_root, self.number, self.repo())
         if not folder.is_dir():
             raise Refused(f"#{self.number} has no workspace ({folder})")
         return folder
@@ -426,10 +434,14 @@ class Aga:
                    "talos agamemnon undo <id> releases the hold and gives the issue back to whom it was assigned to")
 
     def _hold_until_done(self, args):
-        """The blocked issue stays with Agamemnon (in review, with its open PR): only the journal hold is new."""
+        """The blocked issue stays with Agamemnon (in review, with its open PR): only the journal hold is new. An
+        issue with no PR yet (a base_test_failed handback) is assigned to Agamemnon for the hold."""
         blocker = str(args.get("blocker") or "").strip().lstrip("#")
         if not blocker.isdigit() or int(blocker) == self.number:
             raise Refused("hold-until-done needs the number of another issue to wait for")
+        pr = self.p.merger.find_pr(self.repo(), self.number)
+        if not pr or pr.get("merged"):
+            return self._hold_without_pr(int(blocker))
         before = self.issue_state()
         if before["running"]:
             raise Refused(f"#{self.number} has a run in flight")
@@ -438,7 +450,6 @@ class Aga:
         if str(before["assignee"] or "") != str(self.s.my_id):
             raise Refused(f"#{self.number} is not with {self.s.display_name}: the release merges the base into its "
                           f"PR only for an issue it holds")
-        pr = self.open_pr()
         latest = stamp(self.p.now() + timedelta(hours=self.s.hold_max_hours))
         journal.hold(self.number, latest, before["assignee"], f"{journal.DONE}{int(blocker)}")
         after = {**before, "heldUntil": latest}
@@ -446,6 +457,82 @@ class Aga:
                     "condition": f"issue {int(blocker)} done"}, before, after,
                    {"op": "release_hold", "issue": self.number, "assignee": before["assignee"]},
                    "talos agamemnon undo <id> releases the hold; the issue stays with whom it was assigned to")
+
+    def _hold_without_pr(self, blocker):
+        """hold-until-done for an issue with no PR: when the blocker is done, the release merges the base into the
+        issue's workspace and gives it back to the worker."""
+        if self.incident["type"] != BASE_TEST_INCIDENT:
+            raise Refused(f"#{self.number} has no open PR: hold-until-done without one is for {BASE_TEST_INCIDENT}")
+        before = self._holdable()
+        latest = stamp(self.p.now() + timedelta(hours=self.s.hold_max_hours))
+        journal.hold(self.number, latest, before["assignee"], f"{journal.DONE}{blocker}")
+        self.p.tracker.assign(self.number, self.s.my_id)
+        after = {**self.issue_state(), "heldUntil": latest}
+        return Act({"issue": self.number, "pr": None, "heldUntil": latest, "condition": f"issue {blocker} done"},
+                   before, after, {"op": "release_hold", "issue": self.number, "assignee": before["assignee"]},
+                   "talos agamemnon undo <id> releases the hold and gives the issue back to whom it was assigned to")
+
+    # -- base test failures ----------------------------------------------------------------
+
+    def _update_workspace(self, args):
+        """Merge origin/<base> into the issue's branch in its workspace, for a branch with no PR yet; nothing is
+        pushed, so the worker's next run tests (and later ships) the updated branch."""
+        if self.issue_state()["running"]:
+            raise Refused(f"#{self.number} has a run in flight")
+        pr = self.p.merger.find_pr(self.repo(), self.number)
+        if pr and not pr.get("merged"):
+            raise Refused(f"#{self.number} has PR #{pr['number']}: update it on GitHub (update-branch)")
+        folder, base = self.folder(), workspaces.base_branch(self.repo())
+        result, before, after = branch_update.merge_local(self.p.git, self.p.ody_git, folder, base)
+        if result == branch_update.CURRENT:
+            raise Refused(f"the branch already has origin/{base} ({before[:7]}): updating again changes nothing; "
+                          f"run the failing tests on the base (test-base)")
+        if result == branch_update.CONFLICT:
+            raise Refused(f"origin/{base} does not merge cleanly into the workspace (a conflict, or uncommitted "
+                          f"changes in files the base changed); nothing was changed")
+        return Act({"issue": self.number, "base": base, "from": before, "to": after}, {"head": before},
+                   {"head": after}, None,
+                   f"cannot be undone here: the workspace may hold the worker's uncommitted work; to take the merge "
+                   f"back, run git reset --keep {before[:7]} in it by hand")
+
+    def _test_base(self, args):
+        """The named tests on a clean throwaway checkout of origin/<base>, never the issue's workspace. The run counts
+        as one of the worker's runs (it waits for room under maxParallel); `ai test` takes its own test slot."""
+        tests = _tests(args.get("tests"))
+        if not tests:
+            raise Refused("test-base needs --tests: the failing test names, comma-separated")
+        repo = self.repo()
+        self._wait_for_run()
+        try:
+            folder = self.p.base_checkout(self.number, repo)
+            try:
+                sha = self.p.git(folder, "rev-parse", "HEAD")
+                passed, output = self.p.test_filter(folder, repo, _filter(tests))
+            finally:
+                self.p.drop_checkout(self.number)
+        except workspaces.WorkspaceError as e:
+            raise Refused(f"no clean checkout of the base for the tests: {e}")
+        except TalosError as e:         # not a test failure: nothing is recorded, so file-bug can't take it for one
+            raise Refused(f"the tests did not run on the base, so this says nothing about them: {e}")
+        state = {"base": workspaces.base_branch(repo), "sha": sha, "tests": tests, "passed": bool(passed)}
+        tail = "\n".join((output or "").splitlines()[-TEST_LINES:])
+        return Act({"issue": self.number, **state, "output": tail}, {}, state, {"op": "none"},
+                   "nothing to undo: the tests ran on a throwaway checkout that is already removed")
+
+    def _base_test_failure(self, signature):
+        """(test, base, sha) when this incident's latest test-base run failed and ran the signature's test;
+        Refused otherwise."""
+        runs = [a for a in journal.actions(incident_id=self.incident["id"]) if a["verb"] == "test-base"]
+        last = (runs[-1]["state_after"] or {}) if runs else {}
+        if not last:
+            raise Refused("run test-base first: a bug is filed only for a test that fails on the base branch")
+        if last.get("passed"):
+            raise Refused(f"the tests passed on {last.get('base')} (test-base): that is the branch's own failure, "
+                          f"not a bug on the base branch")
+        test = bugs.job_of(signature, last.get("tests") or [])
+        if not test:
+            raise Refused(f"test-base did not run '{signature}' (it ran: {', '.join(last.get('tests') or [])})")
+        return test, last.get("base"), last.get("sha")
 
     # -- docker ----------------------------------------------------------------------------
 
@@ -604,15 +691,15 @@ class Aga:
                    f"before it is {head[:7]}, also in this incident's backup")
 
     def _wait_for_run(self):
-        """The conflict test counts as one of the worker's runs: wait (at most agaWaitMaxMinutes) until the worker has
-        fewer than its maxParallel runs in flight; Refused when it still has not. It runs before the workspace checks, so a
-        run that started on this issue during the wait is still caught."""
+        """A conflict test or test-base run counts as one of the worker's runs: wait (at most agaWaitMaxMinutes)
+        until the worker has fewer than its maxParallel runs in flight; Refused when it still has not. It runs before
+        the workspace checks, so a run that started on this issue during the wait is still caught."""
         cap = self.s.worker.max_parallel
         deadline = self.p.now() + timedelta(minutes=self.s.orchestration.aga_wait_max_minutes)
         while len(self.p.in_flight()) >= cap:
             if self.p.now() >= deadline:
                 raise Refused(f"the worker has {cap} run(s) in flight (maxParallel) and none ended within "
-                              f"{self.s.orchestration.aga_wait_max_minutes} min: no room for the conflict test, try "
+                              f"{self.s.orchestration.aga_wait_max_minutes} min: no room for the test run, try "
                               f"again later")
             self.p.sleep(self.s.orchestration.aga_poll_seconds)
 
@@ -672,15 +759,13 @@ class Aga:
         signature = bugs.normalize(args.get("signature"))
         if not title or not signature or not body:
             raise Refused("file-bug needs --title, --signature (the failing job and test) and --body")
-        base = self._read_base_ci()
-        job = bugs.job_of(signature, base.get("also_failing_on_base") or [])
-        if not job:
-            raise Refused(f"base-ci does not show the job of '{signature}' failing on {base['base']} too (failing "
-                          f"there and on the PR: {', '.join(base.get('also_failing_on_base') or []) or 'none'}): "
-                          f"that is the PR's own failure, not a bug on the base branch")
+        if self.incident["type"] == BASE_TEST_INCIDENT:
+            job, base_name, base_sha = self._base_test_failure(signature)
+        else:
+            job, base_name, base_sha = self._base_ci_failure(signature)
         filed = journal.actions_of(bugs.FILE_BUG)
         project = self.issue.get("project")
-        state = {"signature": signature, "job": job, "baseSha": base.get("sha"), "project": project}
+        state = {"signature": signature, "job": job, "baseSha": base_sha, "project": project}
         done = self.s.worker.dependency_done_statuses
         existing = next((b for b in bugs.candidates(filed, signature, project)
                          if not bugs.is_closed(self.p.tracker.status_of(b), done)), None)
@@ -694,13 +779,24 @@ class Aga:
             raise Refused(f"{count} bug(s) filed today already, the most allowed (agaFileBugsPerDay)")
         created = self.p.tracker.create_issue(
             project, title,
-            bugs.description(self.s.display_name, self.number, signature, job, body, base["base"], base.get("sha")),
+            bugs.description(self.s.display_name, self.number, signature, job, body, base_name, base_sha),
             bugs.BUG_TYPE, bugs.BUG_PRIORITY, bugs.BUG_COMPLEXITY, self.s.worker_id, self.issue.get("milestone"))
         bug = int(created["issueNumber"])
         return Act({"issue": self.number, "bug": bug, "url": created.get("url"), "linked": False}, state,
                    {**state, "bug": bug, "created": True},
                    {"op": "wont_fix", "issue": self.number, "bug": bug},
                    f"talos agamemnon undo <id> sets #{bug} to won't fix with a comment")
+
+    def _base_ci_failure(self, signature):
+        """(job, base, sha) when base-ci shows the signature's job failing on the base branch too; Refused
+        otherwise."""
+        base = self._read_base_ci()
+        job = bugs.job_of(signature, base.get("also_failing_on_base") or [])
+        if not job:
+            raise Refused(f"base-ci does not show the job of '{signature}' failing on {base['base']} too (failing "
+                          f"there and on the PR: {', '.join(base.get('also_failing_on_base') or []) or 'none'}): "
+                          f"that is the PR's own failure, not a bug on the base branch")
+        return job, base["base"], base.get("sha")
 
     def _merge(self, args):
         o = self.s.orchestration
@@ -720,3 +816,14 @@ class Aga:
         return Act({"issue": self.number, "pr": pr["number"], "merged": result.get("merged")},
                    {"head": result.get("sha")}, {"merged": result.get("merged")}, None,
                    "cannot be undone here: reverting a merge on the base branch is a person's call")
+
+
+def _tests(value):
+    """The test names of test-base's --tests: a list, or one comma-separated string."""
+    items = value if isinstance(value, (list, tuple)) else str(value or "").split(",")
+    return [t for t in (" ".join(str(i).split()) for i in items) if t]
+
+
+def _filter(tests):
+    """`ai test --filter` for the tests: the name itself for one, a /regex/ of the names for several."""
+    return tests[0] if len(tests) == 1 else "/" + "|".join(re.escape(t) for t in tests) + "/"

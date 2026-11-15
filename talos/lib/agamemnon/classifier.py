@@ -2,6 +2,7 @@
 
 import re
 
+from ..policy import BASE_TEST_FAILED
 from .premise import OTHER
 
 # (incident type, handback reasons, patterns over summary + log tail), checked in order: the first match wins.
@@ -20,6 +21,12 @@ RULES = (
     ("test_contention", (), (r"tree changed", r"logs? (were|was|got) overwritten", r"runner (is )?hung",
                               r"no free (test )?slot")),
     ("ci_failed", ("ci_failed",), (r"\bci\b.*\b(failed|failing)\b", r"merge gate failed.*\bci\b")),
+    # a worker's local full suite failing on tests its diff does not touch (its structured reason, or its words)
+    (BASE_TEST_FAILED, (BASE_TEST_FAILED,),
+     (r"(outside|not in|not touched by|not caused by|unrelated to) (the|its|this|my) (diff|change)",
+      r"(diff|change) (does|did) not (touch|cause)",
+      r"\b(fails?|failing|failed) (on|in) (the )?(base|dev|main)( branch)? (too|as well)\b",
+      r"\balso (fails?|failing|failed) (on|in) (the )?(base|dev|main)\b")),
     ("dirty_generated", (), (r"generated files? (are |is )?modified",)),
 )
 
@@ -37,7 +44,11 @@ def classify(reason, summary, log_tail, detail=None):
         return "ci_failed"
     text = f"{detail}\n{summary or ''}\n{log_tail or ''}".lower()
     reason = str(reason or "").strip().lower()
-    for incident, reasons, patterns in RULES:
-        if reason in reasons or any(re.search(p, text) for p in patterns):
+    # a structured reason (the worker's own, e.g. base_test_failed) wins over whatever the free text mentions
+    for incident, reasons, _ in RULES:
+        if reason in reasons:
+            return incident
+    for incident, _, patterns in RULES:
+        if any(re.search(p, text) for p in patterns):
             return incident
     return OTHER

@@ -12,7 +12,9 @@
     "update": "bring a PR branch up to date with its base or push a resolved merge (visible on GitHub)",
     "resolve": "resolve a merge conflict whose hunks are all additive, test it and push it (visible on GitHub)",
     "merge": "merge a PR through the merge gate (visible on GitHub)",
-    "file": "file a Bug for a CI failure that is already on the base branch (visible in the tracker)"
+    "file": "file a Bug for a CI or test failure that is already on the base branch (visible in the tracker)",
+    "refresh": "merge the base branch into an issue's branch in its workspace, before it has a PR (nothing pushed)",
+    "basetest": "run named tests on a clean throwaway checkout of the base branch (takes a run and a test slot)"
   },
   "incidents": {
     "test_contention": {
@@ -22,6 +24,10 @@
     "ci_failed": {
       "tiers": ["read", "retry", "wait", "handoff", "file", "update", "notify"],
       "does": "read ci-log and base-ci, then tell the cause apart. Temporary (timeouts, network, registry or GitHub 5xx, rate limits): rerun-ci within the 3 re-run attempts per PR head. Fails on the base branch too: file-bug (or link the open one), then hold-until-done on that bug. Caused by the PR's diff: send the issue to Odysseus with the failing test and a log excerpt"
+    },
+    "base_test_failed": {
+      "tiers": ["read", "refresh", "retry", "basetest", "file", "wait", "handoff", "notify"],
+      "does": "read the failing test names (handback failingTests, else the comment and log). First time: update-workspace (merge the base into the branch), then retry once. Already up to date, or failing again after the update: test-base with those tests on a clean checkout of the base. Fails on the base: file-bug (or link the open one), then hold-until-done on that bug. Passes on the base: send the issue to Odysseus with the failing test and a log excerpt (the diff likely causes it)"
     },
     "merge_conflict": {
       "tiers": ["read", "restore", "resolve", "handoff"],

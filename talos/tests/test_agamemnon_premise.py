@@ -11,11 +11,11 @@ from lib.agamemnon import classifier, packet, premise  # noqa: E402
 from lib.config import TalosError  # noqa: E402
 
 TYPES = {"test_contention", "ci_failed", "merge_conflict", "dirty_generated", "docker_down", "docker_pressure",
-         "handback_failed"}
+         "handback_failed", "base_test_failed"}
 
 
 class PremiseTests(unittest.TestCase):
-    def test_shipped_premise_lists_the_seven_incident_types(self):
+    def test_shipped_premise_lists_the_eight_incident_types(self):
         p = premise.load()
         self.assertEqual(set(p.incidents), TYPES)
         self.assertEqual(p.tiers_for("docker_down"), ("read", "engine", "wait", "retry", "notify"))
@@ -24,6 +24,15 @@ class PremiseTests(unittest.TestCase):
         self.assertEqual(p.tiers_for("ci_failed"), ("read", "retry", "wait", "handoff", "file", "update", "notify"))
         for step in ("ci-log", "base-ci", "rerun-ci", "file-bug", "hold-until-done", "send"):
             self.assertIn(step, p.incidents["ci_failed"]["does"])
+
+    def test_base_test_failed_updates_tests_the_base_and_files_or_sends(self):
+        p = premise.load()
+        self.assertEqual(p.tiers_for("base_test_failed"),
+                         ("read", "refresh", "retry", "basetest", "file", "wait", "handoff", "notify"))
+        self.assertFalse(p.allows("base_test_failed", "update"))     # no PR on GitHub to update
+        self.assertFalse(p.allows("base_test_failed", "merge"))
+        for step in ("failingTests", "update-workspace", "retry", "test-base", "file-bug", "hold-until-done", "send"):
+            self.assertIn(step, p.incidents["base_test_failed"]["does"])
 
     def test_unlisted_type_is_not_handled(self):
         p = premise.load()
@@ -69,12 +78,24 @@ class ClassifierTests(unittest.TestCase):
             ("agent_blocked", "merge gate failed: ci", "", "ci_failed"),
             ("agent_blocked", "generated files modified", "", "dirty_generated"),
             ("agent_needs_input", "which design?", "", "other"),
+            ("base_test_failed", "", "", "base_test_failed"),
+            ("agent_blocked", "AppUi::Avatar fails locally, a test outside its diff", "", "base_test_failed"),
+            ("agent_blocked", "the full suite fails on dev too: AvatarTest", "", "base_test_failed"),
+            ("agent_blocked", "two failures my diff does not touch", "", "base_test_failed"),
             (None, None, None, "other"),
         ]
         for reason, summary, log, expected in cases:
             with self.subTest(reason=reason, summary=summary):
                 self.assertEqual(classifier.classify(reason, summary, log), expected)
 
+
+    def test_a_structured_reason_wins_over_the_free_text(self):
+        log = "error during connect: open //./pipe/dockerDesktopLinuxEngine\nMerge conflict in a.py\nKilled"
+        self.assertEqual(classifier.classify("base_test_failed", "out of memory", log), "base_test_failed")
+        self.assertEqual(classifier.classify("handoff_failed", "fails on dev", log), "handback_failed")
+        self.assertEqual(classifier.classify("agent_blocked", "ci failed: the lint job fails on dev", ""), "ci_failed")
+        self.assertEqual(classifier.classify("agent_blocked", "the migration fails on dev's schema", ""), "other")
+        self.assertEqual(classifier.classify("agent_blocked", "", log), "docker_down")
 
     def test_the_merge_sweeps_ci_handbacks_are_ci_failed_whatever_the_run_log_says(self):
         # the merge sweep's handback texts (orchestrator/merging.py), as they reach the Talos log

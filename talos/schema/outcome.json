@@ -23,6 +23,16 @@
     "pr": {
       "type": "integer",
       "description": "The PR number, for awaiting_bot_review. Omit otherwise."
+    },
+    "reason": {
+      "type": "string",
+      "enum": ["base_test_failed"],
+      "description": "Why a blocked run stopped, when it is one of these. base_test_failed: the full suite fails on tests your diff does not touch (set failingTests). Omit otherwise."
+    },
+    "failingTests": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "For reason base_test_failed: the failing tests' names, as the suite prints them. Omit otherwise."
     }
   }
 }

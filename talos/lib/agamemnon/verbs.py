@@ -54,14 +54,19 @@ VERBS = {v.name: v for v in (
          "unless Docker is down)"),
     Verb("stop-stale-containers", "free", PRIVATE, "stop the test containers of idle issues (deferred, won't fix or "
          "unchanged for a long time) to free Docker memory"),
+    Verb("update-workspace", "refresh", PRIVATE, "merge the base into the issue's branch in its workspace (no PR "
+         "yet; never a rebase, nothing pushed)"),
+    Verb("test-base", "basetest", PRIVATE, "run the named tests on a clean throwaway checkout of the base branch, "
+         "never the issue's workspace"),
     Verb("send", "handoff", PRIVATE, "send the issue to the worker with notes"),
     Verb("update-branch", "update", VISIBLE, "merge the base into the PR branch on GitHub (never a rebase)"),
     Verb("push-merge", "update", VISIBLE, "push a resolved merge from the workspace (fast-forward only)"),
     Verb("resolve-conflict", "resolve", VISIBLE, "merge the base into the branch in the workspace, resolve only "
          "additive conflicts, test, push as Odysseus, back to CodeRabbit (needs a backup in this incident)"),
     Verb("merge", "merge", VISIBLE, "merge the PR through the merge gate"),
-    Verb("file-bug", "file", VISIBLE, "file a Bug for a failed CI job that also fails on the base branch, assigned "
-         "to the worker (or link the open one already filed for the signature)"),
+    Verb("file-bug", "file", VISIBLE, "file a Bug for a failed CI job (or, for base_test_failed, a test test-base "
+         "saw fail) that also fails on the base branch, assigned to the worker (or link the open one already filed "
+         "for the signature)"),
 )}
 
 

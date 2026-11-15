@@ -131,6 +131,21 @@ class ReadOutcomeTest(unittest.TestCase):
         self.assertEqual(codes(None), "run_error")
         self.assertIsNone(codes({"subtype": "success", "structured_output": {"outcome": "blocked"}}))
 
+    def test_a_blocked_run_gives_its_structured_reason_and_failing_tests(self):
+        out = {"outcome": "blocked", "summary": "s", "comment": "<p>c</p>", "reason": "base_test_failed",
+               "failingTests": ["AppUi::Avatar shows initials", " ", "AppUi::Tabs switches"]}
+        r = {"subtype": "success", "structured_output": out}
+        self.assertEqual(policy.read_outcome(r)[5], "base_test_failed")
+        self.assertEqual(policy.handback_detail(r),
+                         {"failingTests": ["AppUi::Avatar shows initials", "AppUi::Tabs switches"]})
+        # only a known reason on a blocked run counts
+        for changed in ({"reason": "made_up"}, {"outcome": "needs_input"}):
+            r = {"subtype": "success", "structured_output": {**out, **changed}}
+            self.assertIsNone(policy.read_outcome(r)[5])
+            self.assertIsNone(policy.handback_detail(r))
+        self.assertIsNone(policy.handback_detail({"subtype": "success", "structured_output": {**out, "failingTests": []}}))
+        self.assertIsNone(policy.handback_detail(None))
+
     def test_turn_budget_hands_back_for_input(self):
         outcome, summary, comment, *_ = policy.read_outcome(
             {"is_error": True, "subtype": "error_max_turns", "num_turns": 80, "session_id": "s"})

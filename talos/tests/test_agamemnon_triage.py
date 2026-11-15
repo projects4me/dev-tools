@@ -135,6 +135,20 @@ class TriageTest(unittest.TestCase):
         self.triage().offer(5, triage.HANDBACK, "blocked", "", since=NOW)
         self.assertEqual(journal.incidents(issue=5)[0]["type"], "docker_down")
 
+    def test_a_base_test_handback_is_triaged_with_its_failing_tests(self):
+        detail = json.dumps({"failingTests": ["AppUi::Avatar shows initials"]})
+        self.log_file = self.tmp / "run.json"
+        self.log_file.write_text(json.dumps({"session_id": "x", "result": "Killed\nmerge conflict",
+                                             "structured_output": {"summary": "blocked on a test outside my diff"}}),
+                                 encoding="utf-8")
+        decision = self.triage().offer(5, triage.HANDBACK, "base_test_failed", detail, since=NOW)
+        self.assertTrue(decision.taken)
+        text = self.launched[0][0]
+        self.assertIn("type `base_test_failed`", text)
+        self.assertIn("AppUi::Avatar shows initials", text)
+        self.assertIn("test-base", text)
+        self.assertEqual(journal.incidents(issue=5)[0]["type"], "base_test_failed")
+
     def test_the_packet_carries_docker_state_and_verdict(self):
         state = {"daemon": True, "memTotal": 100, "memUsed": 95, "containers": []}
         t = self.triage()
@@ -250,6 +264,7 @@ class TriageTest(unittest.TestCase):
         self.assertIsNone(skip({"handoff_reason": "turn_budget", "auto_retries": 2}))   # retries used up
         self.assertEqual(skip({"handoff_reason": "turn_budget"}), "restarted automatically")
         self.assertEqual(skip({"handoff_reason": "agent_needs_input"}), "a question for the reviewer")
+        self.assertIsNone(skip({"handoff_reason": "base_test_failed"}))
         self.assertEqual(skip({"handoff_reason": "failed"}, modifiedUser=OWNER), "changed by someone since the handback")
 
     def test_the_sweep_offers_handbacks_and_comments_when_not_taken(self):
