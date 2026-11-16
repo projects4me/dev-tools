@@ -197,13 +197,14 @@ LINT_HEADER = re.compile(r"^== (lint:\w+) \(exit (\d+)\)$")
 # "  12:3  error  message  rule" (ESLint stylish and ember-template-lint's default formatter)
 LINT_ERROR = re.compile(r"^\s+(\d+|-):(\d+|-)\s+error\s+(.*?)(?:\s{2,}(\S+))?\s*$")
 LINT_ROOT = "/prometheus/"
-LINT_PRUNE = "npm run lint:js:prune"
+LINT_PRUNE = "p4m test lint --prune"
 LINT_SHOWN = 5
+LINT_TODO_RULE = re.compile(r"passes `([^`]+)` rule")
 
 
 def _lint_failures(out):
-    """([file:line:col message (rule)], [files with a stale template todo], stale js suppressions?)."""
-    failures, stale_todos, stale_js = [], [], False
+    """([file:line:col message (rule)], {file: rules} of stale template todos, stale js suppressions?)."""
+    failures, stale_todos, stale_js = [], {}, False
     script, path = None, None
     for raw in out.splitlines():
         header = LINT_HEADER.match(raw)
@@ -215,13 +216,14 @@ def _lint_failures(out):
             line, col, message, rule = err.groups()
             failures.append(f"{path}:{line}:{col} {message}" + (f" ({rule})" if rule else ""))
             if rule == "invalid-todo-violation-rule" or "--clean-todo" in message:
-                stale_todos.append(path)
+                m = LINT_TODO_RULE.search(message)
+                stale_todos.setdefault(path, set()).add(m.group(1) if m else "a rule")
         elif "suppressions left that do not occur anymore" in raw:
             stale_js = True
             failures.append("eslint-suppressions.json has suppressions that no longer occur")
         elif script and raw and not raw.startswith((" ", "✖", "npm", ">")) and ("." in raw or "/" in raw):
             path = raw.strip().removeprefix(LINT_ROOT)       # a file heading
-    return failures, sorted(set(stale_todos)), stale_js
+    return failures, stale_todos, stale_js
 
 
 def lint(src):
@@ -239,7 +241,11 @@ def lint(src):
         lines.append(f"  … {len(failures) - LINT_SHOWN} more (see log)")
     if stale_js:
         lines.append(f"fix stale suppressions: {LINT_PRUNE}")
-    lines += [f"fix stale todo: npx ember-template-lint {f} --clean-todo" for f in todos]
+    for f, found in sorted(todos.items()):
+        rules = sorted(found)
+        lines.append(f"your edit made the recorded todo for {', '.join(rules)} stale: fix the violation (preferred), "
+                     f"then clean the todo in the test container: p4m test lint --clean-todo {f}")
+    lines.append("lint fixes run in the test container, never a host npx (the host has no node_modules)")
     return SuiteResult("lint", "\n".join(lines), failures, log, code or 1, len(failures))
 
 

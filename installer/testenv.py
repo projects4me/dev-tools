@@ -812,6 +812,34 @@ class PrometheusTestContainer(CopiedSourceContainer):
             worst = worst or r.returncode
         return worst
 
+    def fix_lint(self, clean_todo=(), prune=False):
+        """Run the todo/suppression fixes inside the container (never a host npx) and copy `.lint-todo` and
+        `eslint-suppressions.json` back to the checkout. Returns the worst exit code."""
+        worst = 0
+        cmds = []
+        for f in clean_todo:
+            cmds.append(("clean-todo " + f, ["./node_modules/.bin/ember-template-lint", f, "--clean-todo"]))
+        if prune:
+            cmds.append(("lint:js:prune", ["npm", "run", "lint:js:prune"]))
+        for label, cmd in cmds:
+            r = subprocess.run(["docker", "exec", "-w", self.root, self.name, *cmd], stdout=subprocess.PIPE,
+                               stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace")
+            print(f"== {label} (exit {r.returncode})\n{r.stdout}", flush=True)
+            worst = worst or r.returncode
+        if worst == 0 and cmds:
+            self.copy_lint_state_back()
+        return worst
+
+    def copy_lint_state_back(self):
+        """Copy the container's `.lint-todo` and `eslint-suppressions.json` over the checkout's."""
+        todo = Path(self.checkout) / ".lint-todo"
+        if todo.is_dir():
+            shutil.rmtree(todo)                 # deleted todos must disappear from the checkout too
+        todo.mkdir(exist_ok=True)
+        _docker("cp", f"{self.name}:{self.root}/.lint-todo/.", str(todo), check=False)
+        _docker("cp", f"{self.name}:{self.root}/eslint-suppressions.json",
+                str(Path(self.checkout) / "eslint-suppressions.json"), check=False)
+
     def kill_tests(self):
         """Stop any `ember test` and its Chrome in the container (a killed caller leaves them running)."""
         # [e]mber / [c]hrome: the patterns must not match the sh -c command line that runs pkill

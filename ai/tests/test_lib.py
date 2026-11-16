@@ -205,7 +205,7 @@ class JudgeTest(unittest.TestCase):
         out = ("== lint:js (exit 1)\nThere are suppressions left that do not occur anymore. "
                "Consider re-running the command with `--prune-suppressions`.\n")
         r = self._lint(out)
-        self.assertIn("npm run lint:js:prune", r.summary)
+        self.assertIn("p4m test lint --prune", r.summary)
         self.assertEqual(len(r.failures), 1)
 
     def test_stale_template_todo_prints_clean_todo_for_the_file(self):
@@ -213,7 +213,9 @@ class JudgeTest(unittest.TestCase):
                "`no-bare-strings` rule. Please run `--clean-todo` to remove this todo from the project.  "
                "invalid-todo-violation-rule\n")
         r = self._lint(out)
-        self.assertIn("npx ember-template-lint app/templates/b.hbs --clean-todo", r.summary)
+        self.assertIn("p4m test lint --clean-todo app/templates/b.hbs", r.summary)
+        self.assertIn("recorded todo for no-bare-strings stale", r.summary)
+        self.assertNotIn("npx", r.summary.replace("never a host npx", ""))
 
     def test_lint_crash_without_errors_is_a_failure(self):
         r = self._lint("== lint:js (exit 1)\nnpm ERR! missing script\n")

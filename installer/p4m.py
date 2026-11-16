@@ -1748,6 +1748,8 @@ def cmd_test(args) -> None:
             except testenv.TestEnvError as e:
                 raise P4MError(str(e))
             if t == "lint":
+                if args.clean_todo or args.prune:
+                    sys.exit(box.fix_lint(args.clean_todo, args.prune))
                 rc = box.run_lint()          # lints the synced source: no need to wait for the test build
                 sys.exit(rc)
             if not built:
@@ -2168,6 +2170,10 @@ def build_parser() -> argparse.ArgumentParser:
     t = tsub.add_parser("lint", help="prometheus lint:js and lint:hbs on the synced source (as CI runs them)")
     t.add_argument("--src", help="checkout to lint (default: the workspace's prometheus)")
     t.add_argument("--fresh", action="store_true", help="recreate the test container (full rebuild)")
+    t.add_argument("--clean-todo", nargs="+", metavar="FILE", default=[],
+                   help="in the container: ember-template-lint FILE --clean-todo, then copy .lint-todo back")
+    t.add_argument("--prune", action="store_true",
+                   help="in the container: npm run lint:js:prune, then copy eslint-suppressions.json back")
     t.set_defaults(filter=None)
     t = tsub.add_parser("hermes", help="hermes node --test"); t.add_argument("--src", help=src_help)
     t = tsub.add_parser("slots", help="gaia test slots: setup (build the checkout's template if missing, reset the slots), "
