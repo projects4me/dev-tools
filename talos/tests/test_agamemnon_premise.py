@@ -11,11 +11,11 @@ from lib.agamemnon import classifier, packet, premise  # noqa: E402
 from lib.config import TalosError  # noqa: E402
 
 TYPES = {"test_contention", "ci_failed", "merge_conflict", "dirty_generated", "docker_down", "docker_pressure",
-         "handback_failed", "base_test_failed"}
+         "handback_failed", "base_test_failed", "base_lint_failed"}
 
 
 class PremiseTests(unittest.TestCase):
-    def test_shipped_premise_lists_the_eight_incident_types(self):
+    def test_shipped_premise_lists_the_nine_incident_types(self):
         p = premise.load()
         self.assertEqual(set(p.incidents), TYPES)
         self.assertEqual(p.tiers_for("docker_down"), ("read", "engine", "wait", "retry", "notify"))
@@ -33,6 +33,13 @@ class PremiseTests(unittest.TestCase):
         self.assertFalse(p.allows("base_test_failed", "merge"))
         for step in ("failingTests", "update-workspace", "retry", "test-base", "file-bug", "hold-until-done", "send"):
             self.assertIn(step, p.incidents["base_test_failed"]["does"])
+
+    def test_base_lint_failed_lints_the_base_and_files_or_sends(self):
+        p = premise.load()
+        self.assertEqual(p.tiers_for("base_lint_failed"), ("read", "basetest", "file", "wait", "handoff", "notify"))
+        self.assertFalse(p.allows("base_lint_failed", "update"))
+        for step in ("lint-base", "invalid-todo-violation-rule", "file-bug", "hold-until-done", "send"):
+            self.assertIn(step, p.incidents["base_lint_failed"]["does"])
 
     def test_unlisted_type_is_not_handled(self):
         p = premise.load()
@@ -52,7 +59,7 @@ class PremiseTests(unittest.TestCase):
             premise.load(Path("no-such-premise.json"))
 
     def test_every_shipped_incident_is_a_classifier_output(self):
-        self.assertEqual({r[0] for r in classifier.RULES}, TYPES)
+        self.assertEqual({r[0] for r in classifier.RULES} | {classifier.BASE_LINT_FAILED}, TYPES)
 
 
 class ClassifierTests(unittest.TestCase):

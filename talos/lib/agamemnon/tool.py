@@ -18,7 +18,8 @@ from .. import docker_state, workspaces
 from ..config import TalosError
 from ..policy import BASE_TEST_FAILED
 from ..orchestrator import state as orchestrator_state
-from . import branch_update, bugs, conflicts, journal, narrative, verbs
+from . import branch_update, bugs, conflicts, journal, lint, narrative, verbs
+from .classifier import BASE_LINT_FAILED
 from .verbs import Refused
 
 LOG_LINES = 80
@@ -28,6 +29,9 @@ PUSH_REMOTE = "odysseus"
 REVIEW_STATUS = "in_review"
 CONFLICT_INCIDENT = "merge_conflict"
 BASE_TEST_INCIDENT = BASE_TEST_FAILED      # the incident type is the worker's reason
+BASE_LINT_INCIDENT = BASE_LINT_FAILED
+HOLD_WITHOUT_PR = (BASE_TEST_INCIDENT, BASE_LINT_INCIDENT)     # handbacks before any PR
+LINT_REPOS = ("prometheus",)            # the repos whose `ai test` has a lint suite
 CONFLICT_ACTION = "merge_conflict"      # the worker's action for a conflict (orchestrator/keeper.py)
 TEST_LINES = 40
 CI_LOG_LINES = 150
@@ -77,6 +81,7 @@ class Ports:
                                         # origin/<base> (workspaces.base_checkout)
     drop_checkout: Callable = None      # drop_checkout(issue): remove that throwaway checkout
     test_filter: Callable = None        # test_filter(folder, repo, filter) -> (passed, output): ai test --filter
+    lint: Callable = None               # lint(folder, repo) -> (passed, output): ai test <repo> --suite lint
 
 
 @dataclass
@@ -461,8 +466,9 @@ class Aga:
     def _hold_without_pr(self, blocker):
         """hold-until-done for an issue with no PR: when the blocker is done, the release merges the base into the
         issue's workspace and gives it back to the worker."""
-        if self.incident["type"] != BASE_TEST_INCIDENT:
-            raise Refused(f"#{self.number} has no open PR: hold-until-done without one is for {BASE_TEST_INCIDENT}")
+        if self.incident["type"] not in HOLD_WITHOUT_PR:
+            raise Refused(f"#{self.number} has no open PR: hold-until-done without one is for "
+                          f"{' and '.join(HOLD_WITHOUT_PR)}")
         before = self._holdable()
         latest = stamp(self.p.now() + timedelta(hours=self.s.hold_max_hours))
         journal.hold(self.number, latest, before["assignee"], f"{journal.DONE}{blocker}")
@@ -502,22 +508,69 @@ class Aga:
         if not tests:
             raise Refused("test-base needs --tests: the failing test names, comma-separated")
         repo = self.repo()
+        sha, passed, output = self._on_base(repo, "the tests",
+                                            lambda folder: self.p.test_filter(folder, repo, _filter(tests)))
+        state = {"base": workspaces.base_branch(repo), "sha": sha, "tests": tests, "passed": bool(passed)}
+        tail = "\n".join((output or "").splitlines()[-TEST_LINES:])
+        return Act({"issue": self.number, **state, "output": tail}, {}, state, {"op": "none"},
+                   "nothing to undo: the tests ran on a throwaway checkout that is already removed")
+
+    def _lint_base(self, args):
+        """lint (`ai test <repo> --suite lint`) on a clean throwaway checkout of origin/<base>, never the issue's
+        workspace; it counts as one of the worker's runs. The notes say what to do next: when lint passes there and the
+        worker's errors include invalid-todo-violation-rule, its diff made a recorded todo stale."""
+        repo = self.repo()
+        if repo not in LINT_REPOS:
+            raise Refused(f"{repo} has no lint suite (lint-base is for {', '.join(LINT_REPOS)})")
+        sha, passed, output = self._on_base(repo, "lint", lambda folder: self.p.lint(folder, repo))
+        state = {"base": workspaces.base_branch(repo), "sha": sha, "passed": bool(passed),
+                 "errors": [] if passed else lint.errors(output)}
+        stale = bool(passed) and self._stale_todo()
+        tail = "\n".join((output or "").splitlines()[-TEST_LINES:])
+        return Act({"issue": self.number, **state, "staleTodo": stale, "notes": _lint_notes(state, stale),
+                    "output": tail}, {}, state, {"op": "none"},
+                   "nothing to undo: lint ran on a throwaway checkout that is already removed")
+
+    def _on_base(self, repo, what, run):
+        """(sha, passed, output) of run(folder) on a clean throwaway checkout of origin/<base>, removed afterwards.
+        It counts as one of the worker's runs (it waits for room under maxParallel)."""
         self._wait_for_run()
         try:
             folder = self.p.base_checkout(self.number, repo)
             try:
                 sha = self.p.git(folder, "rev-parse", "HEAD")
-                passed, output = self.p.test_filter(folder, repo, _filter(tests))
+                passed, output = run(folder)
             finally:
                 self.p.drop_checkout(self.number)
         except workspaces.WorkspaceError as e:
-            raise Refused(f"no clean checkout of the base for the tests: {e}")
-        except TalosError as e:         # not a test failure: nothing is recorded, so file-bug can't take it for one
-            raise Refused(f"the tests did not run on the base, so this says nothing about them: {e}")
-        state = {"base": workspaces.base_branch(repo), "sha": sha, "tests": tests, "passed": bool(passed)}
-        tail = "\n".join((output or "").splitlines()[-TEST_LINES:])
-        return Act({"issue": self.number, **state, "output": tail}, {}, state, {"op": "none"},
-                   "nothing to undo: the tests ran on a throwaway checkout that is already removed")
+            raise Refused(f"no clean checkout of the base for {what}: {e}")
+        except TalosError as e:         # not a failure: nothing is recorded, so file-bug can't take it for one
+            raise Refused(f"{what} did not run on the base, so this says nothing about the base: {e}")
+        return sha, passed, output
+
+    def _stale_todo(self):
+        """Whether the worker's handback or its latest run log names a recorded todo its diff made stale."""
+        text = str(self.p.worker_state(self.number).get("handoff_detail") or "")
+        path = self.p.run_log(self.number)
+        if path and Path(path).is_file():
+            text += "\n" + Path(path).read_text(encoding="utf-8", errors="replace")
+        return lint.stale_todo(text)
+
+    def _base_lint_failure(self, signature):
+        """(error, base, sha) when this incident's latest lint-base run failed with the signature's error; Refused
+        otherwise."""
+        runs = [a for a in journal.actions(incident_id=self.incident["id"]) if a["verb"] == "lint-base"]
+        last = (runs[-1]["state_after"] or {}) if runs else {}
+        if not last:
+            raise Refused("run lint-base first: a bug is filed only for a lint error that fails on the base branch")
+        if last.get("passed"):
+            raise Refused(f"lint passed on {last.get('base')} (lint-base): that is the branch's own failure, not a "
+                          f"bug on the base branch")
+        error = next((e for e in last.get("errors") or [] if signature in bugs.normalize(e)), None)
+        if not error:
+            raise Refused(f"lint-base did not report '{signature}' on {last.get('base')} (it reported: "
+                          f"{'; '.join(last.get('errors') or []) or 'no error lines'})")
+        return error, last.get("base"), last.get("sha")
 
     def _base_test_failure(self, signature):
         """(test, base, sha) when this incident's latest test-base run failed and ran the signature's test;
@@ -761,6 +814,8 @@ class Aga:
             raise Refused("file-bug needs --title, --signature (the failing job and test) and --body")
         if self.incident["type"] == BASE_TEST_INCIDENT:
             job, base_name, base_sha = self._base_test_failure(signature)
+        elif self.incident["type"] == BASE_LINT_INCIDENT:
+            job, base_name, base_sha = self._base_lint_failure(signature)
         else:
             job, base_name, base_sha = self._base_ci_failure(signature)
         filed = journal.actions_of(bugs.FILE_BUG)
@@ -822,6 +877,21 @@ def _tests(value):
     """The test names of test-base's --tests: a list, or one comma-separated string."""
     items = value if isinstance(value, (list, tuple)) else str(value or "").split(",")
     return [t for t in (" ".join(str(i).split()) for i in items) if t]
+
+
+def _lint_notes(state, stale):
+    """What lint-base's result means for the next step (and, when it passed, for the worker's notes)."""
+    base, sha = state["base"], str(state.get("sha") or "")[:7]
+    if not state["passed"]:
+        return (f"lint fails on {base} ({sha}) too, {len(state['errors'])} error(s): file-bug with one of them as "
+                f"--signature (or link the open one), then hold-until-done on that bug")
+    if stale:
+        return (f"lint passes on {base} ({sha}), so the base is not broken: the errors come from the branch. They "
+                f"include invalid-todo-violation-rule: the diff changed code that a recorded .lint-todo entry covers, "
+                f"so that todo is stale. Fix the violation (preferred), then clean the todo in the test container: "
+                f"p4m test lint --clean-todo <file>. Then run the full suite again.")
+    return (f"lint passes on {base} ({sha}), so the base is not broken: the errors come from the branch's own diff. "
+            f"Fix them (lint fixes run in the test container, never a host npx), then run the full suite again.")
 
 
 def _filter(tests):

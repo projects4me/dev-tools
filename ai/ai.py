@@ -71,6 +71,7 @@ def build_parser():
     sp.add_argument("--changed", action="store_true",
                     help="only the tests mapped from the branch's changed files (fast; ship needs a full run)")
     sp.add_argument("--filter", help="explicit filter: QUnit text or /regex/ (prometheus), case id/path a|b (gaia api)")
+    sp.add_argument("--suite", help="only this one of the repo's suites (e.g. prometheus lint); not a full run")
     sp.add_argument("--no-baseline", action="store_true",
                     help="don't run the base commit to classify failures not seen before")
     sp.add_argument("--explain", metavar="CASE", help="gaia: expected vs actual for one failed api case, from the last log")

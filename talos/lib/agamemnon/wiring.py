@@ -24,7 +24,8 @@ from .tool import PUSH_REMOTE, Ports, Settings
 AGENT = "agamemnon"
 
 
-TEST_TIMEOUT = 1800     # seconds for `ai test <repo> --changed|--filter` before resolve-conflict or test-base gives up
+TEST_TIMEOUT = 1800     # seconds for `ai test <repo> --changed|--filter|--suite` before resolve-conflict, test-base or
+                        # lint-base gives up
 
 
 def _run(argv, cwd, args, env=None, check=True):
@@ -176,8 +177,18 @@ def test_verdict(returncode, output):
 def test_filter(folder, repo, pattern):
     """(passed, output) of `ai test <repo> --filter <pattern>` in the workspace that holds folder; TalosError when
     `ai test` did not get to run the tests, so that is never taken for a failing test."""
-    r = run_ai({**os.environ, **workspaces.env(folder.parent)}, "test", repo, "--filter", pattern,
-               timeout=TEST_TIMEOUT)
+    return _ai_test(folder, repo, "--filter", pattern)
+
+
+def lint(folder, repo):
+    """(passed, output) of `ai test <repo> --suite lint` in the workspace that holds folder, like test_filter (each
+    lint error is a FAIL line)."""
+    return _ai_test(folder, repo, "--suite", "lint")
+
+
+def _ai_test(folder, repo, *args):
+    """(passed, output) of `ai test <repo> <args>`; raises TalosError when it did not run, never taken for a fail."""
+    r = run_ai({**os.environ, **workspaces.env(folder.parent)}, "test", repo, *args, timeout=TEST_TIMEOUT)
     output = f"{r.stdout or ''}{r.stderr or ''}"
     passed = test_verdict(r.returncode, output)
     if passed is None:
@@ -223,5 +234,5 @@ def build(agent_name=AGENT):
                   base_checkout=lambda issue, repo: workspaces.base_checkout(WORKSPACE, DEV_TOOLS, issue, repo),
                   drop_checkout=lambda issue: workspaces.remove_checkout(WORKSPACE,
                                                                          workspaces.scratch_path(WORKSPACE, issue)),
-                  test_filter=test_filter)
+                  test_filter=test_filter, lint=lint)
     return settings, ports
