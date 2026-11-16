@@ -441,6 +441,15 @@ def cmd_test(args):
     if repo not in SUITES:
         say(f"no test recipe for {repo}")
         return 2
+    suites = SUITES[repo]
+    if args.suite:
+        if args.suite not in suites:
+            say(f"{repo} has no suite '{args.suite}' (its suites: {', '.join(suites)})")
+            return 2
+        if args.changed or args.filter:
+            say("--suite runs one whole suite: it does not combine with --changed or --filter")
+            return 2
+        suites = [args.suite]
     announce_checkout(repo)
     src = repo_dir(repo)
     targets, notes = (targets_for(repo, src) if args.changed else ({}, []))
@@ -453,18 +462,18 @@ def cmd_test(args):
         notes = [f"filter: {args.filter}"]
     for n in notes:
         say(n)
-    full = not targets
+    full = not targets and not args.suite     # --suite never counts as a full run, even for a one-suite repo
     with terminate_as_interrupt():
-        return _run_and_record(args, repo, src, targets, full)
+        return _run_and_record(args, repo, src, targets, full, suites)
 
 
-def _run_and_record(args, repo, src, targets, full):
+def _run_and_record(args, repo, src, targets, full, suites):
     """Run the suites, classify failures against the baseline, print and record the verdict."""
     started = results.tree_fingerprint(repo)     # the tree the run tests: see results.changed_since
     fixture = Path(src) / FIXTURE
     committed = fixture.read_bytes() if repo == "gaia" and fixture.exists() else None
     slot = slot_of(args) if repo == "gaia" else None
-    runs = [run_suite(repo, s, src, targets, slot=slot) for s in SUITES[repo]]
+    runs = [run_suite(repo, s, src, targets, slot=slot) for s in suites]
     drifted = committed is not None and fixture.read_bytes() != committed
     if drifted:
         fixture.write_bytes(committed)           # leave the tree as it was; the harness output is the bug

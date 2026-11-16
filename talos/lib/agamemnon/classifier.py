@@ -3,6 +3,7 @@
 import re
 
 from ..policy import BASE_TEST_FAILED
+from . import lint
 from .premise import OTHER
 
 # (incident type, handback reasons, patterns over summary + log tail), checked in order: the first match wins.
@@ -26,9 +27,16 @@ RULES = (
      (r"(outside|not in|not touched by|not caused by|unrelated to) (the|its|this|my) (diff|change)",
       r"(diff|change) (does|did) not (touch|cause)",
       r"\b(fails?|failing|failed) (on|in) (the )?(base|dev|main)( branch)? (too|as well)\b",
-      r"\balso (fails?|failing|failed) (on|in) (the )?(base|dev|main)\b")),
+      r"\balso (fails?|failing|failed) (on|in) (the )?(base|dev|main)\b",
+      r"\b(on|in) (the )?(base|dev|main)( branch)? (itself|as well)\b",
+      r"\b(the )?(base|dev|main)( branch)? is (broken|red|failing)\b")),
     ("dirty_generated", (), (r"generated files? (are |is )?modified",)),
 )
+
+# A base-blaming handback whose failing suite is lint (lint.FAILURE) is its own incident: the base check runs lint,
+# not named tests, and a stale todo is the branch's own doing. Derived here: the worker's reason stays
+# base_test_failed.
+BASE_LINT_FAILED = "base_lint_failed"
 
 
 # The merge sweep's CI handbacks (orchestrator/merging.py `_ci_failed`), read from the handback's own text first: the
@@ -44,6 +52,14 @@ def classify(reason, summary, log_tail, detail=None):
         return "ci_failed"
     text = f"{detail}\n{summary or ''}\n{log_tail or ''}".lower()
     reason = str(reason or "").strip().lower()
+    incident = _match(reason, text)
+    # only the handback's own words: the run's log tail may mention lint from an earlier step
+    if incident == BASE_TEST_FAILED and lint.names_failure(f"{detail}\n{summary or ''}"):
+        return BASE_LINT_FAILED
+    return incident
+
+
+def _match(reason, text):
     # a structured reason (the worker's own, e.g. base_test_failed) wins over whatever the free text mentions
     for incident, reasons, _ in RULES:
         if reason in reasons:

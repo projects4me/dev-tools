@@ -621,14 +621,18 @@ and is `enabled: false` until the engineer turns it on.
   An automatic merge whose gate fails only on mergeability waits for this instead of going to the reviewer.
 - **Premise and incident packet** (`lib/agamemnon/`, groundwork for Agamemnon as an AI agent): `agents/agamemnon/premise.json`
   lists the incident types it may handle (`test_contention`, `ci_failed`, `merge_conflict`, `dirty_generated`,
-  `docker_down`, `docker_pressure`, `handback_failed`, `base_test_failed`), each with its allowed tool tiers; anything not listed goes to the owner. Widening it
+  `docker_down`, `docker_pressure`, `handback_failed`, `base_test_failed`, `base_lint_failed`), each with its allowed tool tiers; anything not listed goes to the owner. Widening it
   is a config change. `classifier.classify(reason, summary, log_tail, detail)` maps a handback to an incident type or
   `other`; the merge sweep's CI handbacks ("CI failed again after N re-runs", "CI failed and has no job to re-run",
   "Re-running the failed CI failed N times") are `ci_failed` from their own text, whatever the worker's run log says.
   A structured handback reason wins over the free text: a worker's `blocked` outcome may carry `reason`
   `base_test_failed` and `failingTests` (`schema/outcome.json`, `policy.WORKER_REASONS`), kept as the handback's
-  `handoff_reason` and its detail (`{"failingTests": [...]}`); without it, words like "a test outside its diff" or
-  "fails on dev" classify it too.
+  `handoff_reason` and its detail (`{"failingTests": [...]}`); without it, words like "a test outside its diff",
+  "fails on dev", "on dev itself" or "dev is broken" classify it too. Such a handback whose failing suite is lint
+  (`ai test`'s "lint: N errors", "N lint errors", `.lint-todo`, `invalid-todo-violation-rule`) is `base_lint_failed`
+  instead: its own type rather than `base_test_failed` with lint support, because the base check runs lint and not
+  named tests, a stale todo is always the branch's own doing, and the premise and the session's steps stay separate
+  for each (aprom-4609: a lint failure blamed on "dev itself" was declined as `other`).
   `packet.build(...)` assembles the JSON packet the agent is given (issue, PR, handback, run summary and log tail,
   mergecheck, git and Docker state, the other in-flight issues' files, its earlier comments, and on a CI handback
   `ci`: the PR head, the failed jobs' names and URLs, the re-runs spent of the attempts and any re-run error).
@@ -637,7 +641,9 @@ and is `enabled: false` until the engineer turns it on.
   `base_test_failed` (the worker's full suite fails locally, before any PR, on tests its diff does not touch):
   `update-workspace` and `retry` once; still failing, `test-base` with the failing tests; failing on the base too,
   `file-bug` and `hold-until-done` on it; passing there, `send` to the worker with the test and a log excerpt
-  (role.md, local test failures).
+  (role.md, local test failures). `base_lint_failed`: `lint-base`; failing on the base too, `file-bug` with the
+  error and `hold-until-done` on it; passing there, `send` to the worker with the failing lines and `lint-base`'s
+  notes (role.md, local lint failures).
 - **Triage sessions** (`lib/agamemnon/triage.py`, on with `agaTriage`, live from the start: no shadow mode). Where
   the orchestrator would leave an issue to the owner (a handback not restarted automatically, other than a question;
   an automatic merge it hands back, except while paused; a merge conflict, before the worker's attempt and once its
@@ -682,6 +688,11 @@ and is `enabled: false` until the engineer turns it on.
     `maxParallel`, and the checkout is removed after the run, passed or not. Journaled with the result (base, commit,
     tests, passed), which `file-bug` reads. A run where `ai test` did not get to the tests (exit 2, or no failing
     test named: Docker down, no slot, a setup error) is refused and not recorded, so it is never taken for a failure.
+    `lint-base` (tier `basetest`, prometheus only): lint the same way, through `ai test prometheus --suite lint`,
+    journaled with the base, commit, passed and the error lines (`file-bug` reads them). Its `notes` say what comes
+    next: lint fails on the base too (file the bug), or it passes there and the errors are the branch's own; when the
+    worker's handback or latest run log names `invalid-todo-violation-rule`, the notes say its diff made a recorded
+    `.lint-todo` entry stale (fix the violation, then `p4m test lint --clean-todo <file>`), ready for `send`.
   - Docker: `docker` (tier `read`: Docker's state and verdict, `ok`, `pressured` or `down`), `start-docker` and
     `restart-docker` (tier `engine`, through `docker_engine`, wait until the daemon answers and report the stack
     containers not running; `start-docker` is refused when the daemon is up, `restart-docker` while another issue has
@@ -691,7 +702,8 @@ and is `enabled: false` until the engineer turns it on.
     sweep skips it; when `<issue>` is done (the worker's `dependencyDoneStatuses`) the base is merged into the PR on
     GitHub (a conflict goes to the conflict flow), its CI re-run count starts over and a comment says so, and the merge
     sweep takes it again. Deferred or won't fix, or not done after `holdMaxHours` (agent.json, default 72): the owner
-    gets it with a comment. Undo releases the hold. For `base_test_failed`, an issue with no PR yet is assigned to
+    gets it with a comment. Undo releases the hold. For `base_test_failed` and `base_lint_failed`, an issue with no
+    PR yet is assigned to
     Agamemnon for the hold; when `<issue>` is done the base is merged into its workspace (`update-workspace`'s merge;
     on a conflict it is left as it was, with a note) and it goes back to the worker) and `hold-until-docker` (tier `wait`: as `hold-until-tomorrow`, but the issue is given to
     the worker when Docker is `ok`, one Docker-held issue per sweep, oldest first. A hold ends without giving the
@@ -701,8 +713,8 @@ and is `enabled: false` until the engineer turns it on.
     never a rebase; a committed merge pushed only as a fast-forward), `merge` (tier `merge`: through `ai merge` and
     its gate, only for `autoMergeMilestones`, within `maxAutoMergesPerDay` together with the automatic merges).
     The premise grants `update` and `merge` to no incident type yet.
-    `file-bug --title --signature '<job>: <test>' --body` (tier `file`, granted to `ci_failed` and
-    `base_test_failed`): for a CI failure that is already on the base branch, a Bug in the blocked issue's project and milestone, priority high,
+    `file-bug --title --signature '<job>: <test>' --body` (tier `file`, granted to `ci_failed`,
+    `base_test_failed` and `base_lint_failed`): for a CI failure that is already on the base branch, a Bug in the blocked issue's project and milestone, priority high,
     complexity complex (the root cause is unknown), assigned to the worker; its description opens with "Filed by Agent Agamemnon: blocks #N", then the signature,
     the body (what fails, the log excerpt, the blocked issue), the base commit, and ends with the acceptance
     criterion (the job passes on the base branch). The action's comment on the blocked issue links it. `base-ci` is
@@ -710,7 +722,8 @@ and is `enabled: false` until the engineer turns it on.
     before the `:`) fails on the base branch too; only the job is checked, not the `<test>` part. An open bug the
     journal shows Agamemnon filed for the same signature in the same project is linked instead of filing another (journaled, nothing to undo).
     For `base_test_failed` the evidence is the incident's latest `test-base` instead of `base-ci`: it must have failed
-    and run the test the signature names (`--signature '<test>'`). Refused when `agaFileBugsPerDay`
+    and run the test the signature names (`--signature '<test>'`); for `base_lint_failed` the latest `lint-base`
+    must have failed with an error line that contains the signature. Refused when `agaFileBugsPerDay`
     (agent.json, default 3) bugs were filed today (links don't count). Undo sets the bug to won't fix with a
     comment (refused once it is done or won't fix); nothing on GitHub changes. Holding the blocked issue until the
     bug is done is `hold-until-done`.

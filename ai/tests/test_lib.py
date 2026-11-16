@@ -493,11 +493,11 @@ class RunWorkspaceSrcTest(unittest.TestCase):
             (ws / "gaia" / "tests" / "unit").mkdir(parents=True)
             seen = {}
 
-            def record(args, repo, src, targets, full):
-                seen["src"] = src
+            def record(args, repo, src, targets, full, suites):
+                seen.update(src=src, full=full, suites=suites)
                 return 0
 
-            args = Namespace(repo="gaia", explain=None, case=None, changed=False, filter=None)
+            args = Namespace(repo="gaia", explain=None, case=None, changed=False, filter=None, suite=None)
             with mock.patch.dict(os.environ, {"P4M_WORKSPACE": str(ws)}), \
                     mock.patch.object(tests, "_run_and_record", record), \
                     mock.patch.object(tests, "require_matching_workspace"), \
@@ -508,6 +508,49 @@ class RunWorkspaceSrcTest(unittest.TestCase):
                 tests.phpunit("tests/unit", seen["src"])
             cmd = logged.call_args.args[1]
             self.assertEqual(cmd[cmd.index("--src") + 1], str(ws / "gaia"))
+
+
+class SuiteOptionTest(unittest.TestCase):
+    """`ai test <repo> --suite <name>` runs only that suite, and it never counts as a full run."""
+
+    def _cmd(self, repo, suite, changed=False, filter=None):
+        from argparse import Namespace
+        from unittest import mock
+        seen, out = {}, []
+
+        def record(args, repo, src, targets, full, suites):
+            seen.update(full=full, suites=suites)
+            return 0
+
+        args = Namespace(repo=repo, explain=None, case=None, changed=changed, filter=filter, suite=suite)
+        with mock.patch.object(tests, "_run_and_record", record), \
+                mock.patch.object(tests, "require_matching_workspace"), \
+                mock.patch.object(tests, "announce_checkout"), \
+                mock.patch.object(tests, "say", out.append):
+            rc = tests.cmd_test(args)
+        return rc, seen, out
+
+    def test_one_suite_is_a_partial_run(self):
+        rc, seen, _ = self._cmd("prometheus", "lint")
+        self.assertEqual((rc, seen["suites"], seen["full"]), (0, ["lint"], False))
+        rc, seen, _ = self._cmd("prometheus", None)
+        self.assertEqual((seen["suites"], seen["full"]), (["lint", "ember"], True))
+
+    def test_a_suite_the_repo_does_not_have_is_refused(self):
+        rc, seen, out = self._cmd("hermes", "lint")
+        self.assertEqual((rc, seen), (2, {}))
+        self.assertIn("has no suite 'lint'", out[0])
+
+    def test_the_only_suite_of_a_repo_is_still_a_partial_run(self):
+        rc, seen, _ = self._cmd("hermes", "hermes")
+        self.assertEqual((rc, seen["suites"], seen["full"]), (0, ["hermes"], False))
+
+    def test_suite_does_not_combine_with_changed_or_filter(self):
+        for kwargs in ({"changed": True}, {"filter": "Avatar"}):
+            with self.subTest(**kwargs):
+                rc, seen, out = self._cmd("prometheus", "lint", **kwargs)
+                self.assertEqual((rc, seen), (2, {}))
+                self.assertIn("does not combine", out[0])
 
 
 class FixtureDriftTest(unittest.TestCase):
@@ -532,7 +575,8 @@ class FixtureDriftTest(unittest.TestCase):
                     mock.patch.object(tests.results, "record"), \
                     mock.patch.object(tests, "git", return_value=""), \
                     mock.patch.object(tests, "known_failures", return_value=set()):
-                rc = tests._run_and_record(SimpleNamespace(no_baseline=True), "gaia", d, {}, True)
+                rc = tests._run_and_record(SimpleNamespace(no_baseline=True), "gaia", d, {}, True,
+                                           tests.SUITES["gaia"])
             return rc, "\n".join(out), fixture.read_text(encoding="utf-8")
 
     def test_api_runs_before_tests_tools(self):

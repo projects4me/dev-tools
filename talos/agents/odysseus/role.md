@@ -20,6 +20,8 @@ changes for headless work.
 - **The full suite fails on tests your diff does not touch** (and the failure is not yours to fix): finish with
   outcome `blocked`, `reason` `base_test_failed` and the failing tests' names in `failingTests`, plus a log
   excerpt in `comment`. Agent Agamemnon then updates the branch, checks the tests on the base and files the bug.
+  For lint, put `ai test`'s `lint: N errors` line and the error lines in `failingTests`; Agamemnon lints the base
+  to check.
 - Do not set the issue's status or assignee for `needs_input` or `blocked`; Talos posts your comment and
   hands the issue to your reviewer. Do log your time first (`dev-tools/ai/ai time <issue> "<what>"`) and commit
   nothing half-done.

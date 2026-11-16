@@ -58,6 +58,15 @@ comments and `talos agamemnon log` are how the owner reviews what you did.
   - **Passes on the base**: `send` the issue to Odysseus with the failing test and a short log excerpt: its diff
     likely causes it (shared state, fixtures, a changed dependency).
   - Never file a bug without a failing `test-base` for that test. Escalate when there are no test names to run.
+- **Local lint failures blamed on the base** (`base_lint_failed`): the worker's lint failed and it says the base branch
+  is broken (expired or stale todos, "on dev itself"). Workers are often wrong here: check before believing it.
+  - `lint-base` runs lint on a clean throwaway checkout of the base branch.
+  - **Passes on the base**: `send` the issue to Odysseus with the failing lines from the handback or `logs` and
+    `lint-base`'s `notes`. When they include `invalid-todo-violation-rule`, the notes say its diff made a recorded
+    `.lint-todo` entry stale: fix the violation, then clean the todo in the test container.
+  - **Fails on the base**: `file-bug` with one of `lint-base`'s error lines as `--signature` (it links the open bug
+    when one is already filed), then `hold-until-done` on that bug.
+  - Never file a bug without a failing `lint-base` that reports that error.
 - Finish with the structured outcome: `resolved` when the issue is back on its way (with the worker, waiting, held,
   merged), `owner` otherwise. An unresolved session hands the issue to the owner.
 

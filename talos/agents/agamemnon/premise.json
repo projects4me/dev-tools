@@ -14,7 +14,7 @@
     "merge": "merge a PR through the merge gate (visible on GitHub)",
     "file": "file a Bug for a CI or test failure that is already on the base branch (visible in the tracker)",
     "refresh": "merge the base branch into an issue's branch in its workspace, before it has a PR (nothing pushed)",
-    "basetest": "run named tests on a clean throwaway checkout of the base branch (takes a run and a test slot)"
+    "basetest": "run named tests, or lint, on a clean throwaway checkout of the base branch (takes a run and a test slot)"
   },
   "incidents": {
     "test_contention": {
@@ -28,6 +28,10 @@
     "base_test_failed": {
       "tiers": ["read", "refresh", "retry", "basetest", "file", "wait", "handoff", "notify"],
       "does": "read the failing test names (handback failingTests, else the comment and log). First time: update-workspace (merge the base into the branch), then retry once. Already up to date, or failing again after the update: test-base with those tests on a clean checkout of the base. Fails on the base: file-bug (or link the open one), then hold-until-done on that bug. Passes on the base: send the issue to Odysseus with the failing test and a log excerpt (the diff likely causes it)"
+    },
+    "base_lint_failed": {
+      "tiers": ["read", "basetest", "file", "wait", "handoff", "notify"],
+      "does": "read the lint errors (the handback, else the comment and log). lint-base runs lint on a clean checkout of the base. Passes on the base: send the issue to Odysseus with the failing lines and lint-base's notes (an invalid-todo-violation-rule error means its diff made a recorded .lint-todo entry stale: fix the violation, then clean the todo). Fails on the base: file-bug with the error as the signature (or link the open one), then hold-until-done on that bug"
     },
     "merge_conflict": {
       "tiers": ["read", "restore", "resolve", "handoff"],

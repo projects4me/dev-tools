@@ -149,6 +149,15 @@ class TriageTest(unittest.TestCase):
         self.assertIn("test-base", text)
         self.assertEqual(journal.incidents(issue=5)[0]["type"], "base_test_failed")
 
+    def test_replaying_the_4609_lint_handback_opens_a_lint_incident(self):
+        from test_agamemnon_base_lint import HANDBACK_4609
+        decision = self.triage().offer(5, triage.HANDBACK, "agent_blocked", HANDBACK_4609, since=NOW)
+        self.assertTrue(decision.taken)
+        text = self.launched[0][0]
+        self.assertIn("type `base_lint_failed`", text)
+        self.assertIn("lint-base", text)
+        self.assertEqual(journal.incidents(issue=5)[0]["type"], "base_lint_failed")
+
     def test_the_packet_carries_docker_state_and_verdict(self):
         state = {"daemon": True, "memTotal": 100, "memUsed": 95, "containers": []}
         t = self.triage()

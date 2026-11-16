@@ -58,6 +58,8 @@ VERBS = {v.name: v for v in (
          "yet; never a rebase, nothing pushed)"),
     Verb("test-base", "basetest", PRIVATE, "run the named tests on a clean throwaway checkout of the base branch, "
          "never the issue's workspace"),
+    Verb("lint-base", "basetest", PRIVATE, "run lint on a clean throwaway checkout of the base branch, never the "
+         "issue's workspace; says whether the worker's errors show a recorded todo its diff made stale"),
     Verb("send", "handoff", PRIVATE, "send the issue to the worker with notes"),
     Verb("update-branch", "update", VISIBLE, "merge the base into the PR branch on GitHub (never a rebase)"),
     Verb("push-merge", "update", VISIBLE, "push a resolved merge from the workspace (fast-forward only)"),
@@ -65,8 +67,8 @@ VERBS = {v.name: v for v in (
          "additive conflicts, test, push as Odysseus, back to CodeRabbit (needs a backup in this incident)"),
     Verb("merge", "merge", VISIBLE, "merge the PR through the merge gate"),
     Verb("file-bug", "file", VISIBLE, "file a Bug for a failed CI job (or, for base_test_failed, a test test-base "
-         "saw fail) that also fails on the base branch, assigned to the worker (or link the open one already filed "
-         "for the signature)"),
+         "saw fail; for base_lint_failed, a lint error lint-base saw) that also fails on the base branch, assigned "
+         "to the worker (or link the open one already filed for the signature)"),
 )}
 
 
