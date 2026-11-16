@@ -198,6 +198,32 @@ class LintRunTest(unittest.TestCase):
         self.assertEqual(box.lint_commands()[0][1][-3:], ["npm", "run", "lint:js"])
 
 
+class FixLintTest(unittest.TestCase):
+    """fix_lint runs the todo/suppression fixes in the container, then copies the lint state back."""
+
+    def _run(self, code):
+        box = testenv.PrometheusTestContainer(".", Path("."))
+        calls = []
+        box.copy_lint_state_back = lambda: calls.append("copied")
+        done = subprocess.CompletedProcess([], code, stdout="out")
+        out = io.StringIO()
+        with mock.patch.object(testenv.subprocess, "run", return_value=done) as run,                 contextlib.redirect_stdout(out):
+            rc = box.fix_lint(["app/a.hbs"], True)
+        return rc, calls, run.call_args_list, out.getvalue()
+
+    def test_commands_run_in_the_container_and_state_is_copied(self):
+        rc, calls, runs, out = self._run(0)
+        self.assertEqual((rc, calls), (0, ["copied"]))
+        cmds = [c.args[0] for c in runs]
+        self.assertTrue(all(c[:2] == ["docker", "exec"] for c in cmds))
+        self.assertEqual(cmds[0][-3:], ["./node_modules/.bin/ember-template-lint", "app/a.hbs", "--clean-todo"][-3:])
+        self.assertEqual(cmds[1][-3:], ["npm", "run", "lint:js:prune"])
+
+    def test_failure_copies_nothing_back(self):
+        rc, calls, _, _ = self._run(1)
+        self.assertEqual((rc, calls), (1, []))
+
+
 class LineEndingsTest(unittest.TestCase):
     def test_crlf_templates_and_scripts_are_copied_as_lf(self):
         box = testenv.PrometheusTestContainer(".", Path("."))
