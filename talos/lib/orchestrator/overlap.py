@@ -31,16 +31,30 @@ class IssueFiles:
         return (self.branch(repo, issue) if started else None) or self.predicted(repo, issue)
 
     def branch(self, repo, issue):
+        """The diff of the issue's branch (local, else the agent's remote one) against origin/<base>, or None: no
+        branch yet is the normal case for an issue that hasn't started, and says nothing."""
         main = self.root / repo
         if not (main / ".git").exists():
             return None
-        r = subprocess.run(["git", "diff", "--name-only", f"origin/{workspaces.base_branch(repo)}..."
-                            f"{workspaces.branch_name(issue)}", "--"], cwd=main, capture_output=True, text=True,
-                           encoding="utf-8", errors="replace", stdin=subprocess.DEVNULL)
-        if r.returncode != 0:      # no such branch yet, or origin/<base> missing (not fetched here)
+        base, name = f"origin/{workspaces.base_branch(repo)}", workspaces.branch_name(issue)
+        if not self._exists(main, base):
+            return None
+        head = next((ref for ref in (name, f"odysseus/{name}") if self._exists(main, ref)), None)
+        if not head:
+            return None
+        r = self._git(main, "diff", "--name-only", f"{base}...{head}", "--")
+        if r.returncode != 0:
             log(f"#{issue}: no branch diff ({r.stderr.strip()[:200]})", "overlap")
             return None
         return {f.strip() for f in r.stdout.splitlines() if f.strip()} or None
+
+    @staticmethod
+    def _git(main, *args):
+        return subprocess.run(["git", *args], cwd=main, capture_output=True, text=True, encoding="utf-8",
+                              errors="replace", stdin=subprocess.DEVNULL)
+
+    def _exists(self, main, ref):
+        return self._git(main, "rev-parse", "--verify", "-q", ref).returncode == 0
 
     def predicted(self, repo, issue):
         key = (repo, issue)
@@ -59,22 +73,24 @@ class OverlapGate:
     assigned() for each one assigned, then end() to release the holds that cleared. A held issue gets one comment
     naming the issue and the files it waits for."""
 
-    def __init__(self, agent, worker, tracker, files_of, dry_run=False, now=_now):
+    def __init__(self, agent, worker, tracker, files_of, worker_id, owners, dry_run=False, now=_now):
         self.agent, self.worker, self.tracker = agent, worker, tracker
+        self.in_flight_ids = [str(worker_id), *map(str, owners)]    # whose issues can be in flight
         self.files_of = files_of        # files_of(repo, issue, started) -> set or None; clear() per sweep (IssueFiles)
         self.ignore = tuple(agent.orchestration.overlap_ignore)
         self.dry_run, self.now = dry_run, now
         self._active, self._held, self._passed, self._candidates = {}, set(), set(), set()
 
     def begin(self, issues, candidates):
-        """issues: the sweep's issues (the started, unfinished ones are in flight, grouped by repo); candidates: the
-        numbers of the new issues ready to assign."""
+        """issues: the sweep's issues (the started, unfinished, unparked ones assigned to the worker or an owner are
+        in flight, grouped by repo); candidates: the numbers of the new issues ready to assign."""
         self.files_of.clear()
         self._active, self._held, self._passed = {}, set(), set()
         self._candidates = set(candidates)
         for issue in issues:
             repo = self.worker.repo_for(issue.get("project"))
-            if repo and policy.is_active(issue, self.worker.dependency_done_statuses):
+            if repo and policy.assigned_to(issue, self.in_flight_ids) and policy.is_active(
+                    issue, self.worker.dependency_done_statuses, self.agent.orchestration.overlap_parked_statuses):
                 self._active.setdefault(repo, []).append(issue["number"])
 
     def hold_reason(self, issue):

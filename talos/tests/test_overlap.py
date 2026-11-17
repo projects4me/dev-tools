@@ -39,8 +39,16 @@ class PolicyTest(unittest.TestCase):
         done = ("done", "closed")
         self.assertTrue(policy.is_active({"status": "in_progress"}, done))
         self.assertTrue(policy.is_active({"status": "in_review"}, done))
-        for status in ("new", "done", "Closed", "wont_fix"):
+        for status in ("new", "done", "Closed", "wont_fix", "deferred", "Deferred"):
             self.assertFalse(policy.is_active({"status": status}, done), status)
+        self.assertTrue(policy.is_active({"status": "deferred"}, done, parked=()))
+        self.assertFalse(policy.is_active({"status": "on_hold"}, done, parked=("on_hold",)))
+
+    def test_assigned_to(self):
+        self.assertTrue(policy.assigned_to({"assignee": "7"}, ["7", 50]))
+        self.assertTrue(policy.assigned_to({"assignee": "50"}, ["7", 50]))
+        self.assertFalse(policy.assigned_to({"assignee": "9"}, ["7"]))
+        self.assertFalse(policy.assigned_to({"assignee": ""}, ["7"]))
 
 
 class RegistryTest(unittest.TestCase):
@@ -67,6 +75,14 @@ class RegistryTest(unittest.TestCase):
         for bad in ("docs/*", [""], [3]):
             with self.assertRaisesRegex(TalosError, "overlapIgnore"):
                 self.load(overlapIgnore=bad)
+
+    def test_overlap_parked_statuses(self):
+        self.assertEqual(self.load().overlap_parked_statuses, ("deferred",))
+        self.assertEqual(self.load(overlapParkedStatuses=[" deferred ", "on_hold"]).overlap_parked_statuses,
+                         ("deferred", "on_hold"))
+        for bad in ("deferred", [1], [" "]):
+            with self.assertRaisesRegex(TalosError, "overlapParkedStatuses"):
+                self.load(overlapParkedStatuses=bad)
 
 
 class FakeFiles:
@@ -99,7 +115,7 @@ class HoldTest(unittest.TestCase):
         worker = SimpleNamespace(name="odysseus", display_name="Agent Odysseus", handoff_to=OWNER, max_parallel=1,
                                  projects={"A Gaia": "gaia"}, dependency_done_statuses=("done", "closed"),
                                  repo_for=lambda project: "gaia")
-        gate = OverlapGate(agent, worker, tracker, files, dry_run=dry_run, now=lambda: self.clock[0])
+        gate = OverlapGate(agent, worker, tracker, files, WORKER_ID, [OWNER], dry_run=dry_run, now=lambda: self.clock[0])
         return Orchestrator(agent, worker, tracker, WORKER_ID, dry_run=dry_run, now=lambda: self.clock[0],
                             branch_holder=lambda repo, number: None, overlap=gate)
 
@@ -152,6 +168,21 @@ class HoldTest(unittest.TestCase):
         files = FakeFiles({2: {"docs/api/index.html"}, 9: {"docs/api/index.html", "a.py"}})
         self.assertEqual(self.orchestrator(tracker, files).sweep(), [(1, "new"), (2, "new")])
         self.assertEqual(store.holds("agamemnon"), {})
+
+    def test_parked_and_other_peoples_issues_are_not_in_flight(self):
+        tracker = FakeTracker([issue(1), issue(8, status="deferred", assignee=OWNER),
+                               issue(9, status="in_progress", assignee="99"),
+                               issue(10, status="in_progress", assignee="")])
+        files = FakeFiles({1: {"a.py"}, 8: {"a.py"}, 9: {"a.py"}, 10: {"a.py"}})
+        self.assertEqual(self.orchestrator(tracker, files).sweep(), [(1, "new")])
+        self.assertEqual(files.calls, [])
+
+    def test_the_workers_and_owners_issues_hold(self):
+        for who in (WORKER_ID, OWNER):
+            tracker = FakeTracker([issue(1), issue(9, status="in_progress", assignee=who)])
+            files = FakeFiles({1: {"a.py"}, 9: {"a.py"}})
+            self.assertEqual(self.orchestrator(tracker, files).sweep(), [], who)
+            store.release("agamemnon", [1])
 
     def test_other_repos_and_finished_issues_are_not_in_flight(self):
         tracker = FakeTracker([issue(1), issue(8, status="done", assignee=WORKER_ID),
@@ -222,6 +253,65 @@ class IssueFilesTest(unittest.TestCase):
                 mock.patch.object(overlap.workspaces, "base_branch", return_value="dev"), \
                 mock.patch.object(overlap, "ai_json", return_value={"files": ["p.php"]}):
             self.assertEqual(files("gaia", 7, True), {"p.php"})    # no branch yet: the prediction
+
+
+class BranchRefsTest(unittest.TestCase):
+    """IssueFiles.branch against a real temporary repo: origin/dev, then claude-issue-N locally or on odysseus."""
+
+    def setUp(self):
+        self.log = mock.patch("lib.orchestrator.overlap.log")
+        self.log = self.log.start()
+        self.addCleanup(mock.patch.stopall)
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root, True)
+        self.files = IssueFiles(lambda: {}, root=root)
+        self.repo = root / "gaia"
+        self.repo.mkdir()
+        self.git("init", "-q")
+        self.git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "base")
+        self.git("update-ref", "refs/remotes/origin/dev", "HEAD")
+        mock.patch.object(overlap.workspaces, "base_branch", return_value="dev").start()
+
+    def git(self, *args):
+        subprocess = overlap.subprocess
+        subprocess.run(["git", *args], cwd=self.repo, check=True, capture_output=True)
+
+    def commit_on(self, ref, name):
+        self.git("checkout", "-q", "-b", "tmp", "origin/dev")
+        (self.repo / name).write_text("x", encoding="utf-8")
+        self.git("add", name)
+        self.git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "work")
+        self.git("update-ref", ref, "HEAD")
+        self.git("checkout", "-q", "--detach", "origin/dev")
+        self.git("branch", "-q", "-D", "tmp")
+
+    def test_no_branch_anywhere_is_none_and_silent(self):
+        self.assertIsNone(self.files.branch("gaia", 7))
+        self.log.assert_not_called()
+
+    def test_local_branch(self):
+        self.commit_on("refs/heads/claude-issue-7", "a.py")
+        self.assertEqual(self.files.branch("gaia", 7), {"a.py"})
+
+    def test_remote_odysseus_branch_without_a_local_one(self):
+        self.commit_on("refs/remotes/odysseus/claude-issue-7", "b.py")
+        self.assertEqual(self.files.branch("gaia", 7), {"b.py"})
+        self.log.assert_not_called()
+
+    def test_missing_base_is_none_and_silent(self):
+        self.git("update-ref", "-d", "refs/remotes/origin/dev")
+        self.assertIsNone(self.files.branch("gaia", 7))
+        self.log.assert_not_called()
+
+    def test_a_failing_diff_on_existing_refs_is_logged(self):
+        self.commit_on("refs/heads/claude-issue-7", "a.py")
+        real = overlap.IssueFiles._git
+
+        def fake(main, *args):
+            return SimpleNamespace(returncode=128, stdout="", stderr="boom") if args[0] == "diff" else real(main, *args)
+        with mock.patch.object(overlap.IssueFiles, "_git", staticmethod(fake)):
+            self.assertIsNone(self.files.branch("gaia", 7))
+        self.log.assert_called_once()
 
 
 if __name__ == "__main__":
