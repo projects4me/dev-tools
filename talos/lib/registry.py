@@ -35,6 +35,7 @@ class Action:
 
 
 AUTO_RETRY_REASONS = ("turn_budget", "cost_budget", "interrupted", "branch_checked_out", "talos_error")
+PARKED_STATUSES = ("deferred",)     # issues set aside on purpose: they hold no files, so they never hold an issue
 OVERLAP_IGNORE = ("docs/*",)       # generated files (Gaia's API docs): two issues regenerating them merge fine
 AGA_MODELS = {"default": "sonnet", "merge_conflict": "opus"}   # triage session model per incident type
 
@@ -58,6 +59,7 @@ class Orchestration:
     ci_rerun_attempts: int = 3          # re-runs of a failed CI per PR head before it goes to the reviewer
     ci_rerun_errors: int = 2            # failing re-run commands per head before it goes to the reviewer
     max_conflict_attempts: int = 1      # merge-conflict resolutions per issue handed to the worker (0 = none)
+    overlap_parked_statuses: tuple = PARKED_STATUSES   # statuses of issues set aside: they never hold an issue
     overlap_ignore: tuple = OVERLAP_IGNORE   # globs of files that never hold an issue (generated, additive registries)
     aga_max_actions: int = 5            # `aga` actions per incident (reads don't count)
     aga_wait_max_minutes: float = 30    # the longest `aga wait-for` waits
@@ -332,6 +334,9 @@ def _load_orchestrator(path, raw):
     overlap_ignore = raw.get("overlapIgnore", list(OVERLAP_IGNORE))
     if not isinstance(overlap_ignore, list) or not all(isinstance(g, str) and g.strip() for g in overlap_ignore):
         raise TalosError(f"{path}: overlapIgnore must be a list of file globs")
+    parked = raw.get("overlapParkedStatuses", list(PARKED_STATUSES))
+    if not isinstance(parked, list) or not all(isinstance(g, str) and g.strip() for g in parked):
+        raise TalosError(f"{path}: overlapParkedStatuses must be a list of issue statuses")
     merge_milestones = raw.get("autoMergeMilestones", [])
     if not isinstance(merge_milestones, list) or not all(isinstance(m, str) and m.strip() for m in merge_milestones):
         raise TalosError(f"{path}: autoMergeMilestones must be a list of milestone names")
@@ -390,6 +395,7 @@ def _load_orchestrator(path, raw):
         ci_rerun_errors=numbers["ciRerunErrors"],
         max_conflict_attempts=numbers["maxConflictAttempts"],
         overlap_ignore=tuple(g.strip() for g in overlap_ignore),
+        overlap_parked_statuses=tuple(g.strip() for g in parked),
         aga_max_actions=numbers["agaMaxActionsPerIncident"],
         aga_wait_max_minutes=aga_wait,
         aga_poll_seconds=aga_poll,

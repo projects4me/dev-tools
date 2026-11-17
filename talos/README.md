@@ -565,9 +565,11 @@ and is `enabled: false` until the engineer turns it on.
   - *Stranded*: assigned to the worker already, status new or pending, every "Depends on" issue done, and the worker has shown no sign of it (no run in flight, nothing started, ended, handed back, assigned to it or changed in Gaia) for `strandedMinutes` (15). It is given back through the assignee (via the first owner, since Gaia reports no change for the same assignee), as the `aga retry` path assigns it, with the comment "picked up a stranded issue". Issues held by Agamemnon, in triage or in review are never stranded (they are not assigned to the worker). Stranded issues hold no slot until given back; at most the free slots are given back per sweep, after restarts and before new issues. The sweep note (shown by `talos status`) lists the ones that had to wait for a slot.
   - *New*: status new, unassigned or assigned to an owner, not an epic, every "Depends on" issue done.
   - *Overlap hold* (`lib/orchestrator/overlap.py`, new issues only): an issue whose predicted files overlap an issue
-    in flight in the same repo (started and not done or wont_fix, in the worker's milestones, or assigned earlier in
-    the sweep) waits for it. A candidate's files are what `ai context N --json` resolves from its text; an issue in
-    flight uses its branch's diff against `origin/<base>` once `claude-issue-N` has commits, else its prediction. No
+    in flight in the same repo waits for it. In flight means assigned to the worker or to one of the `owners`, in the
+    worker's milestones, started and not done, wont_fix or parked (status in `overlapParkedStatuses`, default
+    `["deferred"]`), or assigned earlier in the sweep; other people's issues and parked ones never hold anything. A candidate's files are what `ai context N --json` resolves from its text; an issue in
+    flight uses its branch's diff against `origin/<base>` once `claude-issue-N` (local, else `odysseus/claude-issue-N`)
+    exists and has commits, else its prediction (no branch is the normal case and logs nothing). No
     prediction never holds. Paths matching `overlapIgnore` (globs, `*` crosses folders; default `["docs/*"]`, the
     generated API docs; add additive registries here if they prove noisy) don't count. A held issue gets one comment
     naming the issue and files it waits for; the hold (`overlap_holds` in talos.db) is released on the next sweep

@@ -5,6 +5,7 @@ import re
 from datetime import datetime
 
 from ..dependency_gate import DONE_STATUSES, unmet_dependencies
+from ..registry import PARKED_STATUSES
 
 PRIORITIES = ("blocker", "critical", "high", "medium", "low")   # Gaia's, most urgent first
 NEW_STATUSES = ("new",)
@@ -24,13 +25,18 @@ def in_scope(issue, prefix, projects):
     return issue.get("project") in projects and _lower(issue.get("milestone")).startswith(_lower(prefix))
 
 
+def assigned_to(issue, ids):
+    """The issue's assignee is one of the Gaia user ids."""
+    return str(issue.get("assignee") or "") in {str(i) for i in ids}
+
+
 def new_skip_reason(issue, prefix, projects, owners, dependency_statuses, done_statuses=DONE_STATUSES):
     """Why a not-yet-started issue is not fed to the worker, or None when it is a candidate."""
     if not in_scope(issue, prefix, projects):
         return f"not in a {prefix} milestone of the worker's projects"
     if _lower(issue.get("status")) not in NEW_STATUSES:
         return f"status '{issue.get('status')}' is not new"
-    if issue.get("assignee") and issue["assignee"] not in owners:
+    if issue.get("assignee") and not assigned_to(issue, owners):
         return "assigned to someone other than an owner"
     if _lower(issue.get("type")) in NOT_FED_TYPES:
         return "an epic"
@@ -155,10 +161,11 @@ def rank(issues):
     return sorted(issues, key=key)
 
 
-def is_active(issue, done_statuses=DONE_STATUSES):
-    """Started and not finished: an issue whose files another issue should not edit at the same time."""
+def is_active(issue, done_statuses=DONE_STATUSES, parked=PARKED_STATUSES):
+    """Started and not finished or parked: an issue whose files another issue should not edit at the same time."""
     status = _lower(issue.get("status"))
-    return status not in NEW_STATUSES and status not in {_lower(s) for s in (*done_statuses, "wont_fix")}
+    return (status not in NEW_STATUSES and status not in {_lower(s) for s in (*done_statuses, "wont_fix")}
+            and status not in {_lower(s) for s in parked})
 
 
 def ignored(path, patterns):

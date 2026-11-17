@@ -93,7 +93,8 @@ def start(agent, cfg, dry_run, claude=None):
                           lambda repo, issue: workspaces.branch_holder(WORKSPACE, repo, issue), dry_run=dry_run,
                           rabbit=RabbitBudget(tracker.child_env))
     backlog = BacklogSender(agent, tracker, github.agamemnon_gh, RabbitBudget(tracker.child_env), dry_run=dry_run)
-    overlap = OverlapGate(agent, worker, tracker, IssueFiles(tracker.child_env), dry_run=dry_run)
+    overlap = OverlapGate(agent, worker, tracker, IssueFiles(tracker.child_env), worker_id, owners,
+                         dry_run=dry_run)
     aga_merger = Merger(tracker.child_env, github.agamemnon_gh)
     holds = lambda: release_due(tracker, worker_id, me, _now(), agent.name, dry_run,    # noqa: E731
                                 lambda: wiring.docker_ok(agent), owners[0] if owners else None,
