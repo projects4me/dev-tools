@@ -19,7 +19,10 @@ DEFAULT_CAP = 300
 GRAPH = "docs/generated/graph.json"
 GAIA_DEV = "tools/gaia-dev/bin/gaia-dev"
 VENDOR_VOLUME = "gaia_vendor"
+GAIA_IMAGE = "gaia-gaia"
 ALWAYS_CHECKS = ("graph export --check", "docs generate --check")
+# Drift check -> the gaia-dev arguments that regenerate what it found stale.
+REGENERATE = {"graph export --check": "graph export", "docs generate --check": "docs generate"}
 
 # Bundle letter -> words the issue text uses for that kind of work (docs/dev/bundles.md).
 BUNDLE_WORDS = {
@@ -119,13 +122,23 @@ def check_line(check):
     return f"dev-tools/ai/ai gaia-dev {check}" if allowed(check.split()) else f"php {GAIA_DEV} {check}"
 
 
+def regenerate_hint(check):
+    """The line telling the agent how to fix a failing drift check, or None for other checks."""
+    fix = REGENERATE.get(check)
+    if fix is None:
+        return None
+    return (f"regenerate with `dev-tools/ai/ai gaia-dev {fix}` and commit the result (it runs in the gaia image "
+            "when the checkout has no vendor folder; don't composer install)")
+
+
 def gaia_dev_command(root, args, which=shutil.which):
     """The command that runs `gaia-dev <args>` on the checkout at root, or None when nothing can run it.
 
     Local php only when the checkout has its own vendor folder (a run's worktree doesn't: its packages live in
-    the gaia_vendor volume); else a throwaway container of the gaia image with the checkout mounted, so gaia-dev
-    writes to that checkout and never to the shared gaia-dev container or another checkout. No network, so it
-    can't reach a database; on POSIX it runs as the caller so the files it writes stay theirs.
+    the gaia_vendor volume); else a throwaway container of the gaia image with the checkout mounted read-write at
+    /src and the vendor volume read-only over /src/vendor, so gaia-dev writes to that checkout and never to the
+    shared gaia-dev container, another checkout or the shared packages. No network, so it can't reach a database;
+    on POSIX it runs as the caller so the files it writes stay theirs.
     """
     root = Path(root).resolve()
     if which("php") and (root / "vendor" / "autoload.php").is_file():
@@ -133,8 +146,8 @@ def gaia_dev_command(root, args, which=shutil.which):
     if which("docker"):
         user = ["--user", f"{os.getuid()}:{os.getgid()}"] if os.name != "nt" else []
         return ["docker", "run", "--rm", "--network", "none", *user, "-e", "XDEBUG_MODE=off",
-                "-v", f"{root}:/var/www/html", "-v", f"{VENDOR_VOLUME}:/var/www/html/vendor", "-w", "/var/www/html",
-                "gaia-gaia", "php", GAIA_DEV, *args]
+                "-v", f"{root}:/src", "-v", f"{VENDOR_VOLUME}:/src/vendor:ro", "-w", "/src",
+                "--entrypoint", "php", GAIA_IMAGE, GAIA_DEV, *args]
     return None
 
 
@@ -147,6 +160,8 @@ def gaia_dev(root, args, timeout=120):
     cmd = gaia_dev_command(root, args)
     if cmd is None:
         return None, "no php (with the checkout's vendor folder) or docker on PATH"
+    if cmd[0] == "docker":
+        (root / "vendor").mkdir(exist_ok=True)   # else docker creates the mount point as root, which git clean can't remove
     try:
         r = subprocess.run(cmd, cwd=root, capture_output=True, text=True, encoding="utf-8", errors="replace",
                            timeout=timeout)
