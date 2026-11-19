@@ -42,7 +42,10 @@ def gaia_dev_gate(repo):
     for name, ok, out in gaiapack.run_checks(repo):
         say(f"gaia-dev {name}: " + {True: "ok", False: "FAILED", None: "skipped (" + out + ")"}[ok])
         if ok is False:
-            failed.append("\n".join([f"gaia-dev {name}", *out.splitlines()[-15:]]))
+            lines = [f"gaia-dev {name}", *out.splitlines()[-15:]]
+            if hint := gaiapack.regenerate_hint(name):
+                lines.append(hint)
+            failed.append("\n".join(lines))
     if failed:
         raise AiError("\n".join(["gaia-dev checks failed; fix and re-run:", *failed]))
 

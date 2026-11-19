@@ -9,7 +9,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from lib import common, gaiadev, gaiapack  # noqa: E402
+from lib import common, gaiadev, gaiapack, ship  # noqa: E402
 
 
 def link_dir(target, link):
@@ -68,14 +68,27 @@ class CommandTest(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def test_container_mounts_the_checkout_with_the_vendor_volume_and_no_network(self):
+    def test_container_mounts_the_checkout_with_the_vendor_volume_read_only_and_no_network(self):
         cmd = gaiapack.gaia_dev_command(self.root, ["docs", "generate"], which=lambda n: n == "docker")
         self.assertEqual(cmd[:2], ["docker", "run"])
-        self.assertIn(f"{self.root.resolve()}:/var/www/html", cmd)
-        self.assertIn(f"{gaiapack.VENDOR_VOLUME}:/var/www/html/vendor", cmd)
+        self.assertIn(f"{self.root.resolve()}:/src", cmd)
+        self.assertIn(f"{gaiapack.VENDOR_VOLUME}:/src/vendor:ro", cmd)
+        self.assertEqual(cmd[cmd.index("-w") + 1], "/src")
         self.assertEqual(cmd[cmd.index("--network") + 1], "none")
-        self.assertEqual(cmd[-4:], ["php", gaiapack.GAIA_DEV, "docs", "generate"])
+        self.assertEqual(cmd[cmd.index("--entrypoint") + 1:], ["php", gaiapack.GAIA_IMAGE, gaiapack.GAIA_DEV,
+                                                               "docs", "generate"])
         self.assertEqual("--user" in cmd, os.name != "nt")
+
+    @unittest.skipIf(os.name == "nt", "no uid/gid on Windows")
+    def test_container_writes_as_the_caller(self):
+        cmd = gaiapack.gaia_dev_command(self.root, ["graph", "export"], which=lambda n: n == "docker")
+        self.assertEqual(cmd[cmd.index("--user") + 1], f"{os.getuid()}:{os.getgid()}")
+
+    def test_an_empty_vendor_folder_still_uses_the_container(self):
+        (self.root / "vendor").mkdir()
+        cmd = gaiapack.gaia_dev_command(self.root, ["docs", "generate", "--check"],
+                                        which=lambda n: n in ("php", "docker"))
+        self.assertEqual(cmd[0], "docker")
 
     def test_local_php_needs_the_checkouts_vendor_folder(self):
         which = lambda n: n in ("php", "docker")  # noqa: E731
@@ -87,6 +100,42 @@ class CommandTest(unittest.TestCase):
 
     def test_nothing_to_run_it_with(self):
         self.assertIsNone(gaiapack.gaia_dev_command(self.root, ["profiles"], which=lambda n: False))
+
+    def test_the_container_path_creates_the_vendor_mount_point_as_the_caller(self):
+        with mock.patch.object(gaiapack, "gaia_dev_command", return_value=["docker", "run"]), \
+                mock.patch.object(gaiapack.subprocess, "run", return_value=mock.Mock(returncode=0, stdout="", stderr="")):
+            gaiapack.gaia_dev(self.root, ["profiles"])
+        self.assertTrue((self.root / "vendor").is_dir())
+
+
+class ShipGateTest(unittest.TestCase):
+    """A failing drift check names the `ai gaia-dev` command that regenerates it, not host php."""
+
+    def gate_error(self, results):
+        with mock.patch.object(gaiapack, "run_checks", return_value=results), mock.patch.object(ship, "say"):
+            with self.assertRaises(common.AiError) as e:
+                ship.gaia_dev_gate("gaia")
+        return str(e.exception)
+
+    def test_a_stale_docs_check_points_at_ai_gaia_dev_docs_generate(self):
+        msg = self.gate_error([("graph export --check", True, ""),
+                               ("docs generate --check", False, "docs/generated is stale: profiles.md is stale"),
+                               ("check api-cases", True, "")])
+        self.assertIn("profiles.md is stale", msg)
+        self.assertIn("`dev-tools/ai/ai gaia-dev docs generate`", msg)
+        self.assertNotIn("graph export`", msg)
+
+    def test_a_stale_graph_points_at_ai_gaia_dev_graph_export(self):
+        msg = self.gate_error([("graph export --check", False, "graph.json is stale")])
+        self.assertIn("`dev-tools/ai/ai gaia-dev graph export`", msg)
+
+    def test_api_cases_has_no_regenerate_hint(self):
+        msg = self.gate_error([("check api-cases", False, "missing case")])
+        self.assertNotIn("regenerate", msg)
+
+    def test_regenerate_commands_are_allowed_by_ai_gaia_dev(self):
+        for fix in gaiapack.REGENERATE.values():
+            self.assertTrue(gaiadev.allowed(fix.split()), fix)
 
 
 class CheckoutTest(unittest.TestCase):
@@ -105,7 +154,11 @@ class CheckoutTest(unittest.TestCase):
         self.calls = []
 
     def tearDown(self):
-        os.rmdir(self.run_dir / "dev-tools")       # the link only, not the runtime folder behind it
+        link = self.run_dir / "dev-tools"           # the link only, not the runtime folder behind it
+        if os.name == "nt":
+            os.rmdir(link)                          # a junction
+        else:
+            os.unlink(link)                         # a symlink
         self.tmp.cleanup()
 
     def fake_run(self, root, args, timeout=0):
