@@ -11,6 +11,7 @@ import shutil
 from .common import AiError, STATE_DIR, git, p4m, run, say, state_locked
 
 BASELINE_DIR = STATE_DIR / "baseline"
+SCHEMA = "checkout"          # entries recorded before the test database took the checkout's schema are discarded
 LOCK_WAIT = 3 * 3600         # another run's baseline runs whole suites: wait for it rather than fail
 
 
@@ -24,14 +25,14 @@ def load(repo, sha):
     if not path.exists():
         return {}
     data = json.loads(path.read_text(encoding="utf-8"))
-    return data.get("suites", {}) if data.get("sha") == sha else {}
+    return data.get("suites", {}) if data.get("sha") == sha and data.get("schema") == SCHEMA else {}
 
 
 def save(repo, sha, suite, failures):
     path = _file(repo)
     data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
-    if data.get("sha") != sha:
-        data = {"sha": sha, "suites": {}}
+    if data.get("sha") != sha or data.get("schema") != SCHEMA:
+        data = {"sha": sha, "schema": SCHEMA, "suites": {}}
     data["suites"][suite] = sorted(set(failures))
     STATE_DIR.mkdir(exist_ok=True)
     path.write_text(json.dumps(data, indent=2), encoding="utf-8")

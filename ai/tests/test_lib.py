@@ -481,6 +481,18 @@ class CheckoutStateTest(unittest.TestCase):
                 baseline.require("prometheus", "abc", ["ember"], runner=None)
 
 
+class BaselineSchemaTest(unittest.TestCase):
+    def test_entries_recorded_before_the_checkout_schema_are_discarded(self):
+        import json
+        from lib import baseline
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(baseline, "STATE_DIR", Path(d)):
+            old = Path(d) / "baseline-gaia.json"
+            old.write_text(json.dumps({"sha": "abc", "suites": {"api": ["x"]}}), encoding="utf-8")
+            self.assertEqual(baseline.load("gaia", "abc"), {})
+            baseline.save("gaia", "abc", "models", ["y"])
+            self.assertEqual(baseline.load("gaia", "abc"), {"models": ["y"]})
+
+
 class RunWorkspaceSrcTest(unittest.TestCase):
     """In a Talos workspace (P4M_WORKSPACE) the suites run against the worktree, not the main checkout."""
 
