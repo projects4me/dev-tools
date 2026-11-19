@@ -1198,6 +1198,25 @@ def prepare_test_db(src: Path | None = None, db: str = "pr4m_test", fixtures_out
         raise P4MError(f"command failed ({rc}): {find_bash()} {script}")
 
 
+def prepare_checkout_test_db(src: Path | None = None) -> None:
+    """Seed the shared pr4m_test with `src`'s fixtures and `src`'s own schema, as a slot's template does: a scratch
+    copy of pr4m migrated with `src`'s code (pr4m itself is never migrated), used as the schema source. Run it under
+    the shared test database's lock."""
+    src = src or ROOT / "gaia"
+    scratch = f"{testslots.SCRATCH_PREFIX}_unslotted"
+    pg = test_slots().pg
+    if not is_running(PG_CONTAINER):
+        raise P4MError("postgres is not running - `p4m up postgres` first")
+    try:
+        pg.copy(testslots.SOURCE_DB, scratch)
+        migrate_scratch(src, scratch)
+        prepare_test_db(src, source_db=scratch)
+    except testslots.SlotError as e:
+        raise P4MError(str(e))
+    finally:
+        pg.drop(scratch)
+
+
 def ensure_prometheus_deps(force: bool = False) -> None:
     """Keep the node_modules volume in sync with prometheus/package.json.
 
@@ -1429,7 +1448,7 @@ def cmd_db(args) -> None:
         migrate()
     elif a == "prepare-test":
         with test_db_lock():
-            prepare_test_db(Path(args.src).resolve() if args.src else None)
+            prepare_checkout_test_db(Path(args.src).resolve() if args.src else None)
     elif a == "psql":
         db = args.name or PG_DB
         tty = ["-it"] if sys.stdin.isatty() else ["-i"]
@@ -1666,7 +1685,7 @@ def _run_api(args, src: Path, slot: int | None, box: testenv.GaiaTestContainer) 
         prepare_slot(test_slots(), slot, src, slot_held=True, sync=lambda: _sync_gaia(box))
     else:
         if args.prepare:
-            prepare_test_db(src)           # raises on failure: never test a half-seeded DB
+            prepare_checkout_test_db(src)  # raises on failure: never test a half-seeded DB
         _sync_gaia(box)                    # after prepare: it writes the fixtures into the checkout
     if args.regenerate_backend:            # backend.json is generated from the metadata and routes
         gen = run(["docker", "exec", "-w", "/var/www/html", name, "php",

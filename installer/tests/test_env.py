@@ -89,6 +89,33 @@ class PrepareTestDbRetryTest(unittest.TestCase):
 
 
 
+class PrepareCheckoutTestDbTest(unittest.TestCase):
+    def _run(self, migrate_error=None):
+        from unittest import mock
+        pg = mock.Mock()
+        order = mock.Mock()
+        order.attach_mock(pg, "pg")
+        with mock.patch.object(p4m, "is_running", return_value=True),                 mock.patch.object(p4m, "test_slots", return_value=mock.Mock(pg=pg)),                 mock.patch.object(p4m, "migrate_scratch", side_effect=migrate_error) as migrate,                 mock.patch.object(p4m, "prepare_test_db") as prepare:
+            try:
+                p4m.prepare_checkout_test_db(Path("/tmp/gaia"))
+            finally:
+                self.pg, self.migrate, self.prepare = pg, migrate, prepare
+
+    def test_schema_comes_from_a_scratch_copy_migrated_with_the_checkout(self):
+        self._run()
+        scratch = f"{p4m.testslots.SCRATCH_PREFIX}_unslotted"
+        self.pg.copy.assert_called_once_with("pr4m", scratch)
+        self.migrate.assert_called_once_with(Path("/tmp/gaia"), scratch)
+        self.prepare.assert_called_once_with(Path("/tmp/gaia"), source_db=scratch)
+        self.pg.drop.assert_called_with(scratch)
+
+    def test_scratch_is_dropped_when_the_migration_fails(self):
+        with self.assertRaises(RuntimeError):
+            self._run(RuntimeError("boom"))
+        self.prepare.assert_not_called()
+        self.pg.drop.assert_called_with(f"{p4m.testslots.SCRATCH_PREFIX}_unslotted")
+
+
 class RunBashRetryTest(unittest.TestCase):
     def test_run_bash_retries_dll_init_failure_and_returns_the_result(self):
         from unittest import mock
