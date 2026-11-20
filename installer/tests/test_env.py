@@ -32,6 +32,44 @@ class MigrateRefusalTest(unittest.TestCase):
         compose.assert_not_called()
 
 
+class OverrideServicesTest(unittest.TestCase):
+    """A generated override names only services p4m knows. An override block for a service the repo's compose file
+    no longer defines (no image, no build) makes docker reject the whole project."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        tmp = Path(self.tmp.name)
+        patches = {"STATE_DIR": tmp / "state", "CERT_DIR": tmp / "state" / "certs", "ENV_FILE": tmp / "p4m.env"}
+        for name, value in patches.items():
+            patcher = mock.patch.object(p4m, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.addCleanup(self.tmp.cleanup)
+
+    @staticmethod
+    def services_in(path: Path) -> list[str]:
+        """The service names under the top-level `services:` key of a generated override."""
+        names, inside = [], False
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if line and not line.startswith((" ", "#")):
+                inside = line == "services:"
+            elif inside and line.startswith("  ") and not line.startswith("   ") and line.rstrip().endswith(":"):
+                names.append(line.strip()[:-1])
+        return names
+
+    def test_override_services_belong_to_their_repo(self):
+        for repo, path in p4m.write_overrides().items():
+            for name in self.services_in(path):
+                with self.subTest(repo=repo, service=name):
+                    self.assertIn(name, p4m.SVC)
+                    self.assertEqual(p4m.SVC[name].repo, repo)
+
+    def test_xhgui_is_gone(self):
+        """Gaia dropped its xhgui service (agaia-4756)."""
+        self.assertNotIn("xhgui", p4m.SVC)
+        self.assertNotIn("xhgui", self.services_in(p4m.write_overrides()["gaia"]))
+
+
 class SettingsKeyTest(unittest.TestCase):
     """Gaia's settings encryption key is generated once per machine and never replaced."""
 

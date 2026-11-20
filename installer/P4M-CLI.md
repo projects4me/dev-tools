@@ -14,7 +14,6 @@ Everything is served over **HTTPS** with real hostnames under one configurable d
 | https://api-test.local-projects4.me | gaia-test (pr4m_test) |
 | https://api-test-hermes-down.local-projects4.me | gaia-test-hermes-down |
 | https://hermes-test.local-projects4.me | hermes-test |
-| https://xhgui.local-projects4.me | xhgui profiler |
 | `localhost:5432` | postgres (user/pass `nouman`/`nouman`, DBs `pr4m`, `pr4m_test`) |
 
 The domain is the `P4M_DOMAIN` setting in `p4m.env`. Change it and every URL follows.
@@ -115,8 +114,8 @@ templates with their keys.
 | `p4m diag [svc…]` | Write a full diagnostics report (status, probes, logs) to `dev-tools/logs/` |
 | `p4m runtime setup\|update\|status` | The runtime copy of dev-tools (`.dev-tools-runtime`, a worktree of `origin/main`) that Talos and the agents' tooling run from; `update` fast-forwards it, refusing while a Talos run is active (`--force` for a stale one). See the Talos README |
 
-Service names: `proxy postgres gaia hermes ares prometheus gaia-test gaia-test-hermes-down hermes-test xhgui`.
-Groups: `all`, `core`, `test`, `tools`, or a repo name (`gaia` = all gaia services).
+Service names: `proxy postgres gaia hermes ares prometheus gaia-test gaia-test-hermes-down hermes-test`.
+Groups: `all`, `core`, `test`, or a repo name (`gaia` = all gaia services).
 
 ## How the URLs are wired
 
