@@ -24,8 +24,7 @@ from . import baseline, results, testmap
 from .common import (STATE_DIR, WORKSPACE, announce_checkout, base_branch, checkout_state_file, config, git, kill_tree,
                      p4m, repo_dir, require_matching_workspace, say)
 
-PHPUNIT_FOLDERS = ("tests/libraries/security", "tests/libraries/utils", "tests/libraries/authorization",
-                  "tests/models", "tests/services", "tests/tools")
+PHPUNIT_EXCLUDED_GROUPS = ("quarantine",)       # as Gaia CI: tests that have their own bug issue
 
 
 @dataclass
@@ -118,17 +117,19 @@ def _int(m):
 
 # --- suites --------------------------------------------------------------------------------------
 
-def phpunit(folder, src, slot=None):
-    name = folder.split("/")[-1]
-    if not (Path(src) / folder).is_dir():
-        return SuiteResult(f"phpunit-{name}", f"{folder}: not in this checkout, skipped", skipped=True)
-    code, out, log = _run_logged(f"gaia-phpunit-{name}{_tag(src, slot)}",
-                                 _p4m("test", "phpunit", folder, "--src", str(src), *_slot_args(slot)))
+def phpunit_args(src, slot=None):
+    """`p4m test phpunit` arguments: the whole tests/phpunit.xml suite minus the groups CI excludes."""
+    return ["--src", str(src), *_slot_args(slot),
+            *(a for g in PHPUNIT_EXCLUDED_GROUPS for a in ("--exclude-group", g))]
+
+
+def phpunit(src, slot=None):
+    code, out, log = _run_logged(f"gaia-phpunit{_tag(src, slot)}", _p4m("test", "phpunit", *phpunit_args(src, slot)))
     summary = next((l.strip() for l in reversed(out.splitlines())
                     if l.startswith(("OK (", "Tests:", "FAILURES!", "ERRORS!"))), "no summary (see log)")
     failures = re.findall(r"^\d+\) (\S+)", out, flags=re.M)
     ran, failed = parse_phpunit_counts(summary)
-    return SuiteResult(f"phpunit-{name}", f"phpunit {folder}: {summary}", failures, log, code, failed, ran)
+    return SuiteResult("phpunit", f"phpunit: {summary}", failures, log, code, failed, ran)
 
 
 def parse_phpunit_counts(summary):
@@ -282,7 +283,7 @@ FIXTURE_DRIFT = ("fixtures/default.json differs from what prepare-test-db.sh wri
 
 SUITES = {
     # api first: it prepares the test DB, and the harness rewrites the fixture that tests/tools read (as CI does)
-    "gaia": ["api", *(f"phpunit-{f.split('/')[-1]}" for f in PHPUNIT_FOLDERS)],
+    "gaia": ["api", "phpunit"],
     "prometheus": ["lint", "ember"],
     "hermes": ["hermes"],
     "dev-tools": ["unittest"],
@@ -292,9 +293,8 @@ SUITES = {
 def run_suite(repo, suite, src, targets=None, slot=None):
     """One suite; `slot` (gaia only) runs it in that test slot instead of on the shared pr4m_test."""
     targets = targets or {}
-    if suite.startswith("phpunit-"):
-        return phpunit(next(f for f in PHPUNIT_FOLDERS if f.endswith(suite[len("phpunit-"):])), src, slot)
     return {"api": lambda: api(src, targets.get("api"), slot=slot),
+            "phpunit": lambda: phpunit(src, slot),
             "lint": lambda: lint(src),
             "ember": lambda: ember(src, targets.get("ember")),
             "hermes": lambda: hermes(src),
@@ -318,7 +318,7 @@ def targets_for(repo, src):
     elif repo == "gaia":
         flt, terms, unmapped = testmap.gaia_api_filter(src, base_ref, changed)
         notes = [f"api filter: {flt}" if flt else "api: nothing mapped: running everything",
-                 "phpunit: always every folder in full (fast)"]
+                 "phpunit: always the whole suite, as CI"]
     else:
         return {}, [f"{repo}: no targeting rules, running everything"]
     if unmapped:

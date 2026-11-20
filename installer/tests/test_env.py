@@ -13,6 +13,18 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import p4m  # noqa: E402
 
 
+class PhpunitCommandTest(unittest.TestCase):
+    def test_whole_suite_from_the_config_when_no_path(self):
+        cmd = p4m.phpunit_command("box", "pr4m_test", None, None)
+        self.assertEqual(cmd[-3:], ["-c", "tests/phpunit.xml", "--do-not-cache-result"])
+        self.assertIn("DB_NAME=pr4m_test", cmd)
+
+    def test_exclude_groups_are_passed_through_and_the_path_comes_last(self):
+        cmd = p4m.phpunit_command("box", "db", "tests/models", ["quarantine", "slow"])
+        self.assertEqual(cmd[-5:], ["--exclude-group", "quarantine", "--exclude-group", "slow", "tests/models"][-5:])
+        self.assertLess(cmd.index("--do-not-cache-result"), cmd.index("--exclude-group"))
+
+
 class MigrateRefusalTest(unittest.TestCase):
     """A Talos run (P4M_WORKSPACE set) never migrates pr4m, the engineer's dev database."""
 

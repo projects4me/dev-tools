@@ -1705,6 +1705,15 @@ def _run_api(args, src: Path, slot: int | None, box: testenv.GaiaTestContainer) 
             warn(f"could not copy the reports back: {e}")
 
 
+def phpunit_command(container: str, db_name: str, path: str | None, exclude_groups: list[str] | None) -> list[str]:
+    """The command line for PHPUnit in the test container: tests/phpunit.xml decides what runs unless `path` narrows it."""
+    cmd = ["docker", "exec", "-w", "/var/www/html", "-e", f"DB_NAME={db_name}", "-e", "XDEBUG_MODE=off",
+           container, "./vendor/bin/phpunit", "-c", "tests/phpunit.xml", "--do-not-cache-result"]
+    for group in exclude_groups or []:
+        cmd += ["--exclude-group", group]
+    return cmd + ([path] if path else [])
+
+
 def _run_phpunit(args, slot: int | None, box: testenv.GaiaTestContainer) -> int:
     """PHPUnit in `box`, on the slot's database if there is one (it must exist: `p4m test slots setup`)."""
     if slot:
@@ -1713,10 +1722,8 @@ def _run_phpunit(args, slot: int | None, box: testenv.GaiaTestContainer) -> int:
         if not test_slots().pg.exists(testslots.db_name(slot)):
             raise P4MError(f"slot {slot} has no database yet - `p4m test slots setup {slot}` first")
     _sync_gaia(box)
-    return run(["docker", "exec", "-w", "/var/www/html", "-e", f"DB_NAME={testslots.db_name(slot)}",
-                "-e", "XDEBUG_MODE=off",
-                box.name, "./vendor/bin/phpunit", "-c", "tests/phpunit.xml", "--do-not-cache-result",
-                args.path or "tests"], check=False).returncode
+    return run(phpunit_command(box.name, testslots.db_name(slot), args.path, args.exclude_group),
+               check=False).returncode
 
 
 def cmd_test(args) -> None:
@@ -2179,7 +2186,10 @@ def build_parser() -> argparse.ArgumentParser:
                    help="seed pr4m_test from --src first (under the same lock); with --slot, reset the slot's "
                         "database from the template")
     t.add_argument("--slot", type=int, metavar="K", help=slot_help)
-    t = tsub.add_parser("phpunit", help="gaia phpunit"); t.add_argument("path", nargs="?")
+    t = tsub.add_parser("phpunit", help="gaia phpunit (the whole tests/phpunit.xml suite unless a path is given)")
+    t.add_argument("path", nargs="?")
+    t.add_argument("--exclude-group", action="append", metavar="GROUP",
+                   help="skip tests in this PHPUnit group (repeatable), e.g. quarantine as CI does")
     t.add_argument("--src", help=src_help)
     t.add_argument("--slot", type=int, metavar="K", help=slot_help)
     t = tsub.add_parser("ember", help="prometheus ember tests (source copied in, incremental test build)")
