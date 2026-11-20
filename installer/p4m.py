@@ -105,7 +105,7 @@ class Service:
     repo: str
     compose: str        # service name inside the compose file
     container: str
-    group: str          # core | test | tools
+    group: str          # core | test
     host: str | None = None       # subdomain under P4M_DOMAIN, routed by the proxy
     upstream: str | None = None   # container:port the proxy forwards to
     health_path: str = "/"
@@ -134,8 +134,6 @@ SERVICES: list[Service] = [
             desc="Gaia with unreachable Hermes (fail-open tests)"),
     Service("hermes-test", "hermes", "hermes-test", "hermes-test", "test", "hermes-test",
             "hermes-test:9001", "/socket.io/?EIO=4&transport=polling", desc="Hermes paired with gaia-test"),
-    Service("xhgui", "gaia", "xhgui", "p4m-xhgui", "tools", "xhgui", "p4m-xhgui:80",
-            desc="XHProf profiler UI"),
 ]
 SVC = {s.name: s for s in SERVICES}
 
@@ -457,9 +455,6 @@ services:
     volumes:
 {gaia_ca}
     ports: !reset []
-  xhgui:
-    container_name: p4m-xhgui
-    ports: !reset []
 """
 
     hermes_cmd = '["npx", "nodemon", "--legacy-watch", "server.js"]' if poll else '["npm", "start"]'
@@ -776,14 +771,14 @@ def resolve_services(names: list[str], default_all: bool = True) -> list[Service
     for n in names:
         if n in ("all",):
             result += SERVICES
-        elif n in ("core", "test", "tools"):
+        elif n in ("core", "test"):
             result += [s for s in SERVICES if s.group == n]
         elif (n in REPOS or n == PROXY) and n not in SVC:
             result += [s for s in SERVICES if s.repo == n]
         elif n in SVC:
             result.append(SVC[n])
         else:
-            raise P4MError(f"unknown service '{n}'. Known: {', '.join(SVC)} (or all/core/test/tools)")
+            raise P4MError(f"unknown service '{n}'. Known: {', '.join(SVC)} (or all/core/test)")
     seen, uniq = set(), []
     for s in result:
         if s.name not in seen:
@@ -1379,7 +1374,7 @@ def cmd_build(args) -> None:
         info(f"Building {repo}")
         if repo == PROXY:
             continue
-        compose(repo, "build", *(["--pull"] if args.pull else []), *[s.compose for s in svcs if s.name != "postgres" and s.name != "xhgui"])
+        compose(repo, "build", *(["--pull"] if args.pull else []), *[s.compose for s in svcs if s.name != "postgres"])
     if any(s.name == "prometheus" for s in services) and args.deps:
         ensure_prometheus_deps(force=True)
 
@@ -2084,7 +2079,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="p4m", description="Projects4Me local development CLI",
                                 formatter_class=argparse.RawDescriptionHelpFormatter,
                                 epilog="Service names: " + ", ".join(SVC) +
-                                       "\nGroups: all, core, test, tools, or a repo name (gaia, hermes, ...)")
+                                       "\nGroups: all, core, test, or a repo name (gaia, hermes, ...)")
     sub = p.add_subparsers(dest="cmd", metavar="<command>")
 
     s = sub.add_parser("doctor", help="check prerequisites, repos, docker, ports"); s.set_defaults(fn=cmd_doctor)
