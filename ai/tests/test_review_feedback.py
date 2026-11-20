@@ -98,6 +98,17 @@ class CommitDeletionsTest(unittest.TestCase):
             workflow.commit_files("dev-tools", 1, "msg", ["gone.txt"], push=False)
         self.assertEqual(calls[0], ("git", "add", "-A", "--", "gone.txt"))
 
+    def test_already_staged_deletion_is_not_added_again(self):
+        calls = []
+        with mock.patch.object(workflow, "check_commit", return_value="claude-issue-1"), \
+                mock.patch.object(workflow, "ody", lambda repo, *a, **k: calls.append(a)), \
+                mock.patch.object(workflow, "git", return_value="gone.txt"), \
+                mock.patch.object(workflow, "git_dir", return_value=Path(__import__("tempfile").mkdtemp())), \
+                mock.patch.object(workflow, "say"):
+            workflow.commit_files("dev-tools", 1, "msg", ["gone.txt", "new.txt"], push=False)
+        self.assertEqual(calls[0], ("git", "add", "-A", "--", "new.txt"))
+        self.assertNotIn("gone.txt", calls[0])
+
 
 if __name__ == "__main__":
     unittest.main()
