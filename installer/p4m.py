@@ -1620,11 +1620,20 @@ def _slots_status(slots: testslots.Slots, src: Path) -> None:
         raise P4MError(str(e))
 
 
+def default_checkout(repo: str, env=None) -> Path:
+    """The repo's checkout a suite runs against by default: the run workspace's (P4M_WORKSPACE, as `ai test` uses),
+    else the workspace this tooling lives in."""
+    workspace = (os.environ if env is None else env).get("P4M_WORKSPACE")
+    return (Path(workspace) if workspace else ROOT) / repo
+
+
 def _test_checkout(args, repo: str) -> Path:
-    """The checkout a suite runs against: --src, else the workspace's repo."""
-    src = Path(getattr(args, "src", None) or ROOT / repo).resolve()
+    """The checkout a suite runs against: --src, else the run workspace's (or the workspace's) repo."""
+    explicit = getattr(args, "src", None)
+    src = Path(explicit or default_checkout(repo)).resolve()
     if not (src / ".git").exists():
         raise P4MError(f"{src} is not a git checkout")
+    info(f"testing the {repo} checkout {src}" + ("" if explicit else " (default; --src overrides)"))
     return src
 
 
@@ -2168,7 +2177,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("test", help="run test suites")
     tsub = s.add_subparsers(dest="test_cmd", required=True, metavar="<suite>")
-    src_help = "checkout to test (default: the workspace's repo); a throwaway container is used when the " \
+    src_help = "checkout to test (default: the run workspace's (P4M_WORKSPACE) or the workspace's repo); a throwaway container is used when the " \
                "shared one serves another folder"
     slot_help = "run in test slot K: its own container and database pr4m_test_K (see `p4m test slots`)"
     t = tsub.add_parser("api", help="gaia api-tester against gaia-test")
