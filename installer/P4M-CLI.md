@@ -89,7 +89,7 @@ Firefox uses its own certificate store: set `security.enterprise_roots.enabled =
 | `p4m test api\|phpunit --slot K` | Run in test slot K: container `p4m-test-gaia-slotK` on database `pr4m_test_K`; `api --prepare` resets the slot from the template instead of re-seeding |
 | `p4m test clean` | remove the throwaway `p4m-test-*` containers (with `--src`, only that checkout's; without, the slot containers too), then (without `--src`) the Prometheus test images and node_modules volumes no container uses |
 
-Every `p4m test` runs against **this workspace's checkout** (or `--src <path>`). The shared containers serve the
+Every `p4m test` runs against **this workspace's checkout** (the run folder's, when `P4M_WORKSPACE` is set, as in a `.runs/issue-N`; the command says which it tests) (or `--src <path>`). The shared containers serve the
 folder `p4m up` ran from; when that is another folder, a throwaway `p4m-test-<service>-<hash>` container is
 started from the same image, env, network and mounts with the source pointed here, and kept for reuse.
 
