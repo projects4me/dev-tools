@@ -32,6 +32,49 @@ class MigrateRefusalTest(unittest.TestCase):
         compose.assert_not_called()
 
 
+class MigrateBackfillTest(unittest.TestCase):
+    """p4m db migrate runs search backfill after the migration, in the same container, as gaia's start.sh does."""
+
+    def _migrate(self, backfill_rc, migrate_error=None):
+        def fake_run(cmd, check=True, **_):
+            if cmd[-2:] == ["search", "backfill"]:
+                if isinstance(backfill_rc, Exception):
+                    raise backfill_rc
+                return mock.Mock(returncode=backfill_rc)
+            if migrate_error:
+                raise migrate_error
+            return mock.Mock(returncode=0)
+        with mock.patch.dict(os.environ, {"P4M_WORKSPACE": ""}), \
+                mock.patch.object(p4m, "is_running", return_value=True), \
+                mock.patch.object(p4m, "_test_container", return_value="p4m-gaia-tmp") as box, \
+                mock.patch.object(p4m, "run", side_effect=fake_run) as run, \
+                mock.patch.object(p4m, "warn") as warn:
+            p4m.migrate()
+        box.assert_called_once()
+        return [c.args[0] for c in run.call_args_list], run.call_args_list, warn
+
+    def test_backfill_follows_the_migration_in_the_same_container(self):
+        cmds, calls, warn = self._migrate(0)
+        self.assertEqual([c[-2:] for c in cmds], [["migration", "migrate"], ["search", "backfill"]])
+        self.assertTrue(all("p4m-gaia-tmp" in c for c in cmds))
+        self.assertFalse(calls[1].kwargs.get("check", True))
+        warn.assert_not_called()
+
+    def test_failed_backfill_warns_and_does_not_raise(self):
+        _, _, warn = self._migrate(2)
+        warn.assert_called_once()
+        self.assertIn("exit 2", warn.call_args.args[0])
+
+    def test_backfill_docker_error_warns_and_does_not_raise(self):
+        _, _, warn = self._migrate(p4m.P4MError("docker went away"))
+        self.assertIn("docker went away", warn.call_args.args[0])
+
+    def test_failed_migration_raises_without_backfilling(self):
+        with mock.patch.object(p4m, "backfill_search") as backfill, self.assertRaises(p4m.P4MError):
+            self._migrate(0, migrate_error=p4m.P4MError("migrate failed"))
+        backfill.assert_not_called()
+
+
 class SettingsKeyTest(unittest.TestCase):
     """Gaia's settings encryption key is generated once per machine and never replaced."""
 

@@ -1178,6 +1178,22 @@ def migrate() -> None:
         compose("gaia", "up", "-d", "gaia")
     container = _test_container("gaia-dev", src, "/var/www/html")
     run(["docker", "exec", "-w", "/var/www/html", container, "php", "cli.php", "migration", "migrate"])
+    backfill_search(container)
+
+
+def backfill_search(container: str) -> None:
+    """Store the semantic search text the migrated records lack, as gaia's docker/dev/start.sh does after its
+    migrate. A failure only warns (a gaia older than agaia-4764 has no `search` task): the migration stands."""
+    info("Backfilling semantic search text")
+    try:
+        rc = run(["docker", "exec", "-w", "/var/www/html", container, "php", "cli.php", "search", "backfill"],
+                 check=False).returncode
+        why = f"exit {rc}" if rc else ""
+    except P4MError as e:
+        why = str(e)
+    if why:
+        warn(f"search backfill failed ({why}); continuing - re-run `p4m db migrate` once gaia has the "
+             "`search` task")
 
 
 def prepare_test_db(src: Path | None = None, db: str = "pr4m_test", fixtures_out: Path | None = None,
