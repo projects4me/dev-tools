@@ -72,27 +72,21 @@ class GaiaMappingTest(unittest.TestCase):
         self.assertIsNone(flt)
         self.assertEqual((terms, unmapped), ([], []))
 
-    def test_phpunit_folders_are_the_ones_gaia_ci_runs(self):
-        self.assertEqual(tests.PHPUNIT_FOLDERS,
-                         ("tests/libraries/security", "tests/libraries/utils", "tests/libraries/authorization",
-                          "tests/models", "tests/services", "tests/tools"))
+    def test_phpunit_runs_the_whole_suite_without_the_quarantine_group(self):
+        self.assertEqual(tests.phpunit_args("/src"), ["--src", "/src", "--exclude-group", "quarantine"])
+        self.assertEqual(tests.phpunit_args("/src", 2),
+                         ["--src", "/src", "--slot", "2", "--exclude-group", "quarantine"])
+        self.assertEqual(tests.SUITES["gaia"], ["api", "phpunit"])
 
-    def test_phpunit_skips_a_folder_the_checkout_lacks(self):
-        with tempfile.TemporaryDirectory() as d, mock.patch.object(tests, "_run_logged") as run:
-            r = tests.phpunit("tests/services", d)
-            run.assert_not_called()
-            self.assertTrue(r.skipped)
-            self.assertIn("not in this checkout, skipped", r.summary)
-            self.assertTrue(tests.judge(r, set())[0])
-
-    def test_phpunit_runs_a_folder_the_checkout_has(self):
-        with tempfile.TemporaryDirectory() as d, mock.patch.object(
-                tests, "_run_logged", return_value=(0, "OK (3 tests, 5 assertions)", Path(d))) as run:
-            (Path(d) / "tests" / "services").mkdir(parents=True)
-            r = tests.phpunit("tests/services", d)
-            run.assert_called_once()
-            self.assertFalse(r.skipped)
-            self.assertEqual(r.ran, 3)
+    def test_phpunit_reports_the_runs_counts_and_skipped_tests_do_not_fail(self):
+        out = "OK, but incomplete, skipped, or risky tests!\nTests: 120, Assertions: 300, Skipped: 4."
+        with mock.patch.object(tests, "_run_logged", return_value=(0, out, Path("."))) as run:
+            r = tests.phpunit("/src")
+        cmd = run.call_args.args[1]
+        self.assertEqual(cmd[-2:], ["--exclude-group", "quarantine"])
+        self.assertNotIn("tests/libraries", " ".join(cmd))
+        self.assertEqual((r.suite, r.ran, r.failed_count), ("phpunit", 120, 0))
+        self.assertTrue(tests.judge(r, set())[0])
 
     def test_services_and_tasks_are_covered_by_phpunit_not_the_api_filter(self):
         flt, terms, unmapped = testmap.gaia_api_filter(".", "origin/dev", [
@@ -517,7 +511,7 @@ class RunWorkspaceSrcTest(unittest.TestCase):
                 tests.cmd_test(args)
             self.assertEqual(Path(seen["src"]), ws / "gaia")
             with mock.patch.object(tests, "_run_logged", return_value=(0, "OK (1 test)", Path(d))) as logged:
-                tests.phpunit("tests/unit", seen["src"])
+                tests.phpunit(seen["src"])
             cmd = logged.call_args.args[1]
             self.assertEqual(cmd[cmd.index("--src") + 1], str(ws / "gaia"))
 
