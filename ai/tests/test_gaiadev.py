@@ -27,12 +27,41 @@ class AllowlistTest(unittest.TestCase):
                      ["docs", "generate", "--check"], ["check", "api-cases"], ["check", "api-cases", "/api/v1/idea"],
                      ["check", "resource", "Report"], ["model", "Idea"], ["route", "POST /api/v1/idea"],
                      ["acl", "idea", "aclNoProject"], ["cases", "idea", "--method=POST", "--all"], ["assertions"],
-                     ["profiles"], ["fixtures"]):
+                     ["profiles"], ["fixtures"], ["check", "action"], ["check", "behavior", "--skip-tests"],
+                     ["check", "live-events"]):
             self.assertEqual(gaiadev.validate(args), args)
 
+    def test_file_only_scaffolders_are_allowed_with_realistic_options(self):
+        for args in (
+                ["scaffold", "resource", "Foo", "--fields=name:varchar:100:required,description:text"],
+                ["scaffold", "resource", "Report", "--parent=Project", "--behaviors=a,b", "--acl=aclMembers:members",
+                 "--dry-run"],
+                ["scaffold", "action", "Tag", "patch", "--domain=TagRules"],
+                ["scaffold", "behavior", "reportTotals", "--model=Report", "--events=beforeSave"],
+                ["scaffold", "live-events", "Report", "--events=created,updated", "--fields=title,status",
+                 "--parent=reportId:Report", "--scope=project"],
+                ["scaffold", "api-cases", "GET", "/api/v1/idea", "--profile=aclMembers", "--catalog=acl", "--dry-run"],
+                ["scaffold", "api-cases", "POST", "comment", '--assert=attributesPresent=["comment"]'],
+                ["scaffold", "api-cases", "--new-profile=aclReports", "--role=ACL Reports",
+                 "--permissions=issue.get=1,project.get=2"]):
+            self.assertEqual(gaiadev.validate(args), args)
+
+    def test_scaffolder_values_with_shell_metacharacters_or_unknown_options_are_refused(self):
+        for args in (["scaffold", "resource", "Foo", "--fields=a;rm -rf /"],
+                     ["scaffold", "resource", "Foo", "--fields=$(id)"],
+                     ["scaffold", "resource", "Foo", "--acl=a|b"],
+                     ["scaffold", "api-cases", "--role=ACL`id`"],
+                     ["scaffold", "api-cases", "--assert=a&b"],
+                     ["scaffold", "api-cases", "--cases-file=cases.json"],
+                     ["scaffold", "resource", "Foo", "--force"],
+                     ["scaffold", "resource", "Foo", "--dry-run=1"],
+                     ["scaffold", "resource", "Foo;id"], ["scaffold", "resource", "../Foo"]):
+            with self.assertRaisesRegex(common.AiError, "not allowed"):
+                gaiadev.validate(args)
+
     def test_database_and_writing_commands_are_refused(self):
-        for args in (["migration", "migrate"], ["migration"], ["scaffold", "resource", "Report"],
-                     ["check", "behavior"], ["graph"], ["docs", "generate", "--force"]):
+        for args in (["migration", "migrate"], ["migration"], ["scaffold", "unknown", "Report"],
+                     ["scaffold"], ["check", "behavior", "--all"], ["graph"], ["docs", "generate", "--force"]):
             with self.assertRaisesRegex(common.AiError, "not allowed"):
                 gaiadev.validate(args)
 
@@ -56,7 +85,8 @@ class AllowlistTest(unittest.TestCase):
 
     def test_the_packs_checks_point_at_ai_gaia_dev_only_when_it_runs_them(self):
         self.assertEqual(gaiapack.check_line("check resource Report"), "dev-tools/ai/ai gaia-dev check resource Report")
-        self.assertEqual(gaiapack.check_line("check behavior"), f"php {gaiapack.GAIA_DEV} check behavior")
+        self.assertEqual(gaiapack.check_line("check behavior"), "dev-tools/ai/ai gaia-dev check behavior")
+        self.assertEqual(gaiapack.check_line("check unknown"), f"php {gaiapack.GAIA_DEV} check unknown")
 
 
 class CommandTest(unittest.TestCase):
