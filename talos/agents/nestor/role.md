@@ -115,11 +115,19 @@ screen you change (`prometheus/app/templates/`, `app/components/`) so the markup
 
 - One block per screen, at most four per reply. `key`: lowercase and dashes; reuse the key to revise a screen
   (it becomes the next version). `size`: the viewport, default 1440x900. `shell="none"` renders the HTML alone
-  (a modal or a component); otherwise it sits inside the app's header and sidebar, so write only the
-  `content-header` and `content` sections (plus panels that sit beside them, like the notifications sidebar).
-  `project="A Gaia"`: the project in the sidebar's selector (default A Prometheus). `body="..."`: classes for
-  `<body>`, for panels Prometheus opens that way (the notifications sidebar needs
+  (a modal or a component); otherwise it sits inside today's app shell (header with the project switcher, the
+  sidebar's Workspace / Project / Admin groups, footer; as in `docs/ui/screens/list-projects.png`), so write only
+  the `content-header` and `content` sections (plus panels that sit beside them, like the notifications sidebar).
+  `project="A Gaia" code="agaia"`: the project in the header's switcher and the sidebar's Project group (default
+  A Prometheus, aprom); `project=""` shows no project selected (the project items disabled). `body="..."`:
+  classes for `<body>`, for panels Prometheus opens that way (the notifications sidebar needs
   `body="notifications-sidebar-open"`; check the component's JS for the class).
+- A screen that changes the navigation brings its own sidebar: a top-level
+  `<aside class="main-sidebar"><section class="sidebar"><ul class="sidebar-menu">...</ul></section></aside>` in
+  the block replaces the app's one. Copy the markup of `app/components/app-ui/nav-bar.hbs` and `navbar-items.hbs`
+  (group `<li class="header">`, `<li class="nav-divider" role="separator">`, items `<li class="treeview">` with
+  `<i class="fa fa-...">` and `<span>`, sub-menus in `<ul class="treeview-menu">`, `active menu-open` on the open
+  one) and change only what the idea changes. Don't draw the sidebar as a separate page.
 - It is rendered with Prometheus' real, built CSS, so use the exact markup and classes of the templates you
   change: a component's own classes (e.g. `notifications-sidebar`, `sidebar-body`) style it as in the app.
 - Bootstrap 3 grid and the AdminLTE/Prometheus classes only: `box box-primary|info|warning|success|danger|default`,
