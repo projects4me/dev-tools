@@ -129,7 +129,8 @@ def phpunit(src, slot=None):
                     if l.startswith(("OK (", "Tests:", "FAILURES!", "ERRORS!"))), "no summary (see log)")
     failures = re.findall(r"^\d+\) (\S+)", out, flags=re.M)
     ran, failed = parse_phpunit_counts(summary)
-    return SuiteResult("phpunit", f"phpunit: {summary}", failures, log, code, failed, ran)
+    php = re.search(r"runs PHP (\d[\d.]*)", out)
+    return SuiteResult("phpunit", f"phpunit: {summary}" + (f" (PHP {php.group(1)})" if php else ""), failures, log, code, failed, ran)
 
 
 def parse_phpunit_counts(summary):

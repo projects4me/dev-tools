@@ -853,5 +853,40 @@ class PrometheusPruneTest(unittest.TestCase):
         self.assertEqual(removed, [])
 
 
+class PhpVersionTest(unittest.TestCase):
+    def _checkout(self, dockerfile):
+        d = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        if dockerfile is not None:
+            (d / "Dockerfile").write_text(dockerfile, encoding="utf-8")
+        return d
+
+    def test_version_from_the_from_tag(self):
+        d = self._checkout("FROM ghcr.io/projects4me/gaia-env:8.5.12-phalcon5.23.0" + chr(10) + "RUN true" + chr(10))
+        self.assertEqual(testenv.dockerfile_php_version(d), "8.5.12")
+
+    def test_no_dockerfile_or_no_version_in_the_tag(self):
+        self.assertEqual(testenv.dockerfile_php_version(self._checkout(None)), "")
+        self.assertEqual(testenv.dockerfile_php_version(self._checkout("FROM rananoman/gaia:env-dev" + chr(10))), "")
+
+    def test_outdated_compares_the_parts_the_tag_names(self):
+        self.assertTrue(testenv.outdated_php("8.5.12", "7.4.33"))
+        self.assertTrue(testenv.outdated_php("8.5", "8.4.1"))
+        self.assertFalse(testenv.outdated_php("8.5", "8.5.12"))
+        self.assertFalse(testenv.outdated_php("8.5.12", "8.5.12"))
+
+    def test_unknown_is_not_outdated(self):
+        self.assertFalse(testenv.outdated_php("", "7.4.33"))
+        self.assertFalse(testenv.outdated_php("8.5.12", ""))
+
+    def test_container_reports_its_version(self):
+        box = testenv.GaiaTestContainer(tempfile.gettempdir(), tempfile.gettempdir())
+        out = lambda text, code=0: subprocess.CompletedProcess([], code, text, "")
+        with mock.patch.object(testenv, "_docker", return_value=out("8.5.12")):
+            self.assertEqual(box.php_version(), "8.5.12")
+        with mock.patch.object(testenv, "_docker", return_value=out("", 1)):
+            self.assertEqual(box.php_version(), "")
+
+
 if __name__ == "__main__":
     unittest.main()
