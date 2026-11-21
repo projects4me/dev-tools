@@ -3,6 +3,7 @@ with an in-memory idea client (sim Gaia's contract), a fake launcher and a fake 
 
 import json
 import os
+import re
 import sys
 import tempfile
 import unittest
@@ -220,6 +221,64 @@ class ScreensTest(unittest.TestCase):
                                                       as_root=True))
         with self.assertRaises(browser.RenderError):
             browser.find("/no/such/browser")
+
+    def test_the_app_shell_is_todays_prometheus_shell(self):
+        screen = {"key": "a", "title": "A", "width": 1440, "height": 900, "shell": "app", "html": "<p>x</p>",
+                  "body": "", "project": "A Gaia", "code": "agaia"}
+        built = page.build(screen, [], "Hammad Hassan")
+        header = built[built.index('<header class="main-header">'):built.index("</header>")]
+        self.assertIn('class="project-switcher"', header)                     # the switcher is in the header
+        self.assertIn('<span class="project-switcher-name">A Gaia</span>', header)
+        self.assertIn('<span class="project-switcher-code">agaia</span>', header)
+        self.assertIn("header-avatar-status", header)                         # avatar with its status dot
+        self.assertIn('<span class="app-ui-avatar-text">HH</span>', header)
+        self.assertIn('<span id="user-name" class="hidden-xs">Hammad Hassan</span>', header)
+        sidebar = built[built.index('<aside class="main-sidebar">'):built.index("</aside>")]
+        self.assertNotIn("user-panel", built)
+        self.assertNotIn("Main Navigation", built)
+        groups = re.findall(r'<li class="header"[^>]*>(.*?)</li>', sidebar)
+        self.assertEqual([re.sub(r"<[^>]+>", " ", g).split() for g in groups],
+                         [["Workspace"], ["Project", "agaia"], ["Admin"]])
+        labels = re.findall(r'<i class="fa fa-[a-z-]+"></i>\s*<span>([^<]+)</span>', sidebar)
+        self.assertEqual(labels, ["Dashboard", "Projects", "Issues", "Task Board", "Gantt Cal", "Threads", "Ideas",
+                                  "Workflows", "Agents", "Settings", "Developer"])
+        self.assertIn('<footer class="main-footer">', built)
+
+    def test_without_a_project_the_project_items_are_disabled(self):
+        screen = {"key": "a", "title": "A", "width": 1440, "height": 900, "shell": "app", "html": "<p>x</p>",
+                  "body": "", "project": "", "code": ""}
+        built = page.build(screen, [])
+        self.assertIn('<span class="ember-power-select-placeholder">Select a project</span>', built)
+        self.assertIn('nav-project-code nav-project-none', built)
+        self.assertEqual(built.count('class="nav-disabled"'), 5)               # Issues, Board, Gantt, Threads, Ideas
+
+    def test_a_screen_may_bring_its_own_sidebar(self):
+        reply = ('```nestor-screen key="nav" title="Nav" project="A Prometheus" code="aprom"\n'
+                 '<aside class="main-sidebar"><section class="sidebar"><ul class="sidebar-menu">'
+                 '<li class="header">Home</li><li class="treeview active"><a href="#"><i class="fa fa-cubes"></i>'
+                 '<span>Workspace</span></a><ul class="treeview-menu"><li><a href="#">Overview</a></li></ul></li>'
+                 '</ul></section></aside>\n'
+                 '<section class="content-header"><h1>Overview</h1></section>\n```')
+        _, found, problems = screens.extract(reply)
+        self.assertEqual(problems, [])
+        screen = found[0]
+        self.assertEqual((screen["project"], screen["code"]), ("A Prometheus", "aprom"))
+        self.assertTrue(screen["sidebar"].startswith('<aside class="main-sidebar">'))
+        self.assertTrue(screen["sidebar"].endswith("</aside>"))
+        self.assertNotIn("main-sidebar", screen["html"])
+        built = page.build(screen, [])
+        self.assertEqual(built.count('<aside class="main-sidebar">'), 1)        # replaces the default one
+        self.assertIn("<span>Workspace</span>", built)
+        self.assertNotIn("<span>Task Board</span>", built)
+        self.assertIn('<h1>Overview</h1>', built[built.index('class="content-wrapper"'):])
+
+    def test_a_nested_or_second_sidebar_stays_in_the_content_and_bad_codes_are_dropped(self):
+        reply = ('```nestor-screen key="n" code="Bad Code!"\n<div><aside class="main-sidebar">in</aside></div>'
+                 '<p>x</p>\n```')
+        _, found, _ = screens.extract(reply)
+        self.assertEqual(found[0]["sidebar"], "")
+        self.assertEqual(found[0]["code"], "")
+        self.assertIn("main-sidebar", found[0]["html"])
 
     def test_kill_tree_ends_a_running_process_and_reaps_it(self):
         import subprocess
