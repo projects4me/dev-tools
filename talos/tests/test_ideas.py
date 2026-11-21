@@ -280,6 +280,15 @@ class ScreensTest(unittest.TestCase):
         self.assertEqual(found[0]["code"], "")
         self.assertIn("main-sidebar", found[0]["html"])
 
+    def test_nestor_designs_from_the_prototype_and_a_reference_screen(self):
+        role = (Path(__file__).resolve().parents[1] / "agents" / "nestor" / "role.md").read_text(encoding="utf-8")
+        section = role[role.index("## UI screens"):]
+        self.assertIn("prometheus/docs/ui/prototypes/", section)              # looks for a prototype
+        self.assertIn("never copy its\n   markup", section)                    # but builds from the design system
+        self.assertIn("don't pick one", section)                               # idea vs prototype: asks
+        self.assertIn("Copy that template's markup", section)                  # reference first
+        self.assertIn('<aside class="main-sidebar">', section)                 # navigation in the real shell
+
     def test_kill_tree_ends_a_running_process_and_reaps_it(self):
         import subprocess
         proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"],
