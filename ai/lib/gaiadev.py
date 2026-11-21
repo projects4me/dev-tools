@@ -12,23 +12,40 @@ import re
 from . import gaiapack
 from .common import AiError, repo_dir, require_matching_workspace
 
-# (command words) -> (min, max positional arguments, {--option: takes a value}). Everything else is refused.
-# Value options take the `--opt=value` form only, as gaia-dev parses them (`cases ... --method=GET`).
+# Value patterns per option kind. Arguments reach gaia-dev as an argv list (no shell), and these still refuse shell
+# metacharacters ($ ` ; | & < > ( ) { } \ quotes-and-redirects), so a value can't be read as anything but data.
+WORD = re.compile(r"[A-Za-z0-9_.-]+")
+LIST = re.compile(r"[A-Za-z0-9_.:=,-]+")  # --fields=name:varchar:100:required, --permissions=issue.get=1,...
+NAME = re.compile(r"[A-Za-z0-9_.-]+(?: [A-Za-z0-9_.-]+)*")  # --role="ACL Reports"
+ASSERT = re.compile(r"[A-Za-z0-9_.:=,\[\]\"-]+")  # --assert=attributesPresent=["comment"]
+DRY = {"--dry-run": None}
+
+# (command words) -> (min, max positional arguments, {--option: None for a flag, else the pattern its value must match}).
+# Everything else is refused. Value options take the `--opt=value` form only, as gaia-dev parses them. The scaffolders
+# and `check` commands here only write files in the checkout (no database); `scaffold api-cases --cases-file` is left out.
 ALLOWED = {
-    ("graph", "export"): (0, 0, {"--check": False}),
-    ("docs", "generate"): (0, 0, {"--check": False}),
+    ("graph", "export"): (0, 0, {"--check": None}),
+    ("docs", "generate"): (0, 0, {"--check": None}),
     ("check", "api-cases"): (0, 2, {}),
     ("check", "resource"): (1, 1, {}),
+    ("check", "action"): (0, 0, {}),
+    ("check", "behavior"): (0, 0, {"--skip-tests": None}),
+    ("check", "live-events"): (0, 0, {}),
+    ("scaffold", "resource"): (1, 1, {"--fields": LIST, "--parent": WORD, "--behaviors": LIST, "--acl": LIST, **DRY}),
+    ("scaffold", "action"): (2, 2, {"--domain": WORD, **DRY}),
+    ("scaffold", "behavior"): (1, 1, {"--model": WORD, "--events": LIST, **DRY}),
+    ("scaffold", "live-events"): (1, 1, {"--events": LIST, "--fields": LIST, "--parent": LIST, "--scope": WORD, **DRY}),
+    ("scaffold", "api-cases"): (0, 2, {"--profile": WORD, "--catalog": WORD, "--assert": ASSERT, "--new-profile": WORD,
+                                       "--role": NAME, "--permissions": LIST, **DRY}),
     ("model",): (1, 1, {}),
     ("route",): (1, 2, {}),
     ("acl",): (1, 2, {}),
-    ("cases",): (1, 1, {"--method": True, "--profile": True, "--all": False}),
+    ("cases",): (1, 1, {"--method": WORD, "--profile": WORD, "--all": None}),
     ("assertions",): (0, 0, {}),
     ("profiles",): (0, 0, {}),
     ("fixtures",): (0, 0, {}),
 }
 POSITIONAL = re.compile(r"[A-Za-z0-9_/][A-Za-z0-9_./{}: -]*")
-OPTION_VALUE = re.compile(r"[A-Za-z0-9_.-]+")
 TIMEOUT = 600
 
 
@@ -51,8 +68,12 @@ def validate(args):
     for a in rest:
         if a.startswith("-"):
             name, _, value = a.partition("=")
-            takes_value = options.get(name)
-            if takes_value is None or bool(value) != takes_value or (value and not OPTION_VALUE.fullmatch(value)):
+            if name not in options:
+                pattern, ok = None, False
+            else:
+                pattern = options[name]
+                ok = bool(value) == (pattern is not None) and (pattern is None or pattern.fullmatch(value))
+            if not ok:
                 raise AiError(f"option '{a}' is not allowed for 'gaia-dev {' '.join(words)}'"
                               f"{' (allowed: ' + ', '.join(sorted(options)) + ')' if options else ''}")
         elif not POSITIONAL.fullmatch(a) or ".." in a:
