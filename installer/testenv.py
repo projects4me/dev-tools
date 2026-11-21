@@ -373,6 +373,31 @@ GAIA_TEST_INI_FILE = "/usr/local/etc/php/conf.d/zz-p4m-test.ini"
 REPORTS = "output/api-tester-*-report.json"
 
 
+def dockerfile_php_version(checkout):
+    """The PHP version the checkout's Dockerfile builds on, from its FROM tag (`...gaia-env:8.5.12-phalcon5.23.0`
+    gives 8.5.12), or "" when there is no Dockerfile or its tag names no version."""
+    try:
+        text = (Path(checkout) / "Dockerfile").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    m = re.search(r"^FROM\s+\S+:(\d+\.\d+(?:\.\d+)?)", text, re.M | re.I)
+    return m.group(1) if m else ""
+
+
+def outdated_php(wanted, actual):
+    """True when a container's PHP `actual` differs from the Dockerfile's `wanted` (compared on the parts `wanted`
+    names, so a tag of 8.5 accepts 8.5.12). Unknown on either side is not outdated."""
+    if not wanted or not actual:
+        return False
+    parts = wanted.split(".")
+    return actual.split(".")[:len(parts)] != parts
+
+
+OUTDATED_MESSAGE = ("the gaia test container runs PHP {actual} but the checkout's Dockerfile builds on PHP {wanted}: "
+                    "its base image is outdated. Rebuild it with `p4m build` then `p4m up --build gaia-test` "
+                    "(and `p4m test clean`), then run the tests again")
+
+
 class GaiaTestContainer(CopiedSourceContainer):
     """gaia-test's image, network, env and volumes, with the checkout copied in instead of bind-mounted."""
 
@@ -412,6 +437,12 @@ class GaiaTestContainer(CopiedSourceContainer):
         self._create(shared)
         self._empty()               # the image holds an old copy of the source
         return True
+
+    def php_version(self):
+        """The PHP version the container runs (e.g. 8.5.12), or "" when it can't be read."""
+        r = _docker("exec", self.name, "php", "-r", "echo PHP_VERSION;", check=False)
+        m = re.match(r"\d+\.\d+(?:\.\d+)?", (r.stdout or "").strip()) if r.returncode == 0 else None
+        return m.group(0) if m else ""
 
     def _holds_checkout(self):
         """Whether the container's tree is this checkout's (a slot's is whichever checkout ran there last)."""

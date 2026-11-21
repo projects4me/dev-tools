@@ -1660,8 +1660,14 @@ def _gaia_test_box(src: Path, slot: int | None = None,
     try:
         if box.ensure():
             info(f"prepared {box.name} for {src} (source copied in; the first sync copies everything)")
+        php = box.php_version()
     except testenv.TestEnvError as e:
         raise P4MError(str(e))
+    wanted = testenv.dockerfile_php_version(src)
+    if testenv.outdated_php(wanted, php):
+        raise P4MError(testenv.OUTDATED_MESSAGE.format(actual=php, wanted=wanted))
+    if php:
+        info(f"{box.name} runs PHP {php}")
     return box
 
 
