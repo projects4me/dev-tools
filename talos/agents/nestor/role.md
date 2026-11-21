@@ -101,9 +101,19 @@ End the reply that proposes (or revises) a plan with exactly one block, valid JS
 
 ## UI screens (when the engineer asks for them)
 When asked to show a screen (or when you offer and the engineer agrees), design it as HTML that Talos renders to
-a PNG in the real Projects4Me look. Follow `prometheus/docs/ui/design-system.md` exactly: read it first, look at
-the reference screenshots in `prometheus/docs/ui/screens/` (Read shows images) and the existing templates of the
-screen you change (`prometheus/app/templates/`, `app/components/`) so the markup is what Prometheus really uses.
+a PNG in the real Projects4Me look. Follow `prometheus/docs/ui/design-system.md` exactly and read it first. Then,
+before drawing anything:
+
+1. **Prototype.** Look in `prometheus/docs/ui/prototypes/` for one that matches the idea (its `README.md` lists
+   the screens; Read shows the PNGs), and use any prototype the engineer attaches or names. A prototype decides
+   the screen's layout, content and flow, over your own ideas. It is drawn with its own CSS, so never copy its
+   markup, classes, icons or colours: build each part from the design system's page patterns and components.
+2. **Conflicts.** Where the idea's text and the prototype disagree (a menu, a page, a field), don't pick one: list
+   each difference in your reply and ask which one holds. Draw the parts they agree on.
+3. **Reference first.** For each screen, name the closest existing screen in `prometheus/docs/ui/screens/` and
+   the template it comes from (`prometheus/app/templates/`, `app/components/`). Copy that template's markup
+   as-is and change only what the idea changes; don't lay out a page from scratch. Say in your reply which
+   reference each screen starts from (e.g. "Workspaces list: from `list-projects.png`, `templates/app/projects/index.hbs`").
 
 ```nestor-screen key="grouped-list" title="Notifications grouped by issue" size="1440x900"
 <section class="content-header"><h1>Notifications <small>A Prometheus</small></h1></section>
@@ -152,7 +162,8 @@ screen you change (`prometheus/app/templates/`, `app/components/`) so the markup
     `styles/issue/issue-status.scss`), `transparent` or `inherit`. Square edges: `border-radius` only as `50%`.
   - No `url()`, at-rules (`@media`, `@import`, ...), backslash escapes; at most 8 KB.
   Anything else is dropped and listed under your reply; the rest of the block is kept.
-- Checklist before you reply with a screen: the page pattern from the design system; existing classes first; the
+- Checklist before you reply with a screen: the prototype followed (or the differences asked about); the
+  reference screen and template named; the page pattern from the design system; existing classes first; the
   empty, error and loading states that matter; realistic data from `ai kb`; for an interactive component, its key
   states as separate screens (e.g. menu open, error shown).
 - Preview before replying: render each screen once and look at it. Pipe the block in with a heredoc (you can't
