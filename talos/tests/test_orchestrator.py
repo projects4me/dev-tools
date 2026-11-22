@@ -676,8 +676,11 @@ class FakeRabbit:
     """lib.orchestrator.rabbit.RabbitBudget: the limit and the recorded review requests."""
 
     def __init__(self, limited=False, fail=False, info=None, answers=None):
-        self.limited, self.fail, self.requests = limited, fail, []
+        self.limited, self.fail, self.requests, self.dropped = limited, fail, [], []
         self.info, self.answers = info or {}, list(answers or [])
+
+    def drop(self, repo, pr):
+        self.dropped.append((repo, pr))
 
     def at_limit(self):
         if self.fail:
@@ -906,6 +909,29 @@ class BacklogTest(SweepTest):
                                self.waiting(8)])
         self.sender(tracker, {7: "CLOSED", 8: "MERGED", 9: "OPEN", 10: "OPEN"}, rabbit).sweep()
         self.assertEqual(rabbit.requests, [("gaia", 10, "backlog", 8, 4)])
+        self.assertEqual(rabbit.dropped, [("gaia", 7), ("gaia", 8), ("gaia", 9)])
+
+    def test_nothing_is_read_while_coderabbit_is_off(self):
+        rabbit = FakeRabbit(info={**self.info("every", self.entry(7, 5, "a")), "off": True})
+        tracker = FakeTracker([self.waiting(5)])
+        gh = mock.Mock(side_effect=AssertionError("gh called"))
+        tracker.issue = mock.Mock(side_effect=AssertionError("Gaia called"))
+        sender = BacklogSender(SimpleNamespace(name="agamemnon", display_name="Agent Agamemnon"), tracker, gh, rabbit)
+        self.assertEqual(sender.sweep(), "")
+        self.assertEqual((rabbit.requests, rabbit.dropped), ([], []))
+
+    def test_an_unreadable_entry_stays_in_the_ledger(self):
+        rabbit = FakeRabbit(info=self.info("every", self.entry(7, 5, "a")))
+        gh = mock.Mock(side_effect=TalosError("gh down"))
+        sender = BacklogSender(SimpleNamespace(name="agamemnon", display_name="Agent Agamemnon"),
+                               FakeTracker([self.waiting(5)]), gh, rabbit)
+        sender.sweep()
+        self.assertEqual((rabbit.requests, rabbit.dropped), ([], []))
+
+    def test_a_dry_run_drops_nothing(self):
+        rabbit = FakeRabbit(info=self.info("every", self.entry(7, 5, "a")))
+        self.sender(FakeTracker([self.waiting(5)]), {7: "MERGED"}, rabbit, dry_run=True).sweep()
+        self.assertEqual(rabbit.dropped, [])
 
     def test_a_dry_run_and_a_budget_failure_send_nothing(self):
         rabbit = FakeRabbit(info=self.info("every", self.entry(7, 5, "a")))

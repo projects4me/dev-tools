@@ -33,3 +33,7 @@ class RabbitBudget:
         if "decision" not in result:
             raise TalosError(f"ai rabbit request {repo} {pr}: no decision in {result}")
         return result["decision"]
+
+    def drop(self, repo, pr):
+        """Take the PR off the deferred list: it will never be sent from the backlog."""
+        ai_json(self.env(), "rabbit", "drop", repo, str(pr))

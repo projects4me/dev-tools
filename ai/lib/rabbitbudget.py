@@ -192,6 +192,19 @@ def request(repo, pr, source, files=0, rereview=False, issue=None):
     return {"decision": choice, "used": used, "limit": limit, "reason": reason}
 
 
+def drop(repo, pr):
+    """Remove the PR from the deferred list (its PR is closed or merged, or its issue left review). True when it was
+    there."""
+    with common.state_locked("rabbitbudget"):
+        ledger = _read()
+        kept = [d for d in ledger["deferred"] if not (d["repo"] == repo and d["pr"] == pr)]
+        if len(kept) == len(ledger["deferred"]):
+            return False
+        ledger["deferred"] = kept
+        _write(ledger)
+    return True
+
+
 def known_decision(repo, pr):
     """`coderabbit` when the ledger counted a trigger for the PR, `human` when it is deferred, else None."""
     ledger = _read()
@@ -235,6 +248,15 @@ def cmd_budget(args):
         f"(tier: {info['tier']}); next slot frees: {info['nextSlot'] or 'n/a'}")
     for d in info["deferred"]:
         say(f"  deferred: {d['repo']}#{d['pr']} (issue {d['issue']}, {d['files']} files, since {d['at']})")
+    return 0
+
+
+def cmd_drop(args):
+    found = drop(args.repo, args.pr)
+    if args.json:
+        say(json.dumps({"dropped": found}))
+    else:
+        say(f"{args.repo}#{args.pr} " + ("dropped from the deferred list" if found else "was not deferred"))
     return 0
 
 

@@ -111,6 +111,17 @@ class LedgerTest(unittest.TestCase):
         self.assertEqual(info["nextSlot"], rb._stamp(rb._parse(sent[0]["at"]) + timedelta(hours=24)))
         self.assertEqual(len(info["deferred"]), 1)
 
+    def test_drop_removes_only_that_deferred_pr(self):
+        keep = {"at": "2026-01-01T00:00:00Z", "repo": "gaia", "pr": 9, "issue": 98, "files": 2}
+        sent = self.sends(1)
+        self.seed(sent, [{"at": "2026-01-01T00:00:00Z", "repo": "gaia", "pr": 8, "issue": 99, "files": 2},
+                         {"at": "2026-01-01T00:00:00Z", "repo": "hermes", "pr": 8, "issue": 97, "files": 2}, keep])
+        self.assertTrue(rb.drop("gaia", 8))
+        self.assertFalse(rb.drop("gaia", 8))
+        ledger = rb._read()
+        self.assertEqual([(d["repo"], d["pr"]) for d in ledger["deferred"]], [("hermes", 8), ("gaia", 9)])
+        self.assertEqual(ledger["sent"], sent)
+
 
 if __name__ == "__main__":
     unittest.main()

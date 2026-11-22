@@ -58,8 +58,9 @@ resolves: a conflict goes to the owner as in_review with "merge conflict, CodeRa
 review by hand". Reviews the owner asks for on GitHub are not counted.
 
 **Backlog.** A PR the limit sent to the owner is recorded as deferred in the ledger. Every sweep (`lib/orchestrator/backlog.py`)
-reads `ai rabbit budget --json` and, while the tier isn't `full`, sends the deferred PRs oldest first with
+reads `ai rabbit budget --json`; while CodeRabbit is switched off it reads nothing else. Otherwise, while the tier isn't
+`full`, it sends the deferred PRs oldest first with
 `ai rabbit request <repo> <pr> --source backlog --files N --issue N` (the stored file count counts against the tier, as
 for a new PR), stopping at the first human answer. A PR that is closed or merged, or whose issue is no longer
-in_review, is skipped without spending a review. Each send is commented on the issue ("CodeRabbit review requested");
+in_review, is dropped from the ledger (`ai rabbit drop`) without spending a review. Each send is commented on the issue ("CodeRabbit review requested");
 the issue stays with the owner and the Talos loop is not started.
