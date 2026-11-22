@@ -117,20 +117,19 @@ class Tracker:
         """The fields Talos decides on, read fresh from Gaia (events are only hints)."""
         return self._fields(self._call(self.gaia.issue_by_number, number, rels=self.ISSUE_RELS))
 
-    def issues_in(self, project, milestone_prefix):
+    def issues_in(self, project, milestone_prefix, skip_statuses=()):
         """The project's issues in milestones whose name starts with milestone_prefix (any case), as issue() reads
-        them."""
+        them, leaving out skip_statuses. One query: Gaia's time grows with the rows it returns, and most are done."""
         p, _ = self._call(self.gaia.project_options, project, ("milestones",))
         prefix = milestone_prefix.lower()
-        found = []
-        for m in p.get("milestones") or []:
-            if not str(m.get("name") or "").lower().startswith(prefix):
-                continue
-            rows = self._call(self.gaia.find, "issue",
-                              f"((Issue.projectId : {p['id']}) AND (Issue.milestoneId : {m['id']}))",
-                              rels=self.ISSUE_RELS, limit=-1)
-            found.extend(self._fields(r) for r in rows if r.get("issueNumber"))
-        return found
+        ids = [m["id"] for m in p.get("milestones") or [] if str(m.get("name") or "").lower().startswith(prefix)]
+        if not ids:
+            return []
+        milestones = " OR ".join(f"(Issue.milestoneId : {i})" for i in ids)
+        skips = "".join(f" AND (issuestatus.name !: {s})" for s in skip_statuses)
+        rows = self._call(self.gaia.find, "issue", f"((Issue.projectId : {p['id']}) AND ({milestones}){skips})",
+                          rels=self.ISSUE_RELS, limit=-1)
+        return [self._fields(r) for r in rows if r.get("issueNumber")]
 
     @staticmethod
     def _fields(i):

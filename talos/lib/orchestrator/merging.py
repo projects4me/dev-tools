@@ -37,19 +37,25 @@ class MergeSweeper:
     def enabled(self):
         return bool(self.settings.auto_merge_milestones and self.merger and self.my_id)
 
-    def sweep(self, paused=False):
-        """One pass over the issues handed to the orchestrator to merge. While paused nothing is merged: they go to
-        the reviewer instead of waiting on a paused orchestrator. Returns a short note ("" when there were none)."""
+    def sweep(self, issues, skip_statuses, paused=False):
+        """One pass over the issues handed to the orchestrator to merge. `issues` are the sweep's (the orchestrator
+        reads its milestones once per sweep); an auto-merge milestone outside them is read here, leaving out
+        skip_statuses. While paused nothing is merged: they go to the reviewer instead of waiting on a paused
+        orchestrator. Returns a short note ("" when there were none)."""
         if not self.enabled():
             return ""
         milestones = self.settings.auto_merge_milestones
-        found = {}
+        prefix = self.settings.milestone_prefix.lower()
+        pool = list(issues)
         for milestone in milestones:
-            for project in self.projects:
-                for issue in self.tracker.issues_in(project, milestone):
-                    if (policy.is_merge_candidate(issue, milestones, self.projects, self.my_id)
-                            and not self.is_held(issue["number"])):
-                        found[issue["number"]] = issue
+            if not milestone.lower().startswith(prefix):
+                pool.extend(i for project in self.projects
+                            for i in self.tracker.issues_in(project, milestone, skip_statuses))
+        found = {}
+        for issue in pool:
+            if (policy.is_merge_candidate(issue, milestones, self.projects, self.my_id)
+                    and not self.is_held(issue["number"])):
+                found[issue["number"]] = issue
         notes = []
         for number in sorted(found):
             try:

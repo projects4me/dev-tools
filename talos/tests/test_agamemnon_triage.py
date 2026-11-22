@@ -41,8 +41,8 @@ class FakeTracker:
     def assigned_issue_numbers(self, project_id, user_id):
         return [n for n, i in self.issues.items() if i["assignee"] == user_id]
 
-    def issues_in(self, project, prefix):
-        return [dict(i) for i in self.issues.values()]
+    def issues_in(self, project, prefix, skip_statuses=()):
+        return [dict(i) for i in self.issues.values() if i.get("status") not in skip_statuses]
 
     def issue(self, number):
         return dict(self.issues[number])
