@@ -163,7 +163,7 @@ class FakeTracker:
     def __init__(self, issues, dependencies=None):
         self.issues = {i["number"]: dict(i) for i in issues}
         self.dependencies = dependencies or {}      # number -> status of issues outside the sweep
-        self.assigned, self.comments = [], []
+        self.assigned, self.comments, self.reads = [], [], []
 
     def project_ids(self):
         return {"A Gaia": "1"}
@@ -171,8 +171,10 @@ class FakeTracker:
     def assigned_issue_numbers(self, project_id, user_id):
         return [n for n, i in self.issues.items() if i["assignee"] == user_id]
 
-    def issues_in(self, project, prefix):
-        return [dict(i) for i in self.issues.values() if i["project"] == project]   # the sweep filters milestones
+    def issues_in(self, project, prefix, skip_statuses=()):
+        self.reads.append((project, prefix, tuple(skip_statuses)))
+        return [dict(i) for i in self.issues.values()       # the sweep filters milestones
+                if i["project"] == project and i["status"] not in skip_statuses]
 
     def issue(self, number):
         return dict(self.issues[number])
@@ -445,6 +447,24 @@ class AutoMergeTest(SweepTest):
         self.assertIn("merged automatically", tracker.comments[-1][1])
         self.assertEqual([m["issue"] for m in store.merges_on("agamemnon", "2026-10-31")], [5])
         self.assertIn("merges: #5 merged PR gaia#77", store.get("agamemnon")["last_sweep"])
+
+    def test_one_read_of_the_unfinished_issues_feeds_every_step(self):
+        tracker, merger = FakeTracker([self.clean(), issue(6), issue(7, status="done")]), FakeMerger(gate("ok"))
+        o = self.merging(tracker, merger)
+        o.human_merges = mock.Mock(**{"sweep.return_value": ""})
+        self.assertEqual(o.sweep(), [(6, "new")])
+        self.assertEqual(tracker.reads, [("A Gaia", "aga-", ("done", "closed", "wont_fix"))])
+        self.assertEqual([i["number"] for i in o.human_merges.sweep.call_args.args[0]], [5, 6])
+        self.assertEqual(merger.merged, [("gaia", 77)])
+
+    def test_an_auto_merge_milestone_outside_the_prefix_is_read_for_merges(self):
+        tracker, merger = FakeTracker([self.clean(milestone="release-1")]), FakeMerger(gate("ok"))
+        o = self.orchestrator(tracker, auto_merge_milestones=("aga-v1", "release-1"))
+        o.merges = MergeSweeper(o.agent, o.worker, tracker, merger, MERGER_ID, [OWNER], now=lambda: self.clock[0])
+        o.sweep()
+        self.assertEqual(tracker.reads, [("A Gaia", "aga-", ("done", "closed", "wont_fix")),
+                                         ("A Gaia", "release-1", ("done", "closed", "wont_fix"))])
+        self.assertEqual(merger.merged, [("gaia", 77)])
 
     def test_a_failed_gate_goes_to_the_reviewer_with_the_reason(self):
         tracker = FakeTracker([self.clean()])

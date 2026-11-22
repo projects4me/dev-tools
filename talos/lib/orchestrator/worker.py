@@ -95,14 +95,16 @@ class Orchestrator:
     def _sweep(self):
         st = store.get(self.agent.name)
         tripped = self._update_breaker(st)
+        issues = self._issues()     # once per sweep, for every step below
         # merges first and even while paused: a paused orchestrator hands them to the reviewer instead of holding them
-        merged = self.merges.sweep(paused=tripped or bool(st.get("paused"))) if self.merges else ""
+        merged = self.merges.sweep(issues, self._finished(),
+                                   paused=tripped or bool(st.get("paused"))) if self.merges else ""
         merged = f"merges: {merged}; " if merged else ""
         if tripped:
             return f"{merged}paused by the circuit breaker", []
         if st.get("paused"):
             return f"{merged}paused ({st.get('pause_reason') or 'talos pause'})", []
-        by_person = self.human_merges.sweep() if self.human_merges else ""
+        by_person = self.human_merges.sweep(issues) if self.human_merges else ""
         merged += f"merged by a person: {by_person}; " if by_person else ""
         kept = self.keeper.sweep() if self.keeper else ""
         merged += f"branches: {kept}; " if kept else ""
@@ -110,12 +112,9 @@ class Orchestrator:
         merged += f"CodeRabbit backlog: {sent}; " if sent else ""
         released = self.holds() if self.holds else ""
         merged += f"holds: {released}; " if released else ""
-        issues = None
         if self.triage and self.triage.enabled():
-            issues = self._issues()
             triaged = self._triage_handbacks(issues)
             merged += f"triage: {triaged}; " if triaged else ""
-        issues = self._issues() if issues is None else issues
         stranded = policy.rank([i for i in issues if self._stranded_skip(i) is None])
         # a stranded issue is assigned to the worker but not being worked, so it holds no slot until it is given back
         in_flight = max(0, self._in_flight() - len(stranded))
@@ -147,8 +146,14 @@ class Orchestrator:
         return (f"{merged}{len(done)} of {slots} free slot(s) filled: {what}" + (" (dry run)" if self.dry_run else ""),
                 done)
 
+    def _finished(self):
+        """The statuses of issues the worker is done with: no sweep step looks at them."""
+        return tuple(dict.fromkeys(str(s).lower() for s in (*self.worker.dependency_done_statuses, "wont_fix")))
+
     def _issues(self):
-        return [i for project in self.projects for i in self.tracker.issues_in(project, self.settings.milestone_prefix)]
+        """The unfinished issues in the orchestrator's milestones, one Gaia query per project."""
+        return [i for project in self.projects
+                for i in self.tracker.issues_in(project, self.settings.milestone_prefix, self._finished())]
 
     def _triage_handbacks(self, issues):
         """Handbacks the owner got for a mechanical reason: offered to triage, once per handback. Not taken, the
@@ -189,7 +194,7 @@ class Orchestrator:
                    for n in self.tracker.assigned_issue_numbers(pid, self.worker_id)]
         pending = sessions.pending_handoffs(self.worker.name)
         numbers = [n for n in numbers if n not in pending]
-        finished = {str(s).lower() for s in (*self.worker.dependency_done_statuses, "wont_fix")}
+        finished = set(self._finished())
         statuses = self.tracker.statuses_of(numbers) if numbers else {}
         return sum(1 for n in numbers if str(statuses.get(n) or "").lower() not in finished)
 

@@ -22,23 +22,24 @@ class HumanMergeSweeper:
         self.dry_run = dry_run
         self.projects = list(worker.projects)
 
-    def sweep(self):
-        """One pass over the owner's in_review issues. Returns a short note ("" when nothing was done)."""
+    def sweep(self, issues):
+        """One pass over the owner's in_review issues among the sweep's `issues` (the orchestrator reads them once per
+        sweep). Returns a short note ("" when nothing was done)."""
         if not self.owners:
             return ""
-        prefix, notes = self.agent.orchestration.milestone_prefix, []
-        for project in self.projects:
-            for issue in self.tracker.issues_in(project, prefix):
-                if (str(issue.get("status") or "").lower() != policy.REVIEW_STATUS
-                        or issue.get("assignee") not in self.owners):
-                    continue
-                try:
-                    note = self._one(issue)
-                except TalosError as e:     # GitHub or Gaia failed: the next sweep tries again
-                    log(f"#{issue['number']} merge by a person not read: {e}", self.agent.name)
-                    note = "error"
-                if note:
-                    notes.append(f"#{issue['number']} {note}")
+        notes = []
+        for issue in issues:
+            if (issue.get("project") not in self.projects
+                    or str(issue.get("status") or "").lower() != policy.REVIEW_STATUS
+                    or issue.get("assignee") not in self.owners):
+                continue
+            try:
+                note = self._one(issue)
+            except TalosError as e:     # GitHub or Gaia failed: the next sweep tries again
+                log(f"#{issue['number']} merge by a person not read: {e}", self.agent.name)
+                note = "error"
+            if note:
+                notes.append(f"#{issue['number']} {note}")
         return ", ".join(notes)
 
     def _one(self, issue):

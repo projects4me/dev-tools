@@ -29,8 +29,9 @@ class FakeTracker:
         self.issues = {i["number"]: dict(i) for i in issues}
         self.comments = []
 
-    def issues_in(self, project, prefix):
-        return [dict(i) for i in self.issues.values() if i["project"] == project]
+    def read(self):
+        """The sweep's issues, as the orchestrator reads them once per sweep."""
+        return [dict(i) for i in self.issues.values()]
 
     def set_status(self, number, status):
         self.issues[number]["status"] = status
@@ -61,13 +62,13 @@ class HumanMergesTest(unittest.TestCase):
     def test_merged_by_a_person_is_set_done_with_a_comment(self):
         self.prs = [{"number": 9, "state": "MERGED", "mergedBy": {"login": "hammad"}}]
         tracker = FakeTracker([issue(5)])
-        note = self.sweeper(tracker).sweep()
+        note = self.sweeper(tracker).sweep(tracker.read())
         self.assertEqual(tracker.issues[5]["status"], "done")
         self.assertIn("merged by hammad", note)
         self.assertIn("PR gaia#9 merged by hammad; set done", tracker.comments[0][2])
         self.assertIn("--author", self.calls[0])
         self.assertIn("claude-issue-5", self.calls[0])
-        self.assertEqual(self.sweeper(tracker).sweep(), "")     # safe to repeat: done issues are skipped
+        self.assertEqual(self.sweeper(tracker).sweep(tracker.read()), "")     # safe to repeat: done issues are skipped
 
     def test_merged_by_agamemnon_is_left_to_its_own_flow(self):
         self.prs = [{"number": 9, "state": "MERGED", "mergedBy": {"login": "agent-agamemnon"}}]
@@ -76,7 +77,7 @@ class HumanMergesTest(unittest.TestCase):
             if closing:
                 store.close_merge(record["id"], "2026-10-31T10:05:00+05:00", "merged", merge_sha="abc")
             tracker = FakeTracker([issue(5)])
-            self.assertEqual(self.sweeper(tracker).sweep(), "")
+            self.assertEqual(self.sweeper(tracker).sweep(tracker.read()), "")
             self.assertEqual(tracker.issues[5]["status"], "in_review")
             self.assertEqual(tracker.comments, [])
 
@@ -84,7 +85,7 @@ class HumanMergesTest(unittest.TestCase):
         for merged_by in (None, {"login": "agent-odysseus"}, {"login": "agent-agamemnon"}):
             self.prs = [{"number": 9, "state": "MERGED", "mergedBy": merged_by}]
             tracker = FakeTracker([issue(5)])
-            self.assertEqual(self.sweeper(tracker).sweep(), "")
+            self.assertEqual(self.sweeper(tracker).sweep(tracker.read()), "")
             self.assertEqual(tracker.issues[5]["status"], "in_review")
 
     def test_a_handed_back_record_does_not_hide_a_person_merge(self):
@@ -92,7 +93,7 @@ class HumanMergesTest(unittest.TestCase):
         record = store.open_merge("agamemnon", 5, "gaia", 9, "2026-10-31T10:00:00+05:00")
         store.close_merge(record["id"], "2026-10-31T10:05:00+05:00", "handed_back", detail="CI")
         tracker = FakeTracker([issue(5)])
-        self.sweeper(tracker).sweep()
+        self.sweeper(tracker).sweep(tracker.read())
         self.assertEqual(tracker.issues[5]["status"], "done")
 
     def test_not_merged_closed_open_or_no_pr_is_untouched(self):
@@ -102,20 +103,20 @@ class HumanMergesTest(unittest.TestCase):
                     [{"number": 8, "state": "OPEN"}, merged]):
             self.prs = prs
             tracker = FakeTracker([issue(5)])
-            self.assertEqual(self.sweeper(tracker).sweep(), "")
+            self.assertEqual(self.sweeper(tracker).sweep(tracker.read()), "")
             self.assertEqual(tracker.issues[5]["status"], "in_review")
             self.assertEqual(tracker.comments, [])
 
     def test_other_issues_are_not_looked_at(self):
         self.prs = [{"number": 9, "state": "MERGED", "mergedBy": {"login": "hammad"}}]
         tracker = FakeTracker([issue(1, assignee="50"), issue(2, status="in_progress"), issue(3, project="B")])
-        self.assertEqual(self.sweeper(tracker).sweep(), "")
+        self.assertEqual(self.sweeper(tracker).sweep(tracker.read()), "")
         self.assertEqual(self.calls, [])
 
     def test_dry_run_changes_nothing(self):
         self.prs = [{"number": 9, "state": "MERGED", "mergedBy": {"login": "hammad"}}]
         tracker = FakeTracker([issue(5)])
-        self.assertIn("dry run", self.sweeper(tracker, dry_run=True).sweep())
+        self.assertIn("dry run", self.sweeper(tracker, dry_run=True).sweep(tracker.read()))
         self.assertEqual(tracker.issues[5]["status"], "in_review")
 
     def test_a_github_error_is_noted_and_the_next_issue_goes_on(self):
@@ -130,7 +131,7 @@ class HumanMergesTest(unittest.TestCase):
                 raise answer
             return answer
         sweeper.gh = gh
-        note = sweeper.sweep()
+        note = sweeper.sweep(tracker.read())
         self.assertIn("#5 error", note)
         self.assertEqual(tracker.issues[6]["status"], "done")
 

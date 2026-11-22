@@ -555,6 +555,10 @@ and is `enabled: false` until the engineer turns it on.
   agent.local.json); `talos run` warns when it doesn't.
 - **Triggers**: Hermes `issue.status.changed` and `issue.assignee.changed` (debounced `debounceSeconds`, so a
   burst gives one sweep), every (re)connect, and every `sweepMinutes` (5).
+- **Issue read**: once per sweep, one Gaia query per project over every matching milestone, leaving out the worker's
+  done statuses and `wont_fix` (no step looks at them, and Gaia's time grows with the rows it returns). Merges and
+  merges by a person use that list; an auto-merge milestone outside the prefix is read by the merge step itself.
+  A paused sweep reads it too (merges run while paused), at about a second per project.
 - **Sweep** (lib/orchestrator/worker.py): free slots = `maxInFlight` (0 = the worker's `maxParallel`) minus the
   issues assigned to the worker across its projects. Restarts first, then new issues, each ranked by priority,
   milestone name and issue number.
