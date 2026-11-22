@@ -1,7 +1,8 @@
 """The CodeRabbit backlog: when the daily limit sent an agent PR to the human reviewer, the shared ledger recorded it as
 deferred (ai/lib/rabbitbudget.py). Once there is credit again the PR still gets a CodeRabbit review to help the person;
 the issue stays with them (it is not reassigned and the Talos loop does not start). Oldest first, while the tier allows
-it, and the first answer from the budget that is not CodeRabbit ends the pass."""
+it, and the first answer from the budget that is not CodeRabbit ends the pass. Nothing is read while CodeRabbit is
+switched off (`ai rabbit on` clears the list anyway), and an entry whose PR or issue is finished leaves the ledger."""
 
 import html
 import json
@@ -28,13 +29,18 @@ class BacklogSender:
             log(f"CodeRabbit backlog not read: {e}", self.agent.name)
             return ""
         deferred = sorted(budget.get("deferred") or [], key=lambda d: d.get("at") or "")
-        if not deferred or budget.get("tier") == FULL:
+        if not deferred or budget.get("off") or budget.get("tier") == FULL:
             return ""
         slugs = github.known_repos()
         sent = []
         for entry in deferred:
             repo, pr, number = entry.get("repo"), entry.get("pr"), entry.get("issue")
-            if repo not in slugs or number is None or not self._still_waiting(slugs[repo], repo, pr, number):
+            if repo not in slugs or number is None:
+                continue
+            waiting = self._still_waiting(slugs[repo], repo, pr, number)
+            if waiting is False:
+                self._drop(repo, pr, number)
+            if not waiting:
                 continue
             if self.dry_run:
                 log(f"#{number} dry run, would send PR {repo}#{pr} to CodeRabbit from the backlog", self.agent.name)
@@ -54,15 +60,28 @@ class BacklogSender:
         return ", ".join(sent)
 
     def _still_waiting(self, slug, repo, pr, number):
-        """False (nothing is spent) when the PR is closed or merged, or its issue is no longer in_review."""
+        """False when the PR is closed or merged, or its issue is no longer in_review; None when that could not be
+        read (the entry is tried again on the next pass)."""
         try:
             out = self.gh("pr", "view", str(pr), "--repo", slug, "--json", "state")
             state = json.loads(out or "{}").get("state")
+            if state != "OPEN":
+                return False
             issue = self.tracker.issue(number)
         except (TalosError, ValueError) as e:
             log(f"#{number} PR {repo}#{pr} not checked for the backlog: {e}", self.agent.name)
-            return False
-        return state == "OPEN" and str(issue.get("status") or "").lower() == policy.REVIEW_STATUS
+            return None
+        return str(issue.get("status") or "").lower() == policy.REVIEW_STATUS
+
+    def _drop(self, repo, pr, number):
+        """A finished entry leaves the ledger, so later passes don't read it again."""
+        if self.dry_run:
+            log(f"#{number} dry run, would drop PR {repo}#{pr} from the backlog", self.agent.name)
+            return
+        try:
+            self.rabbit.drop(repo, pr)
+        except TalosError as e:     # it stays deferred: the next pass finds it finished again
+            log(f"#{number} PR {repo}#{pr} not dropped from the backlog: {e}", self.agent.name)
 
     def _comment(self, number, repo, pr):
         try:

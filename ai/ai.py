@@ -182,6 +182,12 @@ def build_parser():
              "the tier, the next free slot and the deferred PRs")
     sp.add_argument("--json", action="store_true")
 
+    sp = add("rabbit-drop", rabbitbudget.cmd_drop, "(ai rabbit drop) remove a PR from the deferred list: the backlog "
+             "sweep found it closed or merged, or its issue out of review")
+    sp.add_argument("repo", choices=repos)
+    sp.add_argument("pr", type=int)
+    sp.add_argument("--json", action="store_true")
+
     sp = add("rabbit-off", rabbitbudget.cmd_off, "(ai rabbit off) stop every agent CodeRabbit submission: "
              "rabbit request answers human and defers nothing until `ai rabbit on`")
     sp.add_argument("--reason", default="", help="why it is off (shown by rabbit budget and in the request reason)")
@@ -230,8 +236,8 @@ def build_parser():
 
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else list(argv)
-    if argv[:2] in (["rabbit", "digest"], ["rabbit", "request"], ["rabbit", "budget"], ["rabbit", "off"],
-                    ["rabbit", "on"]):  # `ai rabbit <sub>` is `rabbit-<sub>`
+    if argv[:2] in (["rabbit", "digest"], ["rabbit", "request"], ["rabbit", "budget"], ["rabbit", "drop"],
+                    ["rabbit", "off"], ["rabbit", "on"]):  # `ai rabbit <sub>` is `rabbit-<sub>`
         argv = [f"rabbit-{argv[1]}", *argv[2:]]
     args = build_parser().parse_args(argv)
     try:
