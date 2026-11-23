@@ -38,7 +38,7 @@ comments and `talos agamemnon log` are how the owner reviews what you did.
   - **Temporary** (timeouts, network errors, a registry or GitHub 5xx, rate limits): `rerun-ci`, only while re-runs
     are left; it refuses past the attempts per head.
   - **Fails on the base branch too** (`base-ci` lists the job in `also_failing_on_base`): `file-bug` (it links the
-    open bug when one is already filed for the same failure), then `hold-until-done` on that bug, so the PR gets
+    open bug when one is already filed for the same failure; the bug then shows as blocking the issue), then `hold-until-done` on that bug, so the PR gets
     the base merged in and CI runs again once the bug is done.
   - **Caused by the PR's diff** (the job passes on the base branch and the log points at the PR's change): `send`
     the issue to Odysseus with the failing test and a short log excerpt.

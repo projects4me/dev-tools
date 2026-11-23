@@ -17,6 +17,7 @@ from typing import Callable
 from .. import docker_state, workspaces
 from ..config import TalosError
 from ..policy import BASE_TEST_FAILED
+from ..tracker import LinkRefused
 from ..orchestrator import state as orchestrator_state
 from . import branch_update, bugs, conflicts, journal, lint, narrative, verbs
 from .classifier import BASE_LINT_FAILED
@@ -38,6 +39,8 @@ CI_LOG_LINES = 150
 # who the backup commits are by (Agamemnon has no git identity; the commit is never on a branch)
 BACKUP_AUTHOR = {"GIT_AUTHOR_NAME": "Agent Agamemnon", "GIT_AUTHOR_EMAIL": "agent.agamemnon@projects4.me",
                  "GIT_COMMITTER_NAME": "Agent Agamemnon", "GIT_COMMITTER_EMAIL": "agent.agamemnon@projects4.me"}
+
+DUPLICATE = re.compile(r"already|duplicate", re.I)      # Gaia's 422 for a link that exists
 
 
 @dataclass
@@ -438,6 +441,18 @@ class Aga:
                    {"op": "release_hold", "issue": self.number, "assignee": before["assignee"]},
                    "talos agamemnon undo <id> releases the hold and gives the issue back to whom it was assigned to")
 
+    def _link_blocker(self, blocker, blocked):
+        """A blocks link from `blocker` to `blocked`, so the issue shows what it waits for. Never fails the verb: a link
+        that exists already (Gaia's duplicate 422) is fine and any other refusal is only reported. Returns
+        {"link": "created" | "exists" | "refused: <why>", "linkId": id or None} for the journal."""
+        try:
+            made = self.p.tracker.link_issues(blocker, blocked, "blocks")
+        except (LinkRefused, TalosError) as e:
+            if isinstance(e, LinkRefused) and DUPLICATE.search(str(e)):
+                return {"link": "exists", "linkId": None}
+            return {"link": f"refused: {e}", "linkId": None}
+        return {"link": "created", "linkId": (made or {}).get("linkId")}
+
     def _hold_until_done(self, args):
         """The blocked issue stays with Agamemnon (in review, with its open PR): only the journal hold is new. An
         issue with no PR yet (a base_test_failed handback) is assigned to Agamemnon for the hold."""
@@ -457,9 +472,10 @@ class Aga:
                           f"PR only for an issue it holds")
         latest = stamp(self.p.now() + timedelta(hours=self.s.hold_max_hours))
         journal.hold(self.number, latest, before["assignee"], f"{journal.DONE}{int(blocker)}")
-        after = {**before, "heldUntil": latest}
+        link = self._link_blocker(int(blocker), self.number)
+        after = {**before, "heldUntil": latest, "link": link["link"]}
         return Act({"issue": self.number, "pr": pr["number"], "heldUntil": latest,
-                    "condition": f"issue {int(blocker)} done"}, before, after,
+                    "condition": f"issue {int(blocker)} done", "link": link["link"]}, before, after,
                    {"op": "release_hold", "issue": self.number, "assignee": before["assignee"]},
                    "talos agamemnon undo <id> releases the hold; the issue stays with whom it was assigned to")
 
@@ -473,8 +489,10 @@ class Aga:
         latest = stamp(self.p.now() + timedelta(hours=self.s.hold_max_hours))
         journal.hold(self.number, latest, before["assignee"], f"{journal.DONE}{blocker}")
         self.p.tracker.assign(self.number, self.s.my_id)
-        after = {**self.issue_state(), "heldUntil": latest}
-        return Act({"issue": self.number, "pr": None, "heldUntil": latest, "condition": f"issue {blocker} done"},
+        link = self._link_blocker(blocker, self.number)
+        after = {**self.issue_state(), "heldUntil": latest, "link": link["link"]}
+        return Act({"issue": self.number, "pr": None, "heldUntil": latest, "condition": f"issue {blocker} done",
+                    "link": link["link"]},
                    before, after, {"op": "release_hold", "issue": self.number, "assignee": before["assignee"]},
                    "talos agamemnon undo <id> releases the hold and gives the issue back to whom it was assigned to")
 
@@ -825,9 +843,12 @@ class Aga:
         existing = next((b for b in bugs.candidates(filed, signature, project)
                          if not bugs.is_closed(self.p.tracker.status_of(b), done)), None)
         if existing:
-            return Act({"issue": self.number, "bug": existing, "linked": True}, state,
-                       {**state, "bug": existing, "created": False}, {"op": "none"},
-                       f"nothing to undo: #{existing} was filed earlier and only linked here")
+            link = self._link_blocker(existing, self.number)
+            undo, note = ({"op": "unlink", "issue": self.number, "bug": existing, "linkId": link["linkId"]},
+                          f"talos agamemnon undo <id> removes the link that makes #{existing} block this issue")                 if link["linkId"] else ({"op": "none"},
+                                        f"nothing to undo: #{existing} was filed earlier and only linked here")
+            return Act({"issue": self.number, "bug": existing, "linked": True, "link": link["link"]}, state,
+                       {**state, "bug": existing, "created": False, "link": link["link"]}, undo, note)
         today = self.p.now().strftime("%Y-%m-%d")
         count = bugs.filed_on(filed, today)
         if count >= self.s.orchestration.aga_file_bugs_per_day:
@@ -837,10 +858,14 @@ class Aga:
             bugs.description(self.s.display_name, self.number, signature, job, body, base_name, base_sha),
             bugs.BUG_TYPE, bugs.BUG_PRIORITY, bugs.BUG_COMPLEXITY, self.s.worker_id, self.issue.get("milestone"))
         bug = int(created["issueNumber"])
-        return Act({"issue": self.number, "bug": bug, "url": created.get("url"), "linked": False}, state,
-                   {**state, "bug": bug, "created": True},
-                   {"op": "wont_fix", "issue": self.number, "bug": bug},
-                   f"talos agamemnon undo <id> sets #{bug} to won't fix with a comment")
+        link = self._link_blocker(bug, self.number)
+        undo = {"op": "wont_fix", "issue": self.number, "bug": bug}
+        if link["linkId"]:
+            undo["linkId"] = link["linkId"]
+        return Act({"issue": self.number, "bug": bug, "url": created.get("url"), "linked": False,
+                    "link": link["link"]}, state, {**state, "bug": bug, "created": True, "link": link["link"]},
+                   undo, f"talos agamemnon undo <id> sets #{bug} to won't fix with a comment"
+                   + (" and removes the link that makes it block this issue" if link["linkId"] else ""))
 
     def _base_ci_failure(self, signature):
         """(job, base, sha) when base-ci shows the signature's job failing on the base branch too; Refused

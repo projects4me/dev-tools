@@ -216,6 +216,18 @@ class DoneHoldTest(base.AgaTest):
         return holds.release_due(self.tracker, WORKER_ID, MY_ID, now or self.NOW, "a", owner=OWNER,
                                  update_pr=self.update, done_statuses=("done", "closed"))
 
+    def test_hold_links_the_blocker_as_blocking_the_issue(self):
+        out = self.hold()
+        self.assertEqual(self.tracker.links, [(40, ISSUE, "blocks")])
+        self.assertEqual(out["link"], "created")
+
+    def test_hold_keeps_an_existing_link_and_a_refused_one_does_not_fail_it(self):
+        self.tracker.refuse_link = "The link already exists"
+        self.assertEqual(self.hold()["link"], "exists")
+        journal.release_hold(ISSUE, self.NOW)
+        self.tracker.refuse_link = "Linking would make a cycle"
+        self.assertIn("refused", self.hold()["link"])
+
     def test_hold_keeps_the_issue_and_undo_releases(self):
         out = self.hold()
         self.assertEqual(self.tracker.assigned, [])

@@ -174,6 +174,14 @@ class Tracker:
             except gaia_mcp.GaiaError as e:
                 raise TalosError(str(e))
 
+    def unlink_issues(self, link_id):
+        """Remove a link by its id (`link_issues` returns it as `linkId`); TalosError when Gaia refuses or can't be read."""
+        with self._lock:
+            try:
+                self.gaia.unlink(link_id)
+            except gaia_mcp.GaiaError as e:
+                raise TalosError(str(e))
+
     def status_of(self, number):
         """The issue's status name alone (no other relations); TalosError when Gaia can't be read."""
         i = self._call(self.gaia.issue_by_number, number, rels="issuestatus")
