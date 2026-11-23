@@ -87,7 +87,9 @@ class FileBugTest(base.AgaTest):
         action = journal.action(out["action"])
         self.assertEqual(action["state_after"]["bug"], 100)
         self.assertTrue(action["state_after"]["created"])
-        self.assertEqual(action["undo"], {"op": "wont_fix", "issue": ISSUE, "bug": 100})
+        self.assertEqual(action["undo"], {"op": "wont_fix", "issue": ISSUE, "bug": 100, "linkId": 901})
+        self.assertEqual(self.tracker.links, [(100, ISSUE, "blocks")])
+        self.assertEqual(action["state_after"]["link"], "created")
         number, title, body = self.tracker.comments[-1]
         self.assertEqual((number, title), (ISSUE, "Agent Agamemnon: file-bug"))
         self.assertIn("Bug #100 (http://prom/issue/100)", body)
@@ -129,7 +131,8 @@ class FileBugTest(base.AgaTest):
         self.assertEqual(len(self.tracker.created), 1)
         action = journal.action(out["action"])
         self.assertEqual((action["state_after"]["bug"], action["state_after"]["created"]), (100, False))
-        self.assertEqual(action["undo"], {"op": "none"})
+        self.assertEqual(action["undo"]["op"], "unlink")
+        self.assertEqual(self.tracker.links, [(100, ISSUE, "blocks")] * 2)
         self.assertIn("filed earlier for the same signature", self.tracker.comments[-1][2])
 
     def test_another_signature_files_another_bug(self):
@@ -172,12 +175,37 @@ class FileBugTest(base.AgaTest):
     def test_undo_sets_the_bug_to_wont_fix_with_a_comment(self):
         out = self.file()
         note = self.undoer().undo(out["action"])
-        self.assertEqual(note, "#100 set to won't fix")
+        self.assertEqual(note, f"#100 set to won't fix; the link making it block #{ISSUE} removed")
         self.assertEqual(self.tracker.statuses, [(100, "wont_fix")])
         number, title, body = self.tracker.comments[-1]
         self.assertEqual((number, title), (100, "Agent Agamemnon: won't fix"))
         self.assertIn(f"for #{ISSUE}", body)
         self.assertIsNotNone(journal.action(out["action"])["undone_at"])
+
+    def test_undo_removes_the_link_it_created(self):
+        out = self.file()
+        self.assertIn("link", self.undoer().undo(out["action"]))
+        self.assertEqual(self.tracker.unlinked, [901])
+
+    def test_a_refused_link_is_journaled_and_does_not_fail_the_verb(self):
+        self.tracker.refuse_link = "Linking would make a cycle"
+        out = self.file()
+        self.assertEqual(out["bug"], 100)
+        action = journal.action(out["action"])
+        self.assertTrue(action["state_after"]["link"].startswith("refused: Linking would make a cycle"))
+        self.assertEqual(action["undo"], {"op": "wont_fix", "issue": ISSUE, "bug": 100})
+
+    def test_a_duplicate_link_is_fine(self):
+        self.tracker.refuse_link = "This link already exists"
+        out = self.file()
+        self.assertEqual(journal.action(out["action"])["state_after"]["link"], "exists")
+
+    def test_the_link_of_a_reused_bug_is_undone_too(self):
+        self.file()
+        out = self.file()
+        self.undoer().undo(out["action"])
+        self.assertEqual(self.tracker.unlinked, [902])
+        self.assertEqual(self.tracker.statuses, [])
 
     def test_undo_refused_when_the_bug_is_closed(self):
         out = self.file()

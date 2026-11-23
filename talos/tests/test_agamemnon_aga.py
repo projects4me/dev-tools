@@ -16,6 +16,7 @@ from lib import db, registry, sessions  # noqa: E402
 from lib.agamemnon import holds, journal, premise, tool, undo, verbs, wiring  # noqa: E402
 from lib.agamemnon.verbs import Refused  # noqa: E402
 from lib.orchestrator import state as store  # noqa: E402
+from lib.tracker import LinkRefused  # noqa: E402
 
 WORKER_ID, MY_ID, OWNER = "w1", "a1", "o1"
 ISSUE = 7
@@ -32,6 +33,16 @@ class FakeTracker:
     def __init__(self, issues):
         self.issues = {i["number"]: dict(i) for i in issues}
         self.comments, self.assigned = [], []
+        self.links, self.unlinked, self.refuse_link = [], [], None   # refuse_link: a LinkRefused message
+
+    def link_issues(self, source, target, link_type):
+        if self.refuse_link:
+            raise LinkRefused(self.refuse_link)
+        self.links.append((source, target, link_type))
+        return {"linkId": 900 + len(self.links), "source": source, "target": target, "type": link_type}
+
+    def unlink_issues(self, link_id):
+        self.unlinked.append(link_id)
 
     def issue(self, number):
         return dict(self.issues[number])

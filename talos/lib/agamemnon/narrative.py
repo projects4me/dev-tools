@@ -13,7 +13,7 @@ NEXT = {
     "hold-until-tomorrow": "held by {me} until {until}, then given back to {worker}",
     "hold-until-docker": "held by {me} until Docker is ok, then given back to {worker}; the owner gets it if Docker "
                          "is not back by {until}",
-    "hold-until-done": "held by {me} until the issue it waits for is done, then the base is merged into its PR and "
+    "hold-until-done": "held by {me} until the issue it waits for (it blocks this issue) is done, then the base is merged into its PR and "
                        "CI runs again; the owner gets it if that is not done by {until}",
     "start-docker": "{docker}",
     "restart-docker": "{docker}",
@@ -23,8 +23,8 @@ NEXT = {
     "update-branch": "waiting on CI to run on the updated branch",
     "push-merge": "waiting on CI to run on the pushed merge",
     "merge": "the PR is merged; nothing is waiting",
-    "file-bug": "{bug} tracks the failure, which is on the base branch too; once it is fixed the base is merged "
-                "into this PR and CI runs again",
+    "file-bug": "{bug} tracks the failure, which is on the base branch too, and now blocks this issue; once it "
+                "is fixed the base is merged into this PR and CI runs again",
 }
 
 
