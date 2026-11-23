@@ -2,8 +2,8 @@
 
 From the issue's text it finds the files, classes and endpoints it names, and prints for each file an
 outline (classes, functions and methods with line numbers) instead of the whole file, plus the related
-tests, api-tester cases, recent commits and the state of the issues it depends on. Read only the parts
-you then need with Read (offset/limit) or `sed -n a,bp`.
+tests, api-tester cases, recent commits and the issue's links (blocked by, blocks, parent, children, split,
+relates). Read only the parts you then need with Read (offset/limit) or `sed -n a,bp`.
 """
 
 import json
@@ -11,7 +11,7 @@ import re
 import subprocess
 from pathlib import Path
 
-from . import gaiapack
+from . import gaiapack, issuelinks
 from .common import PROJECT_FOR_REPO, git, repo_dir, say, strip_html, tracker_call
 
 _PHP_DECL = re.compile(r"^\s*(?:abstract\s+|final\s+)?(?:class|interface|trait)\s+\w+"
@@ -109,6 +109,14 @@ def api_cases(repo, endpoint):
     return out
 
 
+def _linked_numbers(links):
+    """Issue numbers already shown as real links, so the legacy text scan doesn't repeat them."""
+    ends = []
+    for v in (links or {}).values():
+        ends += [v] if isinstance(v, dict) else v or []
+    return {e.get("issueNumber") for e in ends}
+
+
 def cmd_context(args):
     issue = tracker_call("get_issue", issue_number=args.issue)
     repo = args.repo or next((r for r, p in PROJECT_FOR_REPO.items() if p == issue["project"]), "gaia")
@@ -121,16 +129,17 @@ def cmd_context(args):
         return
     say(f"#{issue['issueNumber']} [{issue['status']}] {issue['subject']}  (repo {repo})")
 
-    deps = sorted({int(n) for n in re.findall(r"(?:depends on|blocked by|after)[^#\n]{0,40}#(\d{3,5})", text, re.I)}
-                  | {int(n) for n in re.findall(r"\b(?:agaia|aprom|ah|aa)-(\d{3,5})\b", text)} - {args.issue})
-    if deps:
-        say("\nreferenced issues:")
-        for n in deps[:10]:
-            try:
-                d = tracker_call("get_issue", issue_number=n)
-                say(f"  #{n} [{d['status']}] {d['subject']}")
-            except Exception:
-                say(f"  #{n} (not visible)")
+    say("\nlinks:")
+    links, why = issuelinks.fetch(args.issue)
+    legacy = issuelinks.legacy_blockers(text, args.issue, _linked_numbers(links))
+    for line in issuelinks.report(args.issue, legacy, fetcher=lambda n: (links, why)):
+        say(f"  {line}")
+    for n in legacy[:issuelinks.CAP]:
+        try:
+            d = tracker_call("get_issue", issue_number=n)
+            say(f"  #{n} [{d['status']}] {d['subject']}")
+        except Exception:
+            say(f"  #{n} (not visible)")
 
     if not found:
         say("\nno files resolved from the issue text; search with Grep for its key terms")

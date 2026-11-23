@@ -1,7 +1,7 @@
 """`ai kb`: a local, incrementally synced knowledge base of tracker issues, so agents can find related issues
 without listing or reading every issue (see kbsync for how a sync works, kbstore for the index)."""
 
-from . import kbdocs
+from . import issuelinks, kbdocs
 from .common import AiError, repo_dir, say, tracker
 from .kbstore import DB_FILE, Store
 from .kbsync import Sync
@@ -116,6 +116,8 @@ def cmd_show(args):
              i["children"] and "children " + ", ".join(f"#{n}" for n in i["children"])]
     say("  " + " · ".join(f for f in facts if f))
     say(f"  created {(i['date_created'] or '')[:10]} · modified {(i['date_modified'] or '')[:16]} · {synced}")
+    for line in issuelinks.report(args.issue):
+        say("  " + line)
     say()
     say(_clip(i["description"], None if args.full else 2000) or "(no description)")
     comments = i["comments"] if args.full else i["comments"][-args.comments:] if args.comments > 0 else []
