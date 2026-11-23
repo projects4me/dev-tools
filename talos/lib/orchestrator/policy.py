@@ -96,7 +96,7 @@ def last_activity(*moments):
 def stranded_skip_reason(issue, state, assigned_at, prefix, projects, worker_id, dependency_statuses, now, minutes,
                          done_statuses=DONE_STATUSES):
     """Why an issue assigned to the worker is not stranded, or None when it is: ready (status new or pending, every
-    "Depends on" done) and the worker has shown no sign of it for `minutes` (running, started, ended, handed back,
+    blockers done) and the worker has shown no sign of it for `minutes` (running, started, ended, handed back,
     assigned to it or changed in Gaia). state is the worker's Talos state for the issue; a run in flight or no
     readable time at all is never stranded."""
     if not in_scope(issue, prefix, projects):

@@ -71,7 +71,7 @@ def decide(issue, agent, agent_user_id, require_allowed_modifier=False, dependen
 
     require_allowed_modifier is for reconciliation, where there is no event telling us who
     assigned it: only act if the last person to change the issue is allowed to hand off work.
-    dependency_statuses ({number: status}) covers the issue's "Depends on" issues; any not done hold it.
+    dependency_statuses ({number: status}) covers the issues blocking it (blocks links and old "Depends on" lines); any not done hold it.
     action_override names an action to run instead of the status's (an orchestrator's choice, e.g. merge_conflict).
     """
     if issue["assignee"] != agent_user_id:

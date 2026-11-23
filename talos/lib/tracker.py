@@ -29,6 +29,10 @@ def read_env_file(path):
     return values
 
 
+class LinkRefused(TalosError):
+    """Gaia refused a link (422): the message is Gaia's own."""
+
+
 class Tracker:
     """Gaia as one agent. Thread-safe: the listener and the worker share it."""
 
@@ -115,7 +119,16 @@ class Tracker:
 
     def issue(self, number):
         """The fields Talos decides on, read fresh from Gaia (events are only hints)."""
-        return self._fields(self._call(self.gaia.issue_by_number, number, rels=self.ISSUE_RELS))
+        fields = self._fields(self._call(self.gaia.issue_by_number, number, rels=self.ISSUE_RELS))
+        blockers = self._call(self.gaia.links_of, fields["number"])["blockedBy"]
+        return self._with_blockers(fields, [b["issueNumber"] for b in blockers])
+
+    @staticmethod
+    def _with_blockers(fields, blockers):
+        """The fields with dependsOn = the blocks-link sources plus the "Depends on" lines already in it (issues
+        made before links stay gated), sorted and unique."""
+        numbers = {int(n) for n in blockers or [] if n is not None} | set(fields["dependsOn"])
+        return {**fields, "dependsOn": sorted(numbers)}
 
     def issues_in(self, project, milestone_prefix, skip_statuses=()):
         """The project's issues in milestones whose name starts with milestone_prefix (any case), as issue() reads
@@ -129,7 +142,9 @@ class Tracker:
         skips = "".join(f" AND (issuestatus.name !: {s})" for s in skip_statuses)
         rows = self._call(self.gaia.find, "issue", f"((Issue.projectId : {p['id']}) AND ({milestones}){skips})",
                           rels=self.ISSUE_RELS, limit=-1)
-        return [self._fields(r) for r in rows if r.get("issueNumber")]
+        blockers = self._call(self.gaia.blockers_in_project, p["id"])   # one link query for the whole scan
+        return [self._with_blockers(self._fields(r), blockers.get(int(r["issueNumber"])))
+                for r in rows if r.get("issueNumber")]
 
     @staticmethod
     def _fields(i):
@@ -147,6 +162,17 @@ class Tracker:
             "complexity": gaia_mcp.read_complexity(i.get("description")),
             "dependsOn": parse_dependencies(i.get("description")),
         }
+
+    def link_issues(self, source, target, link_type):
+        """Link two issues (`source` blocks / relates / splits `target`). Gaia's refusal (a cycle, a duplicate, another
+        workspace) raises LinkRefused with Gaia's message; Gaia being unreachable raises plain TalosError."""
+        with self._lock:
+            try:
+                return self.gaia.link_issues(source, target, link_type)
+            except gaia_mcp.GaiaValidationError as e:
+                raise LinkRefused(str(e))
+            except gaia_mcp.GaiaError as e:
+                raise TalosError(str(e))
 
     def status_of(self, number):
         """The issue's status name alone (no other relations); TalosError when Gaia can't be read."""
@@ -208,7 +234,9 @@ class Tracker:
 
     def issue_by_id(self, issue_id):
         """issue() by the issue's record id, as a workflow step names it."""
-        return self._fields(self._call(self.gaia.issue_by_id, issue_id, rels=self.ISSUE_RELS))
+        fields = self._fields(self._call(self.gaia.issue_by_id, issue_id, rels=self.ISSUE_RELS))
+        blockers = self._call(self.gaia.links_of, fields["number"])["blockedBy"]
+        return self._with_blockers(fields, [b["issueNumber"] for b in blockers])
 
     def milestone(self, milestone_id):
         """A milestone by its record id, as gaia-mcp's get_milestone gives it (name, status, dates, project, issue

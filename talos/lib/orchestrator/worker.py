@@ -339,7 +339,7 @@ class Orchestrator:
         milestone = html.escape(str(issue.get("milestone") or ""))
         if kind == "stranded":
             return (f"<p>{html.escape(self.worker.display_name)} had this issue (status "
-                    f"{html.escape(str(issue.get('status')))}, every \"Depends on\" issue done) but nothing queued, "
+                    f"{html.escape(str(issue.get('status')))}, every blocking issue done) but nothing queued, "
                     f"running or held for it in the last {self.settings.stranded_minutes:g} minutes, so it is "
                     f"given back.</p>")
         if kind == "restart":
@@ -349,4 +349,4 @@ class Orchestrator:
                     f"back for a mechanical reason (<code>{reason}</code>), not a question. There is nothing new "
                     f"from the reviewer; continue the work where it stopped.</p>")
         return (f"<p>Next ready issue in milestone {milestone}: status new, priority "
-                f"{html.escape(str(issue.get('priority') or '-'))}, and every \"Depends on\" issue is done.</p>")
+                f"{html.escape(str(issue.get('priority') or '-'))}, and every issue blocking it (blocks link or old \"Depends on\" line) is done.</p>")
