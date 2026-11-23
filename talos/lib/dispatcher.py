@@ -430,8 +430,8 @@ class Dispatcher:
         if first and not self.dry_run:
             try:
                 self._comment(number, f"{self.agent.display_name}: {decision.reason}",
-                              "<p>This issue depends on " + ", ".join(f"#{n}" for n in decision.waiting_on) +
-                              ", which is not done yet. Talos will start it once that is done; nothing is "
+                              "<p>This issue is blocked by " + ", ".join(f"#{n}" for n in decision.waiting_on) +
+                              " (a blocks link, or an old \"Depends on\" line), which is not done yet. Talos will start it once that is done; nothing is "
                               "needed from you.</p>", escaped=True)
             except TalosError as e:
                 log(f"#{number} waiting comment failed: {e}", self.agent.name)

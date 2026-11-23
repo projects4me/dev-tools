@@ -1,4 +1,6 @@
-"""Dependency gating: which issues wait on "Depends on" issues, and the memory that goes with waiting."""
+"""Dependency gating: which issues wait on the issues blocking them, and the memory that goes with waiting.
+
+Blockers are Gaia blocks links (Tracker builds issue["dependsOn"] from them); "Depends on" lines in old descriptions still count."""
 
 import re
 import threading

@@ -8,12 +8,23 @@ from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from lib.tracker import Tracker  # noqa: E402
+from lib.tracker import LinkRefused, Tracker  # noqa: E402
 
 
 class StubGaia:
-    def __init__(self, milestones, rows=()):
+    def __init__(self, milestones, rows=(), blockers=None, links=None):
         self.milestones, self.rows, self.finds = milestones, list(rows), []
+        self.blockers, self.links, self.blocker_calls = blockers or {}, links or {}, 0
+
+    def blockers_in_project(self, project_id):
+        self.blocker_calls += 1
+        return self.blockers
+
+    def links_of(self, number):
+        return {"blockedBy": [{"issueNumber": n} for n in self.links.get(number, [])]}
+
+    def issue_by_number(self, number, rels=None):
+        return next(r for r in self.rows if int(r["issueNumber"]) == number)
 
     def project_options(self, project, needs):
         return {"id": "p1", "milestones": self.milestones}, {}
@@ -23,9 +34,9 @@ class StubGaia:
         return self.rows
 
 
-def row(number, status, milestone):
+def row(number, status, milestone, description=""):
     return {"issueNumber": str(number), "id": f"i{number}", "issuestatus": {"name": status},
-            "issuemilestone": {"name": milestone}, "project": {"name": "A Gaia"}, "description": ""}
+            "issuemilestone": {"name": milestone}, "project": {"name": "A Gaia"}, "description": description}
 
 
 class IssuesInTest(unittest.TestCase):
@@ -52,6 +63,47 @@ class IssuesInTest(unittest.TestCase):
         gaia = StubGaia([{"id": "m2", "name": "Claude-v1"}])
         self.assertEqual(self.tracker(gaia).issues_in("A Gaia", "aga-", skip_statuses=("done",)), [])
         self.assertEqual(gaia.finds, [])
+
+
+class DependsOnTest(unittest.TestCase):
+    LINE = "<p><strong>Depends on:</strong> adt-12, #11</p>"
+
+    def issue(self, description, links):
+        gaia = StubGaia([], [row(5, "new", "aga-v1", description)], links={5: links})
+        return Tracker(SimpleNamespace(name="a"), gaia=gaia, env={}).issue(5)["dependsOn"]
+
+    def test_links_only(self):
+        self.assertEqual(self.issue("", [9, 7]), [7, 9])
+
+    def test_lines_only(self):
+        self.assertEqual(self.issue(self.LINE, []), [11, 12])
+
+    def test_both_deduplicated(self):
+        self.assertEqual(self.issue(self.LINE, [12, 3]), [3, 11, 12])
+
+    def test_none(self):
+        self.assertEqual(self.issue("", []), [])
+
+    def test_issues_in_makes_one_link_query_for_the_scan(self):
+        gaia = StubGaia([{"id": "m1", "name": "aga-v1"}],
+                        [row(5, "new", "aga-v1", self.LINE), row(6, "new", "aga-v1")], blockers={5: [12, 2]})
+        issues = Tracker(SimpleNamespace(name="a"), gaia=gaia, env={}).issues_in("A Gaia", "aga-")
+        self.assertEqual([i["dependsOn"] for i in issues], [[2, 11, 12], []])
+        self.assertEqual(gaia.blocker_calls, 1)
+
+
+class LinkIssuesTest(unittest.TestCase):
+    def test_a_refusal_is_its_own_error_with_gaias_message(self):
+        import server as gaia_mcp
+
+        class Refusing:
+            def link_issues(self, *a):
+                raise gaia_mcp.GaiaValidationError("Would create a cycle", 422)
+
+        t = Tracker(SimpleNamespace(name="a"), gaia=Refusing(), env={})
+        with self.assertRaises(LinkRefused) as c:
+            t.link_issues(1, 2, "blocks")
+        self.assertIn("cycle", str(c.exception))
 
 
 if __name__ == "__main__":
