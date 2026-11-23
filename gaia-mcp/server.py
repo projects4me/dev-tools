@@ -81,6 +81,22 @@ class GaiaError(Exception):
         self.status = status
 
 
+class GaiaValidationError(GaiaError):
+    """Gaia refused the request with a 422 (e.g. a link that would make a cycle): the message is Gaia's own."""
+
+
+def validation_message(payload):
+    """The readable reasons in a 422 reply (JSON:API errors, or a plain message), else the reply itself."""
+    errors = payload.get("errors") if isinstance(payload, dict) else None
+    reasons = [e.get("detail") or e.get("title") or e.get("message") for e in errors or [] if isinstance(e, dict)]
+    reasons = [r for r in reasons if r]
+    if reasons:
+        return "; ".join(reasons)
+    if isinstance(payload, dict) and payload.get("message"):
+        return str(payload["message"])
+    return json.dumps(payload)[:500]
+
+
 # ---------------------------------------------------------------------------------------------
 # Gaia client
 # ---------------------------------------------------------------------------------------------
@@ -205,6 +221,8 @@ class Gaia:
             status, payload = self._http(method, path, params=params, body=body)
         if not_json(payload):
             raise GaiaError(f"Gaia {method} {path} failed ({status}, no JSON reply): {page_text(payload[NOT_JSON])}")
+        if status == 422:
+            raise GaiaValidationError(validation_message(payload), status)
         if status >= 400:
             raise GaiaError(f"Gaia {method} {path} returned {status}: {json.dumps(payload)[:1500]}", status)
         return payload
@@ -422,6 +440,73 @@ class Gaia:
         if not found:
             raise GaiaError(f"Issue {issue_id} was not found or is not visible to {self.email}.")
         return found[0]
+
+    # -- Issue links (agaia-4836): blocks | relates | splits between issues; parent/child stays on Issue.parentId --
+
+    LINK_TYPES = ("blocks", "relates", "splits")
+
+    @staticmethod
+    def link_end(issue, link_id=None):
+        """An issue as a link lists it: number, project shortcode, subject, status and (for a link) the link's id."""
+        out = {"issueNumber": issue.get("issueNumber"), "projectShortcode": issue.get("projectShortcode"),
+               "subject": issue.get("subject"),
+               "status": (issue.get("issuestatus") or {}).get("name") or issue.get("status")}
+        if link_id is not None:
+            out["linkId"] = link_id
+        return out
+
+    def links_of(self, number):
+        """{blocks, blockedBy, relates, splitInto, splitFrom, parent, children} of an issue, from one issuelink read
+        and one children read."""
+        issue = self.issue_by_number(number, rels="")
+        me = issue["id"]
+        links = self.find("issuelink", f"((Issuelink.sourceIssueId : {me}) OR (Issuelink.targetIssueId : {me}))",
+                          rels="sourceIssue,targetIssue", limit=-1)
+        out = {k: [] for k in ("blocks", "blockedBy", "relates", "splitInto", "splitFrom")}
+        for link in links:
+            if self.is_deleted(link):
+                continue
+            outgoing = (link.get("sourceIssue") or {}).get("id") == me or link.get("sourceIssueId") == me
+            other = link.get("targetIssue" if outgoing else "sourceIssue") or {}
+            group = {"blocks": ("blocks", "blockedBy"), "splits": ("splitInto", "splitFrom"),
+                     "relates": ("relates", "relates")}.get(link.get("type"))
+            if group:
+                out[group[0] if outgoing else group[1]].append(self.link_end(other, link["id"]))
+        out["parent"] = None
+        if issue.get("parentId"):
+            out["parent"] = self.link_end(self.issue_by_id(issue["parentId"], rels=""))
+        children = self.find("issue", f"(Issue.parentId : {me})", sort="Issue.issueNumber", order="ASC", limit=-1)
+        out["children"] = [self.link_end(c) for c in children if not self.is_deleted(c)]
+        return out
+
+    def blockers_in_project(self, project_id):
+        """{target issue number: [source issue numbers]} for every blocks link into the project, in one query."""
+        links = self.find("issuelink", f"((Issuelink.type : blocks) AND (Issuelink.targetProjectId : {project_id}))",
+                          rels="sourceIssue,targetIssue", limit=-1)
+        out = {}
+        for link in links:
+            if self.is_deleted(link):
+                continue
+            target = (link.get("targetIssue") or {}).get("issueNumber")
+            source = (link.get("sourceIssue") or {}).get("issueNumber")
+            if target is not None and source is not None:
+                out.setdefault(int(target), []).append(int(source))
+        return out
+
+    def link_issues(self, source_number, target_number, link_type):
+        """Create a link; Gaia's refusal (cycle, duplicate, different workspace) is a GaiaValidationError."""
+        if link_type not in self.LINK_TYPES:
+            raise GaiaError(f"Link type must be one of {', '.join(self.LINK_TYPES)}, not '{link_type}'.")
+        source = self.issue_by_number(source_number, rels="")
+        target = self.issue_by_number(target_number, rels="")
+        payload = self.request("POST", "issuelink", body={"data": {"type": "issuelink", "attributes": {
+            "sourceIssueId": source["id"], "targetIssueId": target["id"], "type": link_type}}})
+        created = self.flatten(payload)
+        return {"linkId": created[0]["id"] if created else None, "source": source_number, "target": target_number,
+                "type": link_type}
+
+    def unlink(self, link_id):
+        self.request("DELETE", f"issuelink/{link_id}")
 
     # -- Workflow 'Run agent' steps (the agent's runtime claims them and reports their outcome) ----
 
@@ -677,7 +762,15 @@ class Tools:
                                      "description": l.get("description")} for l in logs]}
         out["files"] = [{k: f.get(k) for k in ("id", "name", "fileType", "fileSize", "dateCreated")}
                         for f in self._files(i["id"])]
+        out["links"] = self.g.links_of(i["issueNumber"])
         return out
+
+    def link_issues(self, args):
+        return self.g.link_issues(args["source"], args["target"], args["type"])
+
+    def unlink_issues(self, args):
+        self.g.unlink(args["link_id"])
+        return {"unlinked": args["link_id"]}
 
     def _files(self, issue_id):
         """The issue's attachments, oldest first. GET /upload has no list action, so they come through the issue's
@@ -1126,11 +1219,24 @@ TOOLS = [
       "required": ["issue_number", "description"]}),
     ("gaia_get_issue", "get_issue",
      "Get one issue by its issue number, with description, its latest comments (oldest first; olderComments says "
-     "whether there are more), logged/estimated time and its attached files (read them with gaia_get_file).",
+     "whether there are more), logged/estimated time, its attached files (read them with gaia_get_file) and its links "
+     "(blocks, blockedBy, relates, splitInto, splitFrom, parent, children).",
      {"type": "object", "properties": {
          "issue_number": {"type": "integer"},
          "comments": {"type": "integer", "minimum": 1, "maximum": 100, "description": "Latest comments to return (default 10)."}},
       "required": ["issue_number"]}),
+    ("gaia_link_issues", "link_issues",
+     "Link two issues (they may be in different projects of one workspace): `source` blocks `target` (type blocks), "
+     "relates to it (relates) or was split into it (splits). Gaia refuses a cycle, a duplicate or another workspace; "
+     "the message says why. Read an issue's links with gaia_get_issue.",
+     {"type": "object", "properties": {
+         "source": {"type": "integer", "description": "Issue number of the blocking / splitting / first issue."},
+         "target": {"type": "integer", "description": "Issue number of the blocked / split-off / second issue."},
+         "type": {"type": "string", "enum": ["blocks", "relates", "splits"]}},
+      "required": ["source", "target", "type"]}),
+    ("gaia_unlink_issues", "unlink_issues",
+     "Remove an issue link by its id (gaia_get_issue lists each link's linkId under links).",
+     {"type": "object", "properties": {"link_id": {"type": "string"}}, "required": ["link_id"]}),
     ("gaia_get_file", "get_file",
      "Read a file attached to an issue (gaia_get_issue lists them under files), e.g. a mockup. An image comes back "
      "as an image you can see; any other file is saved locally and its path returned. Max 10 MB.",

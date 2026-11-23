@@ -304,6 +304,9 @@ class IssueGaia:
     def type_labels(self):
         return {}
 
+    def links_of(self, number):
+        return {"blocks": [], "blockedBy": []}
+
     def issue_by_number(self, number, rels=None):
         self.issue_rels = rels
         return dict(self.issue)

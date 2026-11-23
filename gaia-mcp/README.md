@@ -16,7 +16,9 @@ Pure Python standard library, like `p4m`: nothing to install.
 | `gaia_list_issues` | A project's issues, newest first; filter by status, subject text, milestone (name or id) or assigned to me; `page` reads past the first 100 (`hasMore`) |
 | `gaia_list_milestones` | A project's milestones with status, type and dates; optionally only one status (e.g. completed) |
 | `gaia_get_milestone` | One milestone by name or id: dates, status, description and issue counts per status |
-| `gaia_get_issue` | One issue by number, with its description, complexity, comments, logged/estimated time and attached files |
+| `gaia_get_issue` | One issue by number, with its description, complexity, comments, logged/estimated time, attached files and links (`blocks`, `blockedBy`, `relates`, `splitInto`, `splitFrom`, `parent`, `children`) |
+| `gaia_link_issues` | Link two issues (`source`, `target`, `type` = blocks / relates / splits); Gaia's refusal (cycle, duplicate, other workspace) comes back as its own message |
+| `gaia_unlink_issues` | Remove a link by its `link_id` (listed under `links` by `gaia_get_issue`) |
 | `gaia_get_file` | Read a file attached to an issue, by name or id: an image (PNG, JPEG, GIF, WebP) comes back as an image the agent sees; any other file is saved under the system temp folder (`gaia-mcp/<issue>/`) and its path returned. Max 10 MB |
 | `gaia_create_issue` | Create an issue (defaults: Task, `new`, `medium`, assigned to me, starts today, ends a week later, milestone Claude-v1); `complexity` is required. A milestone the project doesn't have yet (Claude-v1 or the one named) is created; `""` means the backlog |
 | `gaia_create_milestone` | Create a milestone in a project, or return the existing one with that name (defaults: in progress, from today for 30 days) |
@@ -24,6 +26,8 @@ Pure Python standard library, like `p4m`: nothing to install.
 | `gaia_attach_file` | Attach a local screenshot, PDF or text file to an issue (shows in its Files box; max 10 MB) |
 | `gaia_log_time` | Log spent time (default) or an estimate, with a description; a day is 8 hours |
 | `gaia_update_issue` | Change status, priority, type, subject, description, complexity, assignee, milestone, dates or parent |
+
+Python callers use `Gaia.links_of(number)`, `Gaia.blockers_in_project(project_id)` (`{target number: [source numbers]}` in one query), `Gaia.link_issues(source, target, type)` and `Gaia.unlink(link_id)`; a 422 from Gaia is raised as `GaiaValidationError` (a `GaiaError` with Gaia's message), so a refused link differs from Gaia being down.
 
 Projects are given by name or short code: Gaia work goes in **A Gaia** (`agaia`), Prometheus work in
 **A Prometheus** (`aprom`). Types, statuses, milestones and members are given by name. Descriptions are HTML,
