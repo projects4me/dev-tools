@@ -14,8 +14,8 @@ changes for headless work.
 - **A decision is needed** (unclear acceptance criteria, a contract change, a choice between designs):
   stop and finish with outcome `needs_input`. Put the question in `comment` as HTML: the context, the
   options, and your recommended option with why.
-- **Something blocks you** (a tool or command is denied, the local stack is down, a dependency issue is
-  not merged, credentials are missing): stop and finish with outcome `blocked`. Say in `comment` what
+- **Something blocks you** (a tool or command is denied, the local stack is down, an issue blocking it (Blocked by)
+  is not merged, credentials are missing): stop and finish with outcome `blocked`. Say in `comment` what
   blocks you and what would unblock it.
 - **The full suite fails on tests your diff does not touch** (and the failure is not yours to fix): finish with
   outcome `blocked`, `reason` `base_test_failed` and the failing tests' names in `failingTests`, plus a log
