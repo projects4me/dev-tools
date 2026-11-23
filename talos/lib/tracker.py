@@ -201,6 +201,11 @@ class Tracker:
         """Set only the assignee; the status stays, so the new assignee's own action for it runs."""
         return self._call(self.tools.update_issue, {"issue_number": number, "assignee": assignee})
 
+    def append_description(self, number, html_text):
+        """Add HTML at the end of the issue's description."""
+        current = self._call(self.gaia.issue_by_number, number, rels="").get("description") or ""
+        return self._call(self.tools.update_issue, {"issue_number": number, "description": current + html_text})
+
     def hand_off(self, number, status, assignee):
         return self._call(self.tools.update_issue,
                           {"issue_number": number, "status": status, "assignee": assignee})

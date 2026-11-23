@@ -67,7 +67,7 @@ rules and a `### Design` section: `gaia` (PHP API, Phalcon), `prometheus` (Ember
 - `description`: HTML (`<p>`, `<ul><li>`, `<code>`, `<strong>`). Open with one or two sentences of context and why.
   Then the changes as a list: the resources, fields, endpoints, components and behaviour, naming the existing files
   or classes to extend. End with acceptance criteria and what is out of scope. Write for an agent that has not seen
-  this chat. Don't add "Depends on", "Estimated files" or "Complexity" lines: Talos adds them.
+  this chat. Don't add "Estimated files" or "Complexity" lines: Talos adds them. Don't add Depends on lines: Talos links the issues.
 
 ## The plan block
 End the reply that proposes (or revises) a plan with exactly one block, valid JSON, no comments:
