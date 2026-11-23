@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from lib import db  # noqa: E402
 from lib.ideas import browser, page, plan, policy, screens, state, stream, styles  # noqa: E402
+from lib.tracker import LinkRefused  # noqa: E402
 from lib.ideas.approval import Approval  # noqa: E402
 from lib.ideas.images import Images  # noqa: E402
 from lib.ideas.conversation import Conversation  # noqa: E402
@@ -539,6 +540,7 @@ class FakeKb:
 class FakeTracker:
     def __init__(self, fail_on=None):
         self.created, self.fail_on, self.next, self.milestones, self.attached = [], fail_on, 5000, [], []
+        self.links, self.refuse, self.appended = [], {}, []
 
     def create_issue(self, project, subject, description, type_, priority, complexity, assignee, milestone):
         if self.fail_on and self.fail_on in subject:
@@ -551,6 +553,14 @@ class FakeTracker:
 
     def project_ids(self):
         return {"A Gaia": "p-gaia", "A Prometheus": "p-prom"}
+
+    def link_issues(self, source, target, link_type):
+        if (source, target) in self.refuse:
+            raise LinkRefused(self.refuse[(source, target)])
+        self.links.append((source, target, link_type))
+
+    def append_description(self, number, text):
+        self.appended.append((number, text))
 
     def attach_png(self, number, name, png):
         if getattr(self, "attach_fails", False):
@@ -625,13 +635,36 @@ class IdeasFlowTest(TempDb):
         self.worker.handle(("approve", 7, plan_id))
         self.assertEqual([s for s, _, _ in self.tracker.created], ["Do api", "Do ui"])
         self.assertEqual(self.tracker.created[0][2], OWNER)                       # assigned to the idea's owner
-        self.assertIn("Depends on:</strong> agaia-5001, adt-4061</p>", self.tracker.created[1][1])
+        self.assertNotIn("Depends on", self.tracker.created[1][1])
+        self.assertEqual(self.tracker.links, [(5001, 5002, "blocks"), (4061, 5002, "blocks")])
+        self.assertEqual(self.tracker.appended, [])
         self.assertEqual((self.client.plans[0]["status"], self.client.ideas_[7]["status"]), ("created", "created"))
         self.worker.handle(("approve", 7, plan_id))                               # never twice
         self.assertEqual(len(self.tracker.created), 2)
         self.turn("thanks", "ok")
         self.assertIn("agaia-5001 (api), aprom-5002 (ui)", self.launcher.calls[-1][0])
         self.assertFalse(state.get("nestor", 7)["note"])                          # delivered once
+
+    def approve(self, *issues):
+        self.turn("go", block(*issues))
+        plan_id = self.client.plans[0]["id"]
+        self.client.set_plan_status(plan_id, "approved")
+        self.worker.handle(("approve", 7, plan_id))
+        return plan_id
+
+    def test_a_refused_link_falls_back_to_a_depends_on_line(self):
+        self.tracker.refuse[(5001, 5002)] = "Issues are in different workspaces"
+        self.approve(issue("ui", "A Prometheus", ["api"]), issue("api"))
+        self.assertEqual(self.tracker.links, [])
+        self.assertEqual(self.tracker.appended, [(5002, "<p><strong>Depends on:</strong> agaia-5001</p>")])
+        said = [m["body"] for m in self.client.messages if m["role"] == "system"][-1]
+        self.assertIn("Linked 0, fell back to a Depends on line for: aprom-5002 (on agaia-5001)", said)
+
+    def test_a_link_that_exists_already_counts_as_done(self):
+        self.tracker.refuse[(5001, 5002)] = "This link already exists"
+        self.approve(issue("ui", "A Prometheus", ["api"]), issue("api"))
+        self.assertEqual(self.tracker.appended, [])
+        self.assertEqual(self.client.plans[0]["status"], "created")
 
     def home_in_prometheus(self):
         self.client.ideas_[7]["projectId"] = "p-prom"
@@ -651,8 +684,7 @@ class IdeasFlowTest(TempDb):
         self.worker.handle(("approve", 7, plan_id))
         made = {s: d for s, d, _ in self.tracker.created}
         self.assertEqual(sorted(made), ["Do ui", "External Request: Do again", "External Request: Do api"])
-        self.assertEqual(made["Do ui"], "<p>ui</p><p><strong>Depends on:</strong> agaia-5001</p>"
-                         "<p><strong>Estimated files:</strong> 3</p>")
+        self.assertEqual(made["Do ui"], "<p>ui</p><p><strong>Estimated files:</strong> 3</p>")
         self.assertTrue(made["External Request: Do api"].startswith(
             '<p><strong>External Request</strong> from A Prometheus (idea "Recurring issues", raised by Hammad Hassan)'))
         self.assertEqual(made["External Request: Do again"].count("External Request</strong>"), 1)

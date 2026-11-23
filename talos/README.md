@@ -490,8 +490,11 @@ Prometheus ─▶ Gaia ─publish─▶ Hermes ─idea.message.created───�
   Bootstrap/AdminLTE plus screen_kit/projects4me.css. Plan issues list `screens`; on approval their latest PNGs
   are attached to the created issues (a failed attachment is reported in the idea). During its turn the agent previews a screen with `ai screen render` (stdin: one block; PNG in `talos/state/nestor/previews/<key>.png`) and corrects it once before replying. No browser, or a screen that fails to render: the reply says so and the plan simply doesn't attach it.
 - **Approval** (lib/ideas/approval.py): no LLM. The approved version's issues are created through the gaia MCP
-  client as the agent, assigned to the idea's owner, in dependency order, each with a "Depends on" line; each is
-  recorded on the idea at once, so approving a failed plan again creates only the missing ones. The agent is told
+  client as the agent, assigned to the idea's owner, in dependency order; each is
+  recorded on the idea at once, so approving a failed plan again creates only the missing ones. Once all exist,
+  each dependency (a plan key or an existing ref) gets a `blocks` link to its dependent issue (a link that exists
+  already counts as done); a link Gaia refuses for another reason (e.g. different workspaces) becomes a
+  "Depends on:" line on the dependent and is named in the idea message. The agent is told
   the numbers at the start of its next turn.
 - **One job at a time** per agent (lib/ideas/worker.py); after each (re)connect it reconciles, per project:
   messages not followed by the agent's reply get a turn (so a Talos restarted mid-turn answers), and plans left

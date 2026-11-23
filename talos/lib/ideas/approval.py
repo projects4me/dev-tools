@@ -9,12 +9,15 @@ window is left: if Talos dies between Gaia creating an issue and the idea record
 one issue a second time (the failure message says to check Gaia first)."""
 
 import html
+import re
 
 from ..config import log
+from ..tracker import LinkRefused
 from . import plan as plans
 from . import policy, state
 
 REQUEST = "External Request:"
+DUPLICATE = re.compile(r"already|duplicate", re.I)
 
 
 class Approval:
@@ -39,7 +42,7 @@ class Approval:
             for issue in plans.ordered(issues):
                 if issue["key"] in refs:
                     continue
-                subject, text = issue["subject"], self.description(issue, refs)
+                subject, text = issue["subject"], self.description(issue)
                 if home and issue["project"] != home:
                     subject = subject if subject.startswith(REQUEST) else f"{REQUEST} {subject}"
                     text = self.request_notice(home, idea, self.agent.reviewer_name) + text
@@ -59,11 +62,43 @@ class Approval:
                 log(f"idea #{idea_id}: creating plan v{plan['version']} stopped ({e}); recording that failed "
                     f"({also})", self.agent.name)
             return refs
+        try:
+            linked, fallbacks = self._link(issues, refs)
+        except Exception as e:                                # Gaia unreachable: approving again links the rest
+            self.client.set_plan_status(plan_id, "failed", error=str(e))
+            self.client.post(idea_id, "system", f"Created the issues but linking them stopped: {e}. "
+                             f"Approve again to finish the links.")
+            return refs
         self.client.set_plan_status(plan_id, "created")
         self.client.mark_created(idea_id)
-        self._tell(idea, plan, refs)
+        self._tell(idea, plan, refs, linked=linked, fallbacks=fallbacks)
         self._tell_unattached(idea_id, unattached)
         return refs
+
+    def _link(self, issues, refs):
+        """A blocks link from each dependency to its dependent, once every issue exists. A link that exists already
+        (approving again) counts as done; any other refusal puts the old "Depends on" line on the dependent instead.
+        Returns (links made or already there, [(dependent ref, dependency ref)] that fell back to the line)."""
+        linked, fallbacks = 0, []
+        for issue in issues:
+            for dep in issue["dependsOn"]:
+                source, target = refs.get(dep, dep), refs[issue["key"]]
+                try:
+                    self.tracker.link_issues(self._number(source), self._number(target), "blocks")
+                except LinkRefused as e:
+                    if not DUPLICATE.search(str(e)):
+                        self.tracker.append_description(self._number(target),
+                                                        f"<p><strong>Depends on:</strong> {html.escape(source)}</p>")
+                        fallbacks.append((target, source))
+                        log(f"link {source} blocks {target} refused ({e}); wrote a Depends on line", self.agent.name)
+                        continue
+                linked += 1
+        return linked, fallbacks
+
+    @staticmethod
+    def _number(ref):
+        """The issue number of a ref such as agaia-4836."""
+        return int(re.search(r"(\d+)$", ref).group(1))
 
     def _home(self, idea):
         """Name of the project the idea belongs to (None when it has none, as in the sim)."""
@@ -96,11 +131,10 @@ class Approval:
         return missed
 
     @staticmethod
-    def description(issue, refs):
-        """The issue's description plus "Depends on", "Estimated files" (plan keys become the numbers created for them; existing issues
-        such as adt-4061 are kept as written) and "Screens" (the PNGs attached to it) lines."""
-        depends = [refs.get(d, d) for d in issue["dependsOn"]]
-        line = f"<p><strong>Depends on:</strong> {', '.join(depends)}</p>" if depends else ""
+    def description(issue):
+        """The issue's description plus "Estimated files" and "Screens" (the PNGs attached to it) lines. Dependencies
+        are blocks links, made once every issue exists."""
+        line = ""
         if issue.get("estimatedFiles"):
             line += f"<p><strong>Estimated files:</strong> {issue['estimatedFiles']}"
             line += f" ({html.escape(issue['sizeReason'])})</p>" if issue.get("sizeReason") else "</p>"
@@ -109,7 +143,7 @@ class Approval:
             line += f"<p><strong>Screens:</strong> {', '.join(f'{k}.png' for k in shots)}</p>"
         return issue["description"].strip() + line
 
-    def _tell(self, idea, plan, refs, failed=None):
+    def _tell(self, idea, plan, refs, failed=None, linked=0, fallbacks=()):
         """A line in the idea for the engineer, and a note the agent gets at the start of its next turn."""
         home = self._home(idea)
         project = {i["key"]: i["project"] for i in plan["body"]["issues"]}
@@ -124,6 +158,11 @@ class Approval:
             note = f"The engineer approved plan v{plan['version']}; creating it stopped ({failed}). Created: {listed}."
         else:
             chat = f"Created {len(refs)} issue(s) from plan v{plan['version']}: {listed}."
+            if linked or fallbacks:
+                chat += f" Linked {linked}"
+                if fallbacks:
+                    chat += ", fell back to a Depends on line for: " + ", ".join(f"{t} (on {s})" for t, s in fallbacks)
+                chat += "."
             note = f"The engineer approved plan v{plan['version']} and these issues were created: {listed}."
         self.client.post(idea["id"], "system", chat)
         state.update(self.agent.name, idea["id"], note=note)
