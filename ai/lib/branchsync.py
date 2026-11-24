@@ -3,10 +3,13 @@
 When the base moved and the tree has uncommitted work, `git merge` refuses if a file changed on both sides. For a
 branch with no commits of its own that is a fast-forward, so: stash (named, worktrees share the stash list),
 `merge --ff-only`, pop. Branches that already have commits keep the old rule (merge the base, don't rebase).
+Intent-to-add files (`git add -N`) can't be stashed ("Entry not uptodate"), so they are set back to untracked for the
+update, which leaves them in the tree, and marked intent-to-add again afterwards.
 
 The git calls are in `_git`; `update_unshipped` decides from the branch's state."""
 
 import subprocess
+from pathlib import Path
 
 UP_TO_DATE, UPDATED, HAS_COMMITS, CONFLICT = "up-to-date", "updated", "has-commits", "conflict"
 
@@ -26,6 +29,11 @@ def conflicted_files(folder):
     return _git(folder, "diff", "--name-only", "--diff-filter=U")[1].splitlines()
 
 
+def intent_to_add_files(folder):
+    """The files marked intent-to-add (`git add -N`): the only ones the tree-vs-index diff reports as added."""
+    return [f for f in _git(folder, "diff", "--name-only", "--diff-filter=A", "-z")[1].split("\0") if f]
+
+
 def update_unshipped(folder, base, tag):
     """Fast-forward HEAD to origin/<base> keeping uncommitted work. Returns (state, detail):
     UP_TO_DATE (nothing to do), UPDATED (tree changed: re-test), HAS_COMMITS (own commits, caller refuses as
@@ -35,7 +43,23 @@ def update_unshipped(folder, base, tag):
         return UP_TO_DATE, ""
     if not _is_ancestor(folder, "HEAD", target):
         return HAS_COMMITS, ""
-    message = f"ai-ship-{tag}"
+    intents = intent_to_add_files(folder)
+    if intents:
+        code, out = _git(folder, "reset", "-q", "--", *intents)
+        if code != 0:
+            return CONFLICT, f"could not unmark the intent-to-add files {', '.join(intents)}: {out}"
+    state, detail = _fast_forward(folder, target, f"ai-ship-{tag}")
+    remaining = [f for f in intents if (Path(folder) / f).exists()]
+    if remaining:
+        code, out = _git(folder, "add", "-N", "--", *remaining)
+        if code != 0:
+            detail = "; ".join(filter(None, [detail, f"could not mark {', '.join(intents)} intent-to-add again "
+                                                      f"(they are untracked now): {out}"]))
+    return state, detail
+
+
+def _fast_forward(folder, target, message):
+    """Stash tracked changes, `merge --ff-only` to target, re-apply; the states of update_unshipped."""
     dirty = bool(_git(folder, "status", "--porcelain", "--untracked-files=no")[1])
     if dirty:
         code, out = _git(folder, "stash", "push", "-m", message)

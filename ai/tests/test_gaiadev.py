@@ -9,7 +9,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from lib import common, gaiadev, gaiapack, ship  # noqa: E402
+from lib import common, gaiabase, gaiadev, gaiapack, ship  # noqa: E402
 
 
 def link_dir(target, link):
@@ -141,11 +141,30 @@ class CommandTest(unittest.TestCase):
 class ShipGateTest(unittest.TestCase):
     """A failing drift check names the `ai gaia-dev` command that regenerates it, not host php."""
 
-    def gate_error(self, results):
-        with mock.patch.object(gaiapack, "run_checks", return_value=results), mock.patch.object(ship, "say"):
-            with self.assertRaises(common.AiError) as e:
-                ship.gaia_dev_gate("gaia")
+    def gate(self, results, known=()):
+        with mock.patch.object(gaiapack, "run_checks", return_value=results), mock.patch.object(ship, "say"), \
+                mock.patch.object(gaiabase, "known_failures", return_value=list(known)) as on_base:
+            return ship.gaia_dev_gate("gaia"), on_base
+
+    def gate_error(self, results, known=()):
+        with self.assertRaises(common.AiError) as e:
+            self.gate(results, known)
         return str(e.exception)
+
+    def test_a_check_failing_the_same_on_the_base_is_known_and_noted(self):
+        known, on_base = self.gate([("graph export --check", False, "graph.json is stale"),
+                                    ("check api-cases", True, "")], known=["graph export --check"])
+        self.assertEqual(known, ["graph export --check"])
+        on_base.assert_called_once_with("gaia", {"graph export --check": "graph.json is stale"})
+        self.assertIn("<code>graph export --check</code> failed on the base", ship.known_checks_note(known))
+        self.assertEqual(ship.known_checks_note([]), "")
+
+    def test_new_drift_next_to_a_known_failure_still_stops(self):
+        msg = self.gate_error([("graph export --check", False, "graph.json is stale"),
+                               ("docs generate --check", False, "profiles.md is stale")],
+                              known=["graph export --check"])
+        self.assertIn("profiles.md is stale", msg)
+        self.assertNotIn("graph.json is stale", msg)
 
     def test_a_stale_docs_check_points_at_ai_gaia_dev_docs_generate(self):
         msg = self.gate_error([("graph export --check", True, ""),
@@ -233,3 +252,58 @@ class CheckoutTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BaseComparisonTest(unittest.TestCase):
+    """gaiabase: a branch failure is known when the base fails the check with the same (or a wider) output."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.branch, self.base = Path(self.tmp.name) / "branch", Path(self.tmp.name) / "base"
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def known(self, failed, base_runs):
+        def run(root, args, timeout):
+            self.assertEqual(root, self.base)
+            return base_runs[" ".join(args)]
+        with mock.patch.object(gaiabase, "git", return_value="abc12345"), \
+                mock.patch.object(gaiabase, "base_branch", return_value="dev"), \
+                mock.patch.object(gaiabase, "repo_dir", return_value=self.branch), \
+                mock.patch.object(gaiabase, "say"), \
+                mock.patch.object(gaiabase, "state_locked", return_value=mock.MagicMock()), \
+                mock.patch.object(gaiabase, "_runner", return_value="docker"):
+            return gaiabase.known_failures("gaia", failed, run, checkout=lambda repo, sha: self.base)
+
+    def test_same_failure_on_the_base_is_known(self):
+        self.assertEqual(self.known({"graph export --check": f"{self.branch}/docs/generated/graph.json is stale"},
+                                    {"graph export --check": (1, f"{self.base}/docs/generated/graph.json is stale")}),
+                         ["graph export --check"])
+
+    def test_empty_branch_output_is_not_known(self):
+        self.assertEqual(self.known({"check api-cases": ""}, {"check api-cases": (1, "")}), [])
+
+    def test_base_that_cannot_be_checked_leaves_the_failures_to_the_branch(self):
+        def broken(repo, sha):
+            raise common.AiError("worktree failed")
+        with mock.patch.object(gaiabase, "git", return_value="abc12345"), \
+                mock.patch.object(gaiabase, "base_branch", return_value="dev"), \
+                mock.patch.object(gaiabase, "say"), \
+                mock.patch.object(gaiabase, "state_locked", return_value=mock.MagicMock()):
+            self.assertEqual(gaiabase.known_failures("gaia", {"graph export --check": "stale"}, checkout=broken), [])
+
+    def test_less_drift_on_the_branch_is_not_known(self):
+        self.assertEqual(self.known({"docs generate --check": "a.md is stale"},
+                                    {"docs generate --check": (1, "a.md is stale\nb.md is stale")}), [])
+
+    def test_extra_drift_on_the_branch_is_not_known(self):
+        self.assertEqual(self.known({"docs generate --check": "a.md is stale\nb.md is stale"},
+                                    {"docs generate --check": (1, "a.md is stale")}), [])
+
+    def test_passing_or_unavailable_on_the_base_is_not_known(self):
+        self.assertEqual(self.known({"graph export --check": "stale", "check api-cases": "bad case"},
+                                    {"graph export --check": (0, ""), "check api-cases": (None, "no docker")}), [])
+
+    def test_nothing_failing_runs_nothing(self):
+        self.assertEqual(gaiabase.known_failures("gaia", {}), [])

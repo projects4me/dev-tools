@@ -14,7 +14,9 @@ from lib import doctor, tests  # noqa: E402
 class FakeEnv:
     def __init__(self, **kw):
         self.facts = {"serves": True, "crlf": [], "seeded": 1, "counts": (100, 100), "drift": False,
-                      "baseline": True, "remote": True, **kw}
+                      "baseline": True, "remote": True,
+                      "lock": {"nikic/php-parser": "v5.4.0", "a/b": "1.0"},
+                      "vendor": {"nikic/php-parser": "v5.4.0", "a/b": "1.0"}, **kw}
 
     def mount_state(self):
         return self.facts["serves"], "note"
@@ -33,6 +35,12 @@ class FakeEnv:
 
     def baseline_recorded(self):
         return self.facts["baseline"]
+
+    def lock_versions(self):
+        return self.facts["lock"]
+
+    def vendor_versions(self):
+        return self.facts["vendor"]
 
     def odysseus_reachable(self):
         return self.facts["remote"]
@@ -70,6 +78,15 @@ class DoctorTest(unittest.TestCase):
     def test_missing_baseline(self):
         self.assertIn("ai baseline gaia", failed(baseline=False)["baseline"].fix)
 
+    def test_vendor_older_than_the_lock(self):
+        result = failed(vendor={"nikic/php-parser": "v4.19.1", "a/b": "1.0"})["vendor"]
+        self.assertIn("nikic/php-parser v4.19.1 (lock v5.4.0)", result.detail)
+        self.assertIn("composer install", result.fix)
+
+    def test_vendor_without_php_parser_fails_but_other_missing_packages_dont(self):
+        self.assertNotIn("vendor", failed(vendor={"nikic/php-parser": "v5.4.0"}))
+        self.assertIn("nikic/php-parser missing", failed(vendor={"a/b": "1.0"})["vendor"].detail)
+
     def test_unreachable_remote(self):
         self.assertIn("odysseus-remote", failed(remote=False))
 
@@ -85,7 +102,7 @@ class DoctorTest(unittest.TestCase):
     def test_render_lists_each_failure_with_its_fix(self):
         text = doctor.render(doctor.diagnose(FakeEnv(crlf=["a.sh"], remote=False)))
         self.assertEqual(text.count("  fix: "), 2)
-        self.assertIn("2 of 6 checks failed", text)
+        self.assertIn("2 of 7 checks failed", text)
 
 
 LOG = """PASS get-a

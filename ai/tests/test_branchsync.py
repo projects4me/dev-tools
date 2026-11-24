@@ -72,6 +72,28 @@ class UpdateUnshippedTest(unittest.TestCase):
         self.assertIn("a", detail)
         self.assertIn("ai-ship-1", git(self.work, "stash", "list") + "ai-ship-1")   # work is not lost
 
+    def test_intent_to_add_files_survive_the_update(self):
+        self.advance_origin()
+        (self.work / "a").write_text("mine", encoding="utf-8")
+        (self.work / "new").write_text("new", encoding="utf-8")
+        git(self.work, "add", "-N", "new")
+        self.assertEqual(self.update()[0], branchsync.UPDATED)
+        self.assertTrue((self.work / "b").exists())
+        self.assertEqual((self.work / "a").read_text(encoding="utf-8"), "mine")
+        self.assertEqual((self.work / "new").read_text(encoding="utf-8"), "new")
+        self.assertEqual(branchsync.intent_to_add_files(self.work), ["new"])
+        self.assertEqual(git(self.work, "stash", "list"), "")
+
+    def test_intent_to_add_file_the_base_also_adds_is_a_clear_conflict(self):
+        self.advance_origin("new", "theirs")
+        (self.work / "new").write_text("mine", encoding="utf-8")
+        git(self.work, "add", "-N", "new")
+        state, detail = self.update()
+        self.assertEqual(state, branchsync.CONFLICT)
+        self.assertIn("new", detail)
+        self.assertEqual((self.work / "new").read_text(encoding="utf-8"), "mine")
+        self.assertEqual(branchsync.intent_to_add_files(self.work), ["new"])
+
     def test_branch_with_own_commits_is_left_alone(self):
         commit(self.work, "mine")
         self.advance_origin()
