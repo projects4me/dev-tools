@@ -309,6 +309,38 @@ if __name__ == "__main__":
     unittest.main()
 
 
+class ApiModesTest(unittest.TestCase):
+    def checkout(self, with_search):
+        d = tempfile.TemporaryDirectory()
+        self.addCleanup(d.cleanup)
+        catalog = Path(d.name, tests.SEARCH_CATALOG)
+        catalog.parent.mkdir(parents=True)
+        if with_search:
+            catalog.write_text("{}", encoding="utf-8")
+        return d.name
+
+    def test_search_runs_last_where_the_checkout_has_it(self):
+        self.assertEqual(tests.api_modes(self.checkout(True)), (["backend", "acl", "client", "search"], None))
+
+    def test_search_is_skipped_with_a_note_on_an_older_checkout(self):
+        modes, note = tests.api_modes(self.checkout(False))
+        self.assertEqual(modes, ["backend", "acl", "client"])
+        self.assertIn("search: skipped", note)
+
+    def test_a_filter_not_naming_search_leaves_search_out_without_a_note(self):
+        self.assertEqual(tests.api_modes(self.checkout(True), "/issue/i"), (["backend", "acl", "client"], None))
+        self.assertEqual(tests.api_modes(self.checkout(True), "search")[0][-1], "search")
+
+    def test_summaries_are_named_by_mode(self):
+        lines = tests.api_summary_lines(["backend", "search"], [("5", "0", "1"), ("3", "2", "0")])
+        self.assertEqual(lines, ["api backend: 5 passed, 0 failed, 1 skipped",
+                                 "api search: 3 passed, 2 failed, 0 skipped"])
+
+    def test_summaries_fall_back_to_run_numbers(self):
+        self.assertEqual(tests.api_summary_lines(["backend", "search"], [("5", "0", "0")]),
+                         ["api run 1: 5 passed, 0 failed, 0 skipped"])
+
+
 class BadFilterTest(unittest.TestCase):
     def test_converted_windows_path_is_rejected(self):
         from lib import tests

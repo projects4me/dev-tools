@@ -145,8 +145,29 @@ def parse_phpunit_counts(summary):
     return int(tests.group(1)), bad
 
 
+API_MODES = ["backend", "acl", "client"]
+SEARCH_CATALOG = "tools/api-tester/apis/search.json"
+
+
+def api_modes(src, api_filter=None):
+    """(the api-tester modes to run on checkout `src`, a note when one is skipped): search only where the
+    checkout has its catalog (older branches don't), and with a filter only when the filter names search."""
+    if api_filter and "search" not in api_filter:
+        return list(API_MODES), None
+    if (Path(src) / SEARCH_CATALOG).exists():
+        return [*API_MODES, "search"], None
+    return list(API_MODES), "api search: skipped (this checkout has no search mode)"
+
+
+def api_summary_lines(modes, summaries):
+    """One `api <mode>: …` line per Summary the run printed (named by mode when there is one per mode)."""
+    names = modes if len(summaries) == len(modes) else [f"run {i + 1}" for i in range(len(summaries))]
+    return [f"api {m}: {p} passed, {f} failed, {s} skipped" for m, (p, f, s) in zip(names, summaries)]
+
+
 def api(src, api_filter=None, prepare=True, slot=None):
-    cmd = _p4m("test", "api", *(["--prepare"] if prepare else []), "--mode", "backend,acl,client", "--src", str(src),
+    modes, note = api_modes(src, api_filter)
+    cmd = _p4m("test", "api", *(["--prepare"] if prepare else []), "--mode", ",".join(modes), "--src", str(src),
                *_slot_args(slot))
     if not _tag(src) and testmap.backend_catalog_stale(
             testmap.changed_files(src, f"origin/{base_branch('gaia')}")):
@@ -155,8 +176,7 @@ def api(src, api_filter=None, prepare=True, slot=None):
         cmd += ["--filter", api_filter]
     code, out, log = _run_logged(f"gaia-api{_tag(src, slot)}", cmd)
     summaries = re.findall(r"^Summary: (\d+) passed, (\d+) failed, (\d+) skipped", out, flags=re.M)
-    modes = ["backend", "acl", "client"] if len(summaries) == 3 else [f"run {i + 1}" for i in range(len(summaries))]
-    lines = [f"api {m}: {p} passed, {f} failed, {s} skipped" for m, (p, f, s) in zip(modes, summaries)]
+    lines = api_summary_lines(modes, summaries) + ([note] if note else [])
     failed = sum(int(f) for _, f, _ in summaries) if summaries else None
     ran = sum(int(p) + int(f) for p, f, _ in summaries) if summaries else None
     return SuiteResult("api", "\n".join(lines) or "api: no summary (see log)",
