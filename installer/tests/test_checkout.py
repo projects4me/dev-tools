@@ -48,5 +48,17 @@ class TestCheckoutTest(unittest.TestCase):
                 p4m._test_checkout(argparse.Namespace(src=None), "prometheus")
 
 
+class ApiModeGroupsTest(unittest.TestCase):
+    def test_search_runs_alone_and_last(self):
+        self.assertEqual(p4m.api_mode_groups("backend,search,acl,client"),
+                         [["backend", "acl", "client"], ["search"]])
+
+    def test_without_search_it_is_one_run(self):
+        self.assertEqual(p4m.api_mode_groups("backend,acl,client"), [["backend", "acl", "client"]])
+
+    def test_search_only(self):
+        self.assertEqual(p4m.api_mode_groups("search"), [["search"]])
+
+
 if __name__ == "__main__":
     unittest.main()

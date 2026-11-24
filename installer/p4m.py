@@ -1700,16 +1700,40 @@ def _sync_gaia(box: testenv.GaiaTestContainer) -> None:
     info(f"{len(changed)} file(s) synced into {box.name}")
 
 
+SEARCH_SEED = "tools/api-tester/harness/seed-search.sh"
+
+
+def api_mode_groups(mode: str) -> list[list[str]]:
+    """The api-tester runs for a comma separated --mode: the search mode runs alone and last, because its fixture
+    is loaded after the other modes (its issues would show up in their lists)."""
+    modes = [m for m in mode.split(",") if m]
+    others = [m for m in modes if m != "search"]
+    return ([others] if others else []) + ([["search"]] if "search" in modes else [])
+
+
+def seed_search_fixture(src: Path, db: str) -> None:
+    """Load the api-tester search fixture of `src` into `db` (the harness script, on the host like prepare-test-db)."""
+    info(f"Seeding the search fixture into {db}")
+    env = {"TEST_DB": db, "PG_CONTAINER": PG_CONTAINER, "PG_USER": PG_USER}
+    rc = run_bash([SEARCH_SEED], cwd=src, env=env).returncode
+    if rc != 0:
+        raise P4MError(f"command failed ({rc}): {find_bash()} {SEARCH_SEED}")
+
+
 def _run_api(args, src: Path, slot: int | None, box: testenv.GaiaTestContainer) -> int:
     """The api-tester run in `box`, after the prepare it asks for. Run it under the database's lock."""
     name = box.name
-    cmd = ["docker", "exec", "-w", "/var/www/html", name, "bash",
-           "tools/api-tester/harness/run-api-tests.sh", "--base-uri", "http://127.0.0.1",
-           "--mode", args.mode]
-    if "live" in args.mode:
-        cmd += ["--hermes-url", f"https://hermes-test.{domain()}"]
-    if args.filter:
-        cmd += ["--filter", args.filter]
+
+    def command(modes: list[str]) -> list[str]:
+        cmd = ["docker", "exec", "-w", "/var/www/html", name, "bash",
+               "tools/api-tester/harness/run-api-tests.sh", "--base-uri", "http://127.0.0.1",
+               "--mode", ",".join(modes)]
+        if "live" in modes:
+            cmd += ["--hermes-url", f"https://hermes-test.{domain()}"]
+        if args.filter:
+            cmd += ["--filter", args.filter]
+        return cmd
+
     if args.prepare and slot:              # a clone of the template, not a re-seed; then the sync
         prepare_slot(test_slots(), slot, src, slot_held=True, sync=lambda: _sync_gaia(box))
     else:
@@ -1725,8 +1749,18 @@ def _run_api(args, src: Path, slot: int | None, box: testenv.GaiaTestContainer) 
         print(next((l for l in (gen.stdout or "").splitlines() if l.startswith("Wrote ")), "").replace(
             "Wrote ", "regenerated backend.json (").split(" to ")[0] + ")")
     box.clear_reports()
+    rc = 0
     try:
-        return run(cmd, check=False).returncode
+        for modes in api_mode_groups(args.mode):
+            if modes == ["search"] and args.prepare:   # a prepare emptied the fixture out of the database
+                try:
+                    seed_search_fixture(src, testslots.db_name(slot) if slot else "pr4m_test")
+                except P4MError as e:
+                    print(f"error: {e}")
+                    rc = rc or 1
+                    continue
+            rc = run(command(modes), check=False).returncode or rc
+        return rc
     finally:
         try:
             box.fetch_reports()            # `ai test --explain` reads them from the checkout
@@ -2206,7 +2240,7 @@ def build_parser() -> argparse.ArgumentParser:
                "shared one serves another folder"
     slot_help = "run in test slot K: its own container and database pr4m_test_K (see `p4m test slots`)"
     t = tsub.add_parser("api", help="gaia api-tester against gaia-test")
-    t.add_argument("--mode", default="backend", help="client|backend|acl|live (comma separated)")
+    t.add_argument("--mode", default="backend", help="client|backend|acl|live|search (comma separated; search runs last, after its fixture is loaded)")
     t.add_argument("--filter")
     t.add_argument("--src", help=src_help)
     t.add_argument("--regenerate-backend", action="store_true",
