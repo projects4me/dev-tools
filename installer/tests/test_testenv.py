@@ -888,5 +888,24 @@ class PhpVersionTest(unittest.TestCase):
             self.assertEqual(box.php_version(), "")
 
 
+class TrackedFilesTest(unittest.TestCase):
+    """The sync copies tracked and untracked-but-not-ignored files, so a new test and class reach the container."""
+
+    def test_untracked_files_are_selected_and_ignored_ones_are_not(self):
+        with tempfile.TemporaryDirectory() as d:
+            git = lambda *a: subprocess.run(["git", "-C", d, *a], check=True, capture_output=True)
+            git("init", "-q")
+            (Path(d) / ".gitignore").write_text("ignored.txt\n")
+            (Path(d) / "tracked.php").write_text("<?php")
+            git("add", ".gitignore", "tracked.php")
+            (Path(d) / "tests" / "new").mkdir(parents=True)
+            (Path(d) / "tests" / "new" / "NewTest.php").write_text("<?php")
+            (Path(d) / "ignored.txt").write_text("x")
+            (Path(d) / "vendor").mkdir()
+            (Path(d) / "vendor" / "a.php").write_text("<?php")
+            files = testenv._tracked_files(d, testenv.GAIA_SYNC_EXCLUDE)
+            self.assertEqual(sorted(files), [".gitignore", "tests/new/NewTest.php", "tracked.php"])
+
+
 if __name__ == "__main__":
     unittest.main()
