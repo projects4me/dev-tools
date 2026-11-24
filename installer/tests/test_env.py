@@ -81,6 +81,20 @@ class OverrideServicesTest(unittest.TestCase):
         self.assertNotIn("xhgui", p4m.SVC)
         self.assertNotIn("xhgui", self.services_in(p4m.write_overrides()["gaia"]))
 
+    def test_gaia_test_ares_reaches_ares_while_gaia_test_does_not(self):
+        """agaia meaning-search cases need an API on the test database that reaches ares-dev."""
+        path = p4m.write_overrides()["gaia"]
+        text = path.read_text(encoding="utf-8")
+        self.assertIn("gaia-test-ares", self.services_in(path))
+        block = text[text.index("  gaia-test-ares:"):]
+        block = block.split("\n  gaia-", 1)[0]
+        self.assertIn("extends:", block)
+        self.assertIn("service: gaia-test\n", block)
+        self.assertIn("container_name: gaia-test-ares", block)
+        self.assertIn("http://ares-dev:8000", block)
+        self.assertNotEqual(p4m.url_env()["gaia-test"]["LLM_SERVICE_URL"], "http://ares-dev:8000")
+        self.assertIn(f"api-test-ares.{p4m.settings()['P4M_DOMAIN']}", p4m.all_hostnames())
+
 
 class SettingsKeyTest(unittest.TestCase):
     """Gaia's settings encryption key is generated once per machine and never replaced."""

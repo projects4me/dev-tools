@@ -94,6 +94,7 @@ REPOS: dict[str, tuple[str, str | None]] = {
 # Start order matters: proxy (CA) first, then postgres/gaia, frontend last.
 STACK_ORDER = [PROXY, "gaia", "hermes", "ares", "prometheus"]
 
+ARES_INTERNAL_URL = "http://ares-dev:8000"   # ares as seen from other containers on the docker network
 PG_CONTAINER = "postgres-dev"
 PG_USER = "nouman"
 PG_DB = "pr4m"
@@ -132,6 +133,9 @@ SERVICES: list[Service] = [
     Service("gaia-test-hermes-down", "gaia", "gaia-test-hermes-down", "gaia-test-hermes-down",
             "test", "api-test-hermes-down", "gaia-test-hermes-down:80", shell="bash",
             desc="Gaia with unreachable Hermes (fail-open tests)"),
+    Service("gaia-test-ares", "gaia", "gaia-test-ares", "gaia-test-ares",
+            "test", "api-test-ares", "gaia-test-ares:80", shell="bash",
+            desc="Gaia on pr4m_test with Ares reachable (meaning-search api-tester mode)"),
     Service("hermes-test", "hermes", "hermes-test", "hermes-test", "test", "hermes-test",
             "hermes-test:9001", "/socket.io/?EIO=4&transport=polling", desc="Hermes paired with gaia-test"),
 ]
@@ -192,6 +196,9 @@ def url_env() -> dict[str, dict[str, str]]:
         "gaia-test": {"FRONTEND_HOST": f"app.{D}", "HERMES_URL": f"https://hermes-test.{D}",
                       "LLM_SERVICE_URL": f"https://ares.{D}"},
         "gaia-test-hermes-down": {"FRONTEND_HOST": f"app.{D}", "LLM_SERVICE_URL": f"https://ares.{D}"},
+        # ares-dev on the docker network, not the proxy URL: the container needs no CA or DNS entry
+        "gaia-test-ares": {"FRONTEND_HOST": f"app.{D}", "HERMES_URL": f"https://hermes-test.{D}",
+                           "LLM_SERVICE_URL": ARES_INTERNAL_URL},
         "hermes": {"GAIA_URL": f"https://api.{D}", "CORS_ORIGIN": f"https://app.{D}"},
         "hermes-test": {"GAIA_URL": f"https://api-test.{D}", "CORS_ORIGIN": f"https://app.{D}"},
         "prometheus": {"API_HOST_DEV": f"https://api.{D}", "HERMES_URL_DEV": f"https://hermes.{D}"},
@@ -452,6 +459,18 @@ services:
   gaia-test-hermes-down:
     environment:
 {_env_yaml("gaia-test-hermes-down", php_ca)}
+    volumes:
+{gaia_ca}
+    ports: !reset []
+  # Not in the repo compose file: gaia-test with LLM_SERVICE_URL pointing at ares-dev, so the
+  # meaning-search cases have an Ares to reach while gaia-test keeps the "Ares unavailable" ones.
+  gaia-test-ares:
+    extends:
+      file: {(ROOT / "gaia" / REPOS["gaia"][1]).resolve().as_posix()}
+      service: gaia-test
+    container_name: gaia-test-ares
+    environment:
+{_env_yaml("gaia-test-ares", php_ca)}
     volumes:
 {gaia_ca}
     ports: !reset []

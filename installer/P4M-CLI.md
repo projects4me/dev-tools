@@ -13,8 +13,15 @@ Everything is served over **HTTPS** with real hostnames under one configurable d
 | https://ares.local-projects4.me/docs | ares (AI service) |
 | https://api-test.local-projects4.me | gaia-test (pr4m_test) |
 | https://api-test-hermes-down.local-projects4.me | gaia-test-hermes-down |
+| https://api-test-ares.local-projects4.me | gaia-test-ares (pr4m_test, `LLM_SERVICE_URL` = ares-dev) |
 | https://hermes-test.local-projects4.me | hermes-test |
 | `localhost:5432` | postgres (user/pass `nouman`/`nouman`, DBs `pr4m`, `pr4m_test`) |
+
+`gaia-test-ares` is gaia-test with `LLM_SERVICE_URL=http://ares-dev:8000`, so a search through it reaches Ares
+(`meta.semantic = ok`) while gaia-test, which has no Ares, keeps reporting it unavailable. Run the meaning-search
+api-tester mode against it: `p4m up ares gaia-test-ares`, then `--mode search-semantic` with the API URL
+`https://api-test-ares.local-projects4.me`. Wait for the `ares` health check first: until Ares is up the
+first search reports `meta.semantic` unavailable.
 
 The domain is the `P4M_DOMAIN` setting in `p4m.env`. Change it and every URL follows.
 
@@ -115,7 +122,7 @@ templates with their keys.
 | `p4m diag [svc…]` | Write a full diagnostics report (status, probes, logs) to `dev-tools/logs/` |
 | `p4m runtime setup\|update\|status` | The runtime copy of dev-tools (`.dev-tools-runtime`, a worktree of `origin/main`) that Talos and the agents' tooling run from; `update` fast-forwards it, refusing while a Talos run is active (`--force` for a stale one). See the Talos README |
 
-Service names: `proxy postgres gaia hermes ares prometheus gaia-test gaia-test-hermes-down hermes-test`.
+Service names: `proxy postgres gaia hermes ares prometheus gaia-test gaia-test-hermes-down gaia-test-ares hermes-test`.
 Groups: `all`, `core`, `test`, or a repo name (`gaia` = all gaia services).
 
 ## How the URLs are wired
