@@ -2,6 +2,7 @@
 
 import contextlib
 import io
+import json
 import os
 import shutil
 import subprocess
@@ -199,21 +200,24 @@ class LintRunTest(unittest.TestCase):
 
 
 class FixLintTest(unittest.TestCase):
-    """fix_lint runs the todo/suppression fixes in the container, then copies the lint state back."""
+    """fix_lint runs the todo/suppression fixes in the container, then copies back what they rewrote."""
 
-    def _run(self, code):
-        box = testenv.PrometheusTestContainer(".", Path("."))
+    def _run(self, code, clean_todo=("app/a.hbs",), prune=True, copied=True, box=None):
+        box = box or testenv.PrometheusTestContainer(".", Path("."))
         calls = []
-        box.copy_lint_state_back = lambda: calls.append("copied")
+        box.copy_lint_state_back = lambda rels: calls.append(rels) or copied
+        if box.checkout == Path(".").resolve():
+            box.forget = mock.Mock()
         done = subprocess.CompletedProcess([], code, stdout="out")
         out = io.StringIO()
-        with mock.patch.object(testenv.subprocess, "run", return_value=done) as run,                 contextlib.redirect_stdout(out):
-            rc = box.fix_lint(["app/a.hbs"], True)
+        with mock.patch.object(testenv.subprocess, "run", return_value=done) as run, \
+                contextlib.redirect_stdout(out):
+            rc = box.fix_lint(list(clean_todo), prune)
         return rc, calls, run.call_args_list, out.getvalue()
 
     def test_commands_run_in_the_container_and_state_is_copied(self):
         rc, calls, runs, out = self._run(0)
-        self.assertEqual((rc, calls), (0, ["copied"]))
+        self.assertEqual((rc, calls), (0, [[".lint-todo", "eslint-suppressions.json"]]))
         cmds = [c.args[0] for c in runs]
         self.assertTrue(all(c[:2] == ["docker", "exec"] for c in cmds))
         self.assertEqual(cmds[0][-3:], ["./node_modules/.bin/ember-template-lint", "app/a.hbs", "--clean-todo"][-3:])
@@ -222,6 +226,91 @@ class FixLintTest(unittest.TestCase):
     def test_failure_copies_nothing_back(self):
         rc, calls, _, _ = self._run(1)
         self.assertEqual((rc, calls), (1, []))
+
+    def test_each_fix_copies_back_only_the_file_it_rewrites(self):
+        self.assertEqual(self._run(0, prune=False)[1], [[".lint-todo"]])
+        self.assertEqual(self._run(0, clean_todo=())[1], [["eslint-suppressions.json"]])
+
+    def test_a_failed_copy_back_fails_the_fix(self):
+        self.assertEqual(self._run(0, copied=False)[0], 1)
+
+    def test_the_rewritten_lint_state_is_forgotten_by_the_sync(self):
+        """The fix changes the container's copy: the next sync must push the checkout's, copied back or not."""
+        for code in (0, 1):
+            with tempfile.TemporaryDirectory() as d:
+                box = testenv.PrometheusTestContainer(d, Path(d))
+                box.manifest_file.write_text(
+                    '{".lint-todo": [1, 2], "eslint-suppressions.json": [3, 4], "app/a.hbs": [5, 6]}',
+                    encoding="utf-8")
+                self._run(code, prune=False, box=box)
+                self.assertEqual(json.loads(box.manifest_file.read_text(encoding="utf-8")),
+                                 {"eslint-suppressions.json": [3, 4], "app/a.hbs": [5, 6]})
+
+
+class ForgetTest(unittest.TestCase):
+    def test_a_folder_forgets_every_file_under_it(self):
+        with tempfile.TemporaryDirectory() as d:
+            box = testenv.PrometheusTestContainer(d, Path(d))
+            box.manifest_file.write_text('{".lint-todo/a": [1], ".lint-todo/b": [2], ".lint-todo-x": [3]}',
+                                         encoding="utf-8")
+            box.forget(".lint-todo")
+            self.assertEqual(json.loads(box.manifest_file.read_text(encoding="utf-8")), {".lint-todo-x": [3]})
+
+    def test_no_manifest_is_left_alone(self):
+        with tempfile.TemporaryDirectory() as d:
+            box = testenv.PrometheusTestContainer(d, Path(d))
+            box.forget(".lint-todo")
+            self.assertFalse(box.manifest_file.exists())
+
+
+class CopyLintStateBackTest(unittest.TestCase):
+    """The container's `.lint-todo` (a file in Prometheus, a folder in older template-lint) and
+    `eslint-suppressions.json` replace the checkout's."""
+
+    def _copy_back(self, checkout, container_files):
+        """copy_lint_state_back with `docker cp` served from {name: file text | {child: text}}: (ok, output)."""
+        def docker(*args, check=True, **_):
+            src, dst = args[1].split(":", 1)[1].rsplit("/", 1)[1], Path(args[2])
+            item = container_files.get(src)
+            if item is None:
+                return subprocess.CompletedProcess(args, 1, stdout="", stderr="no such file")
+            if isinstance(item, dict):
+                dst.mkdir()
+                for k, v in item.items():
+                    (dst / k).write_text(v, encoding="utf-8")
+            else:
+                dst.write_text(item, encoding="utf-8")
+            return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+        box = testenv.PrometheusTestContainer(checkout, Path(checkout))
+        out = io.StringIO()
+        with mock.patch.object(testenv, "_docker", side_effect=docker), contextlib.redirect_stdout(out):
+            ok = box.copy_lint_state_back([".lint-todo", "eslint-suppressions.json"])
+        return ok, out.getvalue()
+
+    def test_a_todo_file_replaces_the_checkouts_file(self):
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / ".lint-todo").write_text("stale\n", encoding="utf-8")
+            (Path(d) / "eslint-suppressions.json").write_text("{}", encoding="utf-8")
+            ok, _ = self._copy_back(d, {".lint-todo": "clean\n", "eslint-suppressions.json": '{"a": 1}'})
+            self.assertTrue(ok)
+            self.assertEqual((Path(d) / ".lint-todo").read_text(encoding="utf-8"), "clean\n")
+            self.assertEqual((Path(d) / "eslint-suppressions.json").read_text(encoding="utf-8"), '{"a": 1}')
+            self.assertEqual(sorted(p.name for p in Path(d).iterdir()), [".lint-todo", "eslint-suppressions.json"])
+
+    def test_a_todo_folder_replaces_the_checkouts_folder_dropping_deleted_todos(self):
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / ".lint-todo").mkdir()
+            (Path(d) / ".lint-todo" / "old").write_text("x", encoding="utf-8")
+            self._copy_back(d, {".lint-todo": {"new": "y"}})
+            self.assertEqual(sorted(p.name for p in (Path(d) / ".lint-todo").iterdir()), ["new"])
+
+    def test_a_failed_copy_keeps_the_checkouts_file_and_is_reported(self):
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / ".lint-todo").write_text("mine\n", encoding="utf-8")
+            ok, out = self._copy_back(d, {})
+            self.assertFalse(ok)
+            self.assertIn("copy back .lint-todo failed", out)
+            self.assertEqual((Path(d) / ".lint-todo").read_text(encoding="utf-8"), "mine\n")
 
 
 class LineEndingsTest(unittest.TestCase):

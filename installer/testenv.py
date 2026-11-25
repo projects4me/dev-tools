@@ -85,6 +85,7 @@ CGROUP_EVENTS = ("/sys/fs/cgroup/memory.events", "/sys/fs/cgroup/memory/memory.o
 BROWSER_GONE = re.compile(r"browser (exited|disconnected)|Browser .*(crashed|disconnected)|"
                           r"Chrome (exited|crashed)|disconnected,? .*reconnect", re.I)
 LINT_SCRIPTS = ("lint:js", "lint:hbs")     # package.json scripts, as Prometheus CI runs them
+LINT_TODO, ESLINT_SUPPRESSIONS = ".lint-todo", "eslint-suppressions.json"    # what the lint fixes rewrite
 TEST_TIMEOUT = 900       # seconds for one `ember test`
 STUCK_GRACE = 20          # seconds after a hang marker before the run is stopped (the other tests may still finish)
 # Output after which testem never reports completion: no test matched, or QUnit/TestLoader failed globally.
@@ -323,6 +324,16 @@ class CopiedSourceContainer:
         self.manifest_file.parent.mkdir(parents=True, exist_ok=True)
         self.manifest_file.write_text(json.dumps(new), encoding="utf-8")
         return changed + removed
+
+    def forget(self, *rels):
+        """Drop files, or every file under a folder, from the sync manifest, so the next sync copies them in
+        again (for paths something changed inside the container)."""
+        if not self.manifest_file.exists():
+            return
+        manifest = json.loads(self.manifest_file.read_text(encoding="utf-8"))
+        manifest = {k: v for k, v in manifest.items()
+                    if not any(k == rel or k.startswith(rel + "/") for rel in rels)}
+        self.manifest_file.write_text(json.dumps(manifest), encoding="utf-8")
 
     def _add(self, tar, rel):
         path = self.checkout / rel
@@ -847,29 +858,47 @@ class PrometheusTestContainer(CopiedSourceContainer):
         """Run the todo/suppression fixes inside the container (never a host npx) and copy `.lint-todo` and
         `eslint-suppressions.json` back to the checkout. Returns the worst exit code."""
         worst = 0
-        cmds = []
+        cmds, rewritten = [], []
         for f in clean_todo:
             cmds.append(("clean-todo " + f, ["./node_modules/.bin/ember-template-lint", f, "--clean-todo"]))
+        if clean_todo:
+            rewritten.append(LINT_TODO)
         if prune:
             cmds.append(("lint:js:prune", ["npm", "run", "lint:js:prune"]))
+            rewritten.append(ESLINT_SUPPRESSIONS)
         for label, cmd in cmds:
             r = subprocess.run(["docker", "exec", "-w", self.root, self.name, *cmd], stdout=subprocess.PIPE,
                                stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace")
             print(f"== {label} (exit {r.returncode})\n{r.stdout}", flush=True)
             worst = worst or r.returncode
-        if worst == 0 and cmds:
-            self.copy_lint_state_back()
+        # the container's copies changed: the next sync must push the checkout's, copied back or not
+        self.forget(*rewritten)
+        if worst == 0 and cmds and not self.copy_lint_state_back(rewritten):
+            worst = 1
         return worst
 
-    def copy_lint_state_back(self):
-        """Copy the container's `.lint-todo` and `eslint-suppressions.json` over the checkout's."""
-        todo = Path(self.checkout) / ".lint-todo"
-        if todo.is_dir():
-            shutil.rmtree(todo)                 # deleted todos must disappear from the checkout too
-        todo.mkdir(exist_ok=True)
-        _docker("cp", f"{self.name}:{self.root}/.lint-todo/.", str(todo), check=False)
-        _docker("cp", f"{self.name}:{self.root}/eslint-suppressions.json",
-                str(Path(self.checkout) / "eslint-suppressions.json"), check=False)
+    def copy_lint_state_back(self, rels):
+        """Replace the checkout's copies of `rels` (`.lint-todo` is a file, or a folder in older template-lint)
+        with the container's. A path that can't be copied keeps the checkout's copy and is reported. Returns
+        True when every path was copied."""
+        ok = True
+        # staged next to the target: the swap below is a rename on one drive, never a cross-device copy
+        with tempfile.TemporaryDirectory(prefix=".p4m-lint-", dir=self.checkout) as tmp:
+            for rel in rels:
+                copy = Path(tmp) / rel
+                r = _docker("cp", f"{self.name}:{self.root}/{rel}", str(copy), check=False)
+                if r.returncode != 0:
+                    print(f"== copy back {rel} failed, the checkout keeps its copy: {(r.stderr or '').strip()}",
+                          flush=True)
+                    ok = False
+                    continue
+                target = Path(self.checkout) / rel
+                if target.is_dir():
+                    shutil.rmtree(target)       # deleted todos must disappear from the checkout too
+                elif copy.is_dir() and target.exists():
+                    target.unlink()
+                os.replace(copy, target)        # a file is swapped in one step: never left without one
+        return ok
 
     def kill_tests(self):
         """Stop any `ember test` and its Chrome in the container (a killed caller leaves them running)."""
