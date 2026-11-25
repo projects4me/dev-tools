@@ -28,7 +28,7 @@ import html
 import json
 from pathlib import Path
 
-from . import coderabbit, cost, gaiapack, mergereviewer, results, reviewrecord, sizecheck, workflow
+from . import coderabbit, cost, gaiabase, gaiapack, mergereviewer, results, reviewrecord, sizecheck, workflow
 from .common import (AiError, PROJECT_FOR_REPO, REPOS, STATE_DIR, announce_checkout, base_branch, config, git, ody,
                      require_matching_workspace, say, tracker_call)
 
@@ -37,9 +37,16 @@ REQUIRED = ("title", "files", "what", "why")
 
 
 def gaia_dev_gate(repo):
-    """Run the gaia-dev check set for a Gaia PR; a failing check stops the ship, an unavailable one is reported."""
+    """Run the gaia-dev check set for a Gaia PR. A check failing the same way on the base is reported and returned
+    (for the tracker notes); any other failure stops the ship; an unavailable check is reported."""
+    checks = gaiapack.run_checks(repo)
+    failing = {name: out for name, ok, out in checks if ok is False}
+    on_base = set(gaiabase.known_failures(repo, failing))
     failed = []
-    for name, ok, out in gaiapack.run_checks(repo):
+    for name, ok, out in checks:
+        if name in on_base:
+            say(f"gaia-dev {name}: FAILED, the same on the base (known; not this branch's drift)")
+            continue
         say(f"gaia-dev {name}: " + {True: "ok", False: "FAILED", None: "skipped (" + out + ")"}[ok])
         if ok is False:
             lines = [f"gaia-dev {name}", *out.splitlines()[-15:]]
@@ -48,6 +55,16 @@ def gaia_dev_gate(repo):
             failed.append("\n".join(lines))
     if failed:
         raise AiError("\n".join(["gaia-dev checks failed; fix and re-run:", *failed]))
+    return [name for name, _, _ in checks if name in on_base]
+
+
+def known_checks_note(names):
+    """Tracker note for gaia-dev checks that failed on the base as well, or ""."""
+    if not names:
+        return ""
+    return ("<p><strong>gaia-dev</strong>: " + ", ".join(f"<code>{html.escape(n)}</code>" for n in names)
+            + " failed on the base commit with the same output, so not this branch's drift (known; shipped anyway). "
+            "Check <code>dev-tools/ai/ai doctor gaia</code> for a stale vendor volume.</p>")
 
 
 def load_spec(path):
@@ -195,8 +212,16 @@ def cmd_ship(args):
     if warning:
         body += "\n\n" + warning
 
-    if not committed and repo == "gaia":
-        gaia_dev_gate(repo)
+    if committed:
+        known = progress.get("knownChecks", [])
+    elif repo == "gaia":
+        known = gaia_dev_gate(repo)
+    else:
+        known = []
+    notes += known_checks_note(known)
+    if known:
+        body += ("\n\ngaia-dev: " + ", ".join(f"`{n}`" for n in known)
+                 + " failed on the base commit with the same output (known; not this branch's drift).")
 
     if args.dry_run:
         say("--- commit message ---\n" + message + "\n--- files ---\n" + "\n".join(spec["files"]))
@@ -208,7 +233,8 @@ def cmd_ship(args):
 
     if not committed:
         workflow.commit_files(repo, issue, message, spec["files"], push=True)
-        progress = {"commit": git(repo, "rev-parse", "HEAD"), "testLines": test_lines, "reviewLine": review}
+        progress = {"commit": git(repo, "rev-parse", "HEAD"), "testLines": test_lines, "reviewLine": review,
+                    "knownChecks": known}
         save_progress(repo, issue, progress)
     elif not progress.get("pr"):
         ody(repo, "git", "push", "-q", "-u", "odysseus", workflow.branch_name(issue))   # in case the push failed

@@ -10,7 +10,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import baseline
+from . import baseline, gaiapack
 from .common import STATE_DIR, base_branch, git, ody, p4m, repo_dir, run, say, succeeds
 
 HARNESS = "tools/api-tester/harness"
@@ -20,6 +20,8 @@ PG_CONTAINER = "postgres-dev"
 PG_USER = "nouman"
 SEED_MARKER = "api-test-user-0001"      # the user prepare-test-db.sh seeds
 SEED_TABLE = "users"
+INSTALLED_JSON = "vendor/composer/installed.json"
+CHECKED_PACKAGE = "nikic/php-parser"   # the graph export parses with it: a stale one makes every graph look stale
 
 
 @dataclass
@@ -81,6 +83,22 @@ class Env:
         sha = git(self.repo, "merge-base", "HEAD", f"origin/{base_branch(self.repo)}", check=False)
         return bool(sha) and "api" in baseline.load(self.repo, sha)
 
+    def lock_versions(self):
+        """{package: version} pinned in the checkout's composer.lock (packages and packages-dev)."""
+        lock = json.loads((self.src / "composer.lock").read_text(encoding="utf-8"))
+        return {p["name"]: p["version"] for p in lock.get("packages", []) + lock.get("packages-dev", [])}
+
+    def vendor_versions(self):
+        """{package: version} installed in the vendor folder the gaia-dev checks run with (gaiapack.gaia_dev_command):
+        the checkout's own when it has one, else the shared vendor volume."""
+        if (self.src / "vendor" / "autoload.php").is_file():
+            text = (self.src / INSTALLED_JSON).read_text(encoding="utf-8")
+        else:
+            text = run(["docker", "run", "--rm", "--pull=never", "--network", "none", "-v", f"{gaiapack.VENDOR_VOLUME}:/vendor:ro",
+                        "--entrypoint", "cat", gaiapack.GAIA_IMAGE, "/" + INSTALLED_JSON])
+        data = json.loads(text)
+        return {p["name"]: p["version"] for p in (data.get("packages", []) if isinstance(data, dict) else data)}
+
     def odysseus_reachable(self):
         return succeeds(["git", "ls-remote", "--exit-code", "-q", "odysseus", "HEAD"], cwd=self.src)
 
@@ -126,6 +144,18 @@ def check_baseline(env):
                                      "trigger a baseline run)", "dev-tools/ai/ai baseline gaia")
 
 
+def check_vendor(env):
+    locked, installed = env.lock_versions(), env.vendor_versions()
+    stale = [f"{name} {installed.get(name, 'missing')} (lock {version})" for name, version in sorted(locked.items())
+             if (name in installed and installed[name] != version) or (name == CHECKED_PACKAGE and name not in installed)]
+    if not stale:
+        return Result("vendor", True, "the vendor packages match composer.lock")
+    return Result("vendor", False, "vendor differs from composer.lock, so the gaia-dev checks (graph export) can "
+                                   "report false drift: " + ", ".join(stale[:5])
+                                   + (f" and {len(stale) - 5} more" if len(stale) > 5 else ""),
+                  "dev-tools/installer/p4m shell gaia composer install  (refreshes the gaia_vendor volume)")
+
+
 def check_remote(env):
     if env.odysseus_reachable():
         return Result("odysseus-remote", True, "reachable")
@@ -133,7 +163,7 @@ def check_remote(env):
                   "dev-tools/odysseus/odysseus git remote -v  (check the remote and network)")
 
 
-CHECKS = [check_mount, check_crlf, check_seed, check_backend, check_baseline, check_remote]
+CHECKS = [check_mount, check_crlf, check_seed, check_backend, check_baseline, check_vendor, check_remote]
 
 
 def diagnose(env, checks=None):
