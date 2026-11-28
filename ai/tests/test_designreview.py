@@ -1,5 +1,5 @@
-"""mergeReviewers, the tree-bound design review (ai design-review), its ship line and the merge gate's review check.
-Run: python -m unittest discover -s tests"""
+"""The merge review, the tree-bound design review (ai design-review), its ship line and the merge gate's review
+check. Run: python -m unittest discover -s tests"""
 
 import sys
 import tempfile
@@ -9,7 +9,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from lib import coderabbit, designreview, mergegate, mergereviewer, reviewrecord, ship  # noqa: E402
+from lib import designreview, mergegate, mergereviewer, reviewrecord, ship  # noqa: E402
 from lib.common import AiError  # noqa: E402
 
 CLEAN = "Looked at ai/lib/x.py.\n\nNo findings"
@@ -17,16 +17,9 @@ NITS = "- [nit] ai/lib/x.py:3: long line → wrap it\n"
 OPEN = "- [should-fix] ai/lib/x.py:9: mixes I/O and logic → split\n- [nit] ai/lib/x.py:3: long line → wrap it\n"
 
 
-def patch_config(reviewers, rabbit=("gaia", "prometheus", "hermes")):
-    values = {"mergeReviewers": reviewers, "codeRabbitRepos": list(rabbit), "agentLogin": "a"}
-    return (mock.patch.object(mergereviewer, "config", return_value=values),
-            mock.patch.object(coderabbit, "config", return_value=values))
-
-
 class ReviewStateTest(unittest.TestCase):
     def state(self, body, repo="dev-tools"):
-        a, b = patch_config({"dev-tools": "design-review"})
-        with a, b, mock.patch.object(mergereviewer, "ody", return_value=body):
+        with mock.patch.object(mergereviewer, "ody", return_value=body):
             return mergereviewer.review_state(repo, 5)["state"]
 
     def test_the_recorded_line_is_clean(self):
@@ -35,36 +28,15 @@ class ReviewStateTest(unittest.TestCase):
     def test_no_line_is_unreviewed(self):
         self.assertEqual(self.state("text"), "unreviewed")
 
-    def test_a_repo_outside_mergereviewers_uses_codeRabbit(self):
-        a, b = patch_config({"dev-tools": "design-review"})
+    def test_every_repo_reads_the_recorded_line(self):
+        for repo in ("gaia", "prometheus", "hermes", "ares"):
+            self.assertEqual(self.state(reviewrecord.REVIEW_LINE, repo), "clean")
+
+    def test_the_command_exits_by_state(self):
         args = mock.Mock(repo="gaia", pr=1, json=True)
-        with a, b, mock.patch.object(coderabbit, "cmd_rabbit", return_value=7) as rabbit:
-            self.assertEqual(mergereviewer.cmd_rabbit(args), 7)
-            rabbit.assert_called_once_with(args)
-
-
-class MergeReviewersTest(unittest.TestCase):
-    def lookup(self, reviewers, repo, rabbit=("gaia", "prometheus", "hermes")):
-        a, b = patch_config(reviewers, rabbit)
-        with a, b:
-            return mergereviewer.merge_reviewer(repo)
-
-    def test_lookup(self):
-        self.assertEqual(self.lookup({"dev-tools": "design-review"}, "dev-tools"), "design-review")
-        self.assertIsNone(self.lookup({"dev-tools": "design-review"}, "gaia"))
-        self.assertIsNone(self.lookup({}, "dev-tools"))
-
-    def test_unknown_repo_is_an_error(self):
-        with self.assertRaisesRegex(AiError, "unknown repos: nope"):
-            self.lookup({"nope": "design-review"}, "dev-tools")
-
-    def test_unknown_kind_is_an_error(self):
-        with self.assertRaisesRegex(AiError, "unknown reviewers: humans"):
-            self.lookup({"dev-tools": "humans"}, "dev-tools")
-
-    def test_a_repo_in_both_lists_is_an_error(self):
-        with self.assertRaisesRegex(AiError, "gaia in both"):
-            self.lookup({"gaia": "design-review"}, "gaia")
+        for body, code in ((reviewrecord.REVIEW_LINE, 0), ("text", 1)):
+            with mock.patch.object(mergereviewer, "ody", return_value=body), mock.patch.object(mergereviewer, "say"):
+                self.assertEqual(mergereviewer.cmd_merge_review(args), code)
 
 
 class VerdictTest(unittest.TestCase):
@@ -165,15 +137,14 @@ class ShipLineTest(unittest.TestCase):
         self.assertIn("## How tested\n```\nRESULT: PASS\nDESIGN REVIEW: clean\n```", body)
         self.assertNotIn("DESIGN REVIEW", ship.pr_body(self.SPEC, "adt-1", ["RESULT: PASS"]))
 
-    def test_only_repos_in_merge_reviewers_get_the_line(self):
-        with mock.patch.object(ship.mergereviewer, "merge_reviewer", return_value=None), \
-                mock.patch.object(ship.reviewrecord, "ship_line") as line:
-            self.assertIsNone(ship.review_line("gaia"))
-            line.assert_not_called()
+    def test_every_repo_gets_the_line(self):
+        with mock.patch.object(ship.reviewrecord, "ship_line", return_value=(reviewrecord.REVIEW_LINE, "clean")), \
+                mock.patch.object(ship, "say"):
+            for repo in ("gaia", "prometheus", "hermes", "ares", "dev-tools"):
+                self.assertEqual(ship.review_line(repo), reviewrecord.REVIEW_LINE)
 
     def test_a_missing_review_still_ships_without_the_line(self):
-        with mock.patch.object(ship.mergereviewer, "merge_reviewer", return_value="design-review"), \
-                mock.patch.object(ship.reviewrecord, "ship_line", return_value=(None, "no recorded design review")), \
+        with mock.patch.object(ship.reviewrecord, "ship_line", return_value=(None, "no recorded design review")), \
                 mock.patch.object(ship, "say") as say:
             self.assertIsNone(ship.review_line("dev-tools"))
             self.assertIn("opens without the design-review line", say.call_args[0][0])
@@ -190,7 +161,7 @@ class ReviewCheckTest(unittest.TestCase):
 
 
 class DevToolsGateTest(unittest.TestCase):
-    """`ai mergecheck dev-tools <pr>` with the shipped config.json: no CI, no CodeRabbit, the design review instead."""
+    """`ai mergecheck <repo> <pr>` with the shipped config.json: the recorded design review is the review check."""
     BODY = ReviewCheckTest.BODY
 
     def gate(self, body, files, repo="dev-tools"):
@@ -220,9 +191,12 @@ class DevToolsGateTest(unittest.TestCase):
         protected = self.gate(self.BODY, ["ai/lib/mergegate.py"])
         self.assertEqual((protected["state"], list(self.failed(protected))), ("fail", ["self"]))
 
-    def test_coderabbit_repos_keep_the_coderabbit_check(self):
-        result = self.gate(self.BODY, ["src/x.php"], repo="gaia")   # no CodeRabbit run on the head yet
-        self.assertEqual(self.failed(result), {"coderabbit": "review still running"})
+    def test_every_repo_gets_the_review_check(self):
+        for repo in ("gaia", "prometheus", "hermes", "ares"):
+            result = self.gate(self.BODY, ["src/x.php"], repo=repo)
+            self.assertEqual((repo, result["state"], self.failed(result)), (repo, "ok", {}))
+        missing = self.gate("## How tested\n```\nRESULT: PASS\n```", ["src/x.php"], repo="gaia")
+        self.assertEqual(list(self.failed(missing)), ["review"])
 
 
 if __name__ == "__main__":

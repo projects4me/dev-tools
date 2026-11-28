@@ -9,7 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from lib import mergegate  # noqa: E402
 
-BOT = {"login": "coderabbitai[bot]", "type": "Bot"}
+BOT = {"login": "github-actions[bot]", "type": "Bot"}
 AUTHOR = {"login": "agent-odysseus", "type": "User"}
 MERGER = {"login": "agent-agamemnon", "type": "User"}
 HUMAN = {"login": "hammad", "type": "User"}
@@ -36,14 +36,6 @@ class ChecksTest(unittest.TestCase):
         self.assertEqual(mergegate.check_open(pr())["state"], "ok")
         self.assertEqual(mergegate.check_open(pr(draft=True))["state"], "fail")
         self.assertEqual(mergegate.check_open(pr(state="closed"))["state"], "fail")
-
-    def test_coderabbit(self):
-        self.assertEqual(mergegate.check_coderabbit(True, {"state": "clean"})["state"], "ok")
-        self.assertEqual(mergegate.check_coderabbit(True, {"state": "pending"})["state"], "pending")
-        findings = mergegate.check_coderabbit(True, {"state": "findings", "open": 2, "comment_ids": [1, 2]})
-        self.assertEqual((findings["state"], findings["detail"]), ("fail", "2 open CodeRabbit thread(s)"))
-        self.assertEqual(mergegate.check_coderabbit(True, {"state": "paused"})["state"], "fail")
-        self.assertEqual(mergegate.check_coderabbit(False, None)["state"], "fail")   # no CodeRabbit, no auto-merge
 
     def test_ci(self):
         self.assertEqual(mergegate.check_ci([run("build"), run("lint", conclusion="skipped")], [])["state"], "ok")

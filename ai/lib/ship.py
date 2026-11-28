@@ -28,7 +28,7 @@ import html
 import json
 from pathlib import Path
 
-from . import coderabbit, cost, gaiabase, gaiapack, mergereviewer, results, reviewrecord, sizecheck, workflow
+from . import cost, gaiabase, gaiapack, results, reviewrecord, sizecheck, workflow
 from .common import (AiError, PROJECT_FOR_REPO, REPOS, STATE_DIR, announce_checkout, base_branch, config, git, ody,
                      require_matching_workspace, say, tracker_call)
 
@@ -99,10 +99,8 @@ def test_gate(repo):
 
 
 def review_line(repo):
-    """The design-review line for the PR body of a repo in mergeReviewers, or None. A missing, stale or unclean
-    review doesn't stop the ship: the PR opens without the line and the merge gate sends it to the owner."""
-    if mergereviewer.merge_reviewer(repo) != mergereviewer.DESIGN_REVIEW:
-        return None
+    """The design-review line for the PR body, or None. A missing, stale or unclean review doesn't stop the ship:
+    the PR opens without the line and the merge gate sends it to the owner."""
     line, why = reviewrecord.ship_line(repo)
     say(f"design review: {why}" + ("" if line else "; the PR opens without the design-review line"))
     return line
@@ -241,23 +239,10 @@ def cmd_ship(args):
     if not progress.get("pr"):
         progress["pr"] = existing_pr(repo, issue) or workflow.open_pr(repo, issue, spec["title"], body)
         save_progress(repo, issue, progress)
-    review_note, defer = "", False
-    if coderabbit.enabled(repo):
-        result = workflow.review_decision(repo, issue, progress["pr"], size["count"])
-        review_note = workflow.human_review_note(result)
-        defer = bool(args.defer_handoff) and result["decision"] == "coderabbit"
-        if args.defer_handoff and not defer:
-            say("not sent to CodeRabbit: handing off now (in_review) to the reviewer; "
-                "finish as done, not awaiting_bot_review")
-    else:
-        defer = bool(args.defer_handoff) and mergereviewer.merge_reviewer(repo) is not None
-        if args.defer_handoff and not defer:
-            say(f"CodeRabbit not enabled for {repo}: handing off now (in_review), nothing to wait for; "
-                f"finish as done, not awaiting_bot_review")
-    notes += review_note + sizecheck.tracker_note(size) + cost_note(issue) + (f"<p>{html.escape(warning)}</p>" if warning else "")
+    notes += sizecheck.tracker_note(size) + cost_note(issue) + (f"<p>{html.escape(warning)}</p>" if warning else "")
     workflow.pr_hand_off(issue, progress["pr"], git(repo, "rev-parse", "--short", "HEAD"),
                          git(repo, "rev-parse", "--short", f"origin/{base_branch(repo)}"),
                          spec.get("timeNote") or f"commit and PR ({spec['title']})", notes_html=notes,
-                         defer=repo if defer else None)
+                         defer=repo if args.defer_handoff else None)
     _progress_file(repo, issue).unlink(missing_ok=True)
     return 0
