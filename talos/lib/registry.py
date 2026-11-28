@@ -53,7 +53,8 @@ class Orchestration:
     auto_retry_reasons: tuple = AUTO_RETRY_REASONS   # handback reason codes that are restarted automatically
     max_auto_retries: int = 2           # automatic restarts per issue (cleared by `talos reset`)
     fail_streak_limit: int = 3          # consecutive failed or blocked handbacks before it pauses itself
-    auto_merge_milestones: tuple = ()   # milestones (exact name, any case) whose reviewed PRs it merges itself
+    auto_merge_milestones: tuple = ()   # milestones (exact name, any case) whose reviewed PRs it merges itself, as
+                                        # read at startup
     max_auto_merges_per_day: int = 5    # automatic merges per day; past it, PRs go to the reviewer
     auto_merge_wait_minutes: float = 60  # how long a still-pending merge gate (CI) is waited for
     ci_rerun_attempts: int = 3          # re-runs of a failed CI per PR head before it goes to the reviewer
@@ -183,13 +184,8 @@ def docker_settings(raw):
 def load_agent(folder):
     """agent.json, overlaid by the engineer's agent.local.json (git-ignored, written by `p4m configure`):
     who may hand this agent work, who gets hand-offs, and the reviewer's name."""
-    path = folder / "agent.json"
-    with open(path, encoding="utf-8") as f:
-        raw = json.load(f)
-    local = LOCAL_DIR / "talos" / "agents" / folder.name / "agent.local.json"
-    if local.exists():
-        with open(local, encoding="utf-8") as f:
-            raw.update(json.load(f))
+    path, local = folder / "agent.json", _local_file(folder.name)
+    raw = _read_merged(path, local)
     if "gaiaAgent" in raw:
         raise TalosError(f"{folder.name}: gaiaAgent was removed; Talos now runs the agents Gaia lets it delegate "
                          f"(talos/README.md, 'Agents declared in Gaia'): remove the folder or the key")
@@ -207,6 +203,44 @@ def load_agent(folder):
     if not env_file.exists():
         raise TalosError(f"{path}: gaiaEnv {env_file} not found")
     return _issues_agent(folder, path, local, raw, role_file.read_text(encoding="utf-8"), raw["model"], str(env_file))
+
+
+def _local_file(name):
+    """The engineer's agent.local.json for the agent <name> (it may not exist)."""
+    return LOCAL_DIR / "talos" / "agents" / name / "agent.local.json"
+
+
+def config_files(name):
+    """(agent.json, agent.local.json) of the agent in agents/<name>."""
+    return AGENTS_DIR / name / "agent.json", _local_file(name)
+
+
+def _read_merged(path, local):
+    """agent.json overlaid by agent.local.json when there is one."""
+    with open(path, encoding="utf-8") as f:
+        raw = json.load(f)
+    if local.exists():
+        with open(local, encoding="utf-8") as f:
+            raw.update(json.load(f))
+    return raw
+
+
+def _merge_milestones(path, raw):
+    """autoMergeMilestones, validated: a tuple of milestone names."""
+    milestones = raw.get("autoMergeMilestones", [])
+    if not isinstance(milestones, list) or not all(isinstance(m, str) and m.strip() for m in milestones):
+        raise TalosError(f"{path}: autoMergeMilestones must be a list of milestone names")
+    return tuple(m.strip() for m in milestones)
+
+
+def read_auto_merge_milestones(name):
+    """The orchestrator's autoMergeMilestones as its files say now (orchestrator/milestones.py reloads them);
+    TalosError when a file can't be read or the value is invalid."""
+    path, local = config_files(name)
+    try:
+        return _merge_milestones(path, _read_merged(path, local))
+    except (OSError, ValueError) as e:
+        raise TalosError(f"{name}: agent config not readable: {e}")
 
 
 def load_gaia_template():
@@ -329,9 +363,7 @@ def _load_orchestrator(path, raw):
     parked = raw.get("overlapParkedStatuses", list(PARKED_STATUSES))
     if not isinstance(parked, list) or not all(isinstance(g, str) and g.strip() for g in parked):
         raise TalosError(f"{path}: overlapParkedStatuses must be a list of issue statuses")
-    merge_milestones = raw.get("autoMergeMilestones", [])
-    if not isinstance(merge_milestones, list) or not all(isinstance(m, str) and m.strip() for m in merge_milestones):
-        raise TalosError(f"{path}: autoMergeMilestones must be a list of milestone names")
+    merge_milestones = _merge_milestones(path, raw)
     numbers = {}
     for key, default, least in (("maxInFlight", 0, 0), ("maxAutoRetries", 2, 0), ("failStreakLimit", 3, 1),
                                 ("maxAutoMergesPerDay", 5, 0), ("ciRerunAttempts", 3, 0), ("ciRerunErrors", 2, 1),
@@ -380,7 +412,7 @@ def _load_orchestrator(path, raw):
         auto_retry_reasons=tuple(reasons),
         max_auto_retries=numbers["maxAutoRetries"],
         fail_streak_limit=numbers["failStreakLimit"],
-        auto_merge_milestones=tuple(m.strip() for m in merge_milestones),
+        auto_merge_milestones=merge_milestones,
         max_auto_merges_per_day=numbers["maxAutoMergesPerDay"],
         auto_merge_wait_minutes=merge_wait,
         ci_rerun_attempts=numbers["ciRerunAttempts"],

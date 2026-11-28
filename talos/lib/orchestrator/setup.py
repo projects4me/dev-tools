@@ -15,6 +15,7 @@ from .human_merges import HumanMergeSweeper
 from .keeper import BranchKeeper
 from .merge import Merger
 from .merging import MergeSweeper
+from .milestones import live
 from .overlap import IssueFiles, OverlapGate
 from .routes import merge_routes  # noqa: F401  (talos.py starts the workers with it)
 from .worker import Orchestrator, _now
@@ -50,7 +51,8 @@ def start(agent, cfg, dry_run, claude=None):
             f"add it to acceptAssignmentsFrom in its agent.local.json", agent.name)
     owners = [str(o) for o in (agent.orchestration.owners or [worker.handoff_to]) if o]
     merges = MergeSweeper(agent, worker, tracker, Merger(tracker.child_env, github.agamemnon_gh), me, owners,
-                          dry_run=dry_run, is_held=lambda number: bool(journal.active_hold(number)))
+                          dry_run=dry_run, is_held=lambda number: bool(journal.active_hold(number)),
+                          milestones=live(agent))
     ai_config = workspaces.ai_common().config()
     human = HumanMergeSweeper(agent, worker, tracker, github.agamemnon_gh, ai_config["agentLogin"],
                               ai_config.get("mergerLogin", "agent-agamemnon"), owners, dry_run=dry_run)
@@ -72,7 +74,7 @@ def start(agent, cfg, dry_run, claude=None):
     Listener(agent, tracker, [policy.ASSIGNEE_EVENT, policy.STATUS_EVENT], orchestrator.on_event,
              orchestrator.on_ready, cfg["hermesUrl"], cfg.get("nodeBin", "node"),
              cfg.get("reconnectSeconds", 10)).start()
-    milestones = agent.orchestration.auto_merge_milestones
+    milestones = live(agent)()
     log(f"feeding {worker.display_name}: milestones {agent.orchestration.milestone_prefix}*, "
         f"at most {orchestrator.max_in_flight} in flight"
         + (f"; merging reviewed PRs in {', '.join(milestones)}" if milestones else "")

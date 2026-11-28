@@ -564,7 +564,10 @@ and is `enabled: false` until the engineer turns it on.
   stops still restarted automatically don't count; a run that ships or opens the PR ends the streak) it pauses
   itself. `talos pause|resume agamemnon` (resume also clears the streak); `talos status` shows its state and last
   sweep; `talos run --dry-run` only logs what it would do.
-- **Automatic merges** (an experiment, only for `autoMergeMilestones`, e.g. `["aga-v1"]`, exact names in any case):
+- **Automatic merges** (an experiment, only for `autoMergeMilestones`, e.g. `["aga-v1"]`, exact names in any case;
+  the one setting read live: Talos reads it again from `agent.json`/`agent.local.json` when either file changes, so
+  adding or removing a milestone needs no restart. An invalid file keeps the last good list and says so in the log.
+  `lib/orchestrator/milestones.py`):
   when the worker's merge-review routing finds a PR `clean`, it hands the issue (in_review) to Agamemnon instead of
   the reviewer, unless Agamemnon is paused. Every other result still goes to the reviewer. On each sweep,
   before feeding new work, Agamemnon finds the issue's open PR (`claude-issue-N`) and runs `ai mergecheck`:
