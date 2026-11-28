@@ -607,12 +607,11 @@ and is `enabled: false` until the engineer turns it on.
   `lib/orchestrator/merging.py` (`MergeSweeper`), separate from feeding the worker. Each attempt is kept in
   talos.db (`auto_merges`); `talos status` lists today's automatic merges.
 - **Merges by a person** (`lib/orchestrator/human_merges.py`, every sweep while not paused): for each in_review issue held by an owner, find its `claude-issue-N` PR by the Agent Odysseus account. When that PR is merged and Agamemnon's own merge flow has no record of it (open or merged in `auto_merges`), the issue is set `done` with the comment "PR repo#N merged by <login>; set done", worded apart from the "merged automatically" comment. Issues with no agent PR, an open one (or several), or only a PR closed without merging are left to the owner. Each step is safe to repeat.
-- **CodeRabbit backlog** (`lib/orchestrator/backlog.py`, every sweep while not paused): PRs the daily limit sent to the owner are deferred in the `ai rabbit` ledger. While CodeRabbit is switched off (`ai rabbit off`) nothing is read. Otherwise, while the tier isn't `full`, each is sent to CodeRabbit (`ai rabbit request --source backlog --files N`) oldest first, stopping at the first human answer; a closed or merged PR, or an issue no longer in_review, is dropped from the ledger (`ai rabbit drop`) so later sweeps don't read it again. An entry that couldn't be read stays. The issue gets the comment "CodeRabbit review requested" and stays with the owner. See `agamemnon/README.md`.
 - **Keeping agent PRs mergeable** (`lib/orchestrator/keeper.py`, every sweep while not paused): for each open
   `claude-issue-N` PR in the worker's repos whose issue waits for a review or a merge (in_review, held by an owner
   or by Agamemnon; never one the worker is on, with a run in flight, or checked out by hand outside `.runs`):
   - *behind* its base: brought up to date on GitHub as Agamemnon (`update-branch`, a merge of the base, never a
-    rebase); CI and CodeRabbit run again on the new head.
+    rebase); CI runs again on the new head.
   - *conflicting*: first, with triage on, a triage session (a `merge_conflict` incident) resolves it itself when
     every conflicting hunk is additive (`aga resolve-conflict`), or sends it to the worker with notes. Without
     triage, or when it declines (outside the premise, already triaged on this issue), it is handed to the worker
@@ -621,12 +620,6 @@ and is `enabled: false` until the engineer turns it on.
     `awaiting_bot_review` so CodeRabbit reviews the new head. Up to `maxConflictAttempts` (1) per issue; then the
     owner is told once per PR head (an issue waiting to be merged automatically goes back to them). `talos reset`
     allows another attempt.
-  - *CodeRabbit budget* (`lib/orchestrator/rabbit.py`): auto review is off, so before an update or a resolution the
-    keeper reads `ai rabbit budget`; at the limit it skips the update (logged once per PR per day) and hands a
-    conflict to the owner (in_review, "merge conflict, CodeRabbit limit reached: please resolve and review by hand").
-    After an update it runs `ai rabbit request <repo> <pr> --source update-branch --rereview --issue N`; a triage
-    resolution pushed by `aga resolve-conflict` requests with `--source conflict`. A failing `ai` command hands the
-    issue to the owner, logged. The owner's own GitHub activity is not counted.
   An automatic merge whose gate fails only on mergeability waits for this instead of going to the reviewer.
 - **Premise and incident packet** (`lib/agamemnon/`, groundwork for Agamemnon as an AI agent): `agents/agamemnon/premise.json`
   lists the incident types it may handle (`test_contention`, `ci_failed`, `merge_conflict`, `dirty_generated`,
