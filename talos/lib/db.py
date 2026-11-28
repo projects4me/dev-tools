@@ -186,6 +186,8 @@ MIGRATIONS = (
     ("issues", "auto_retries", "INTEGER DEFAULT 0"),
     ("issues", "next_action", "TEXT"),            # an action an orchestrator chose for the next run (merge_conflict)
     ("issues", "conflict_attempts", "INTEGER DEFAULT 0"),   # merge-conflict resolutions handed to the agent
+    ("issues", "ci_fix_attempts", "INTEGER DEFAULT 0"),     # CI fixes the merge sweep handed to the agent
+    ("issues", "adopted_head", "TEXT"),           # PR head the orchestrator last took from the owner to merge
     ("issues", "pending_status", "TEXT"),         # a handback that failed (reason handoff_failed), retried
     ("issues", "pending_assignee", "TEXT"),
     ("issues", "pending_tries", "INTEGER DEFAULT 0"),

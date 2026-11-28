@@ -55,6 +55,15 @@ class LiveMilestones:
 
 def live(agent):
     """A live list for an orchestrator agent (registry.Agent of kind orchestrator), started from the value it was
-    loaded with. Each consumer (the merge sweep, the worker's route) holds its own; they read the same files."""
+    loaded with. The orchestrator's sweepers share one; the worker's route holds another over the same files."""
     return LiveMilestones(agent.name, agent.orchestration.auto_merge_milestones, registry.config_files(agent.name),
                           lambda: registry.read_auto_merge_milestones(agent.name))
+
+
+def auto_merge_pool(tracker, projects, issues, milestones, prefix, skip_statuses):
+    """The sweep's issues plus those of auto-merge milestones outside the orchestrator's prefix (read here)."""
+    pool = list(issues)
+    for milestone in milestones:
+        if not milestone.lower().startswith(prefix.lower()):
+            pool.extend(i for project in projects for i in tracker.issues_in(project, milestone, skip_statuses))
+    return pool
