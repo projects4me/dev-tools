@@ -14,7 +14,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from lib import db, registry, sessions  # noqa: E402
 from lib.config import TalosError  # noqa: E402
 from lib.orchestrator import github, policy  # noqa: E402
-from lib.orchestrator.backlog import BacklogSender  # noqa: E402
 from lib.orchestrator.keeper import BranchKeeper  # noqa: E402
 from lib.orchestrator.merging import MergeSweeper  # noqa: E402
 from lib.orchestrator.setup import MergeRoute  # noqa: E402
@@ -692,29 +691,6 @@ class FakeGh:
         raise AssertionError(f"unexpected gh call {args}")
 
 
-class FakeRabbit:
-    """lib.orchestrator.rabbit.RabbitBudget: the limit and the recorded review requests."""
-
-    def __init__(self, limited=False, fail=False, info=None, answers=None):
-        self.limited, self.fail, self.requests, self.dropped = limited, fail, [], []
-        self.info, self.answers = info or {}, list(answers or [])
-
-    def drop(self, repo, pr):
-        self.dropped.append((repo, pr))
-
-    def at_limit(self):
-        if self.fail:
-            raise TalosError("ai rabbit budget failed")
-        return self.limited
-
-    def budget(self):
-        return self.info
-
-    def request(self, repo, pr, source, issue, files=None, rereview=True):
-        self.requests.append((repo, pr, source, issue) if files is None else (repo, pr, source, issue, files))
-        return self.answers.pop(0) if self.answers else "coderabbit"
-
-
 class KeeperTest(SweepTest):
     def setUp(self):
         super().setUp()
@@ -722,10 +698,10 @@ class KeeperTest(SweepTest):
         log.start()
         self.addCleanup(log.stop)
 
-    def keeper(self, tracker, gh, dry_run=False, max_conflict_attempts=1, rabbit=None):
+    def keeper(self, tracker, gh, dry_run=False, max_conflict_attempts=1):
         o = self.orchestrator(tracker, dry_run, max_conflict_attempts=max_conflict_attempts)
         return BranchKeeper(o.agent, o.worker, tracker, gh, WORKER_ID, MERGER_ID, [OWNER],
-                            lambda repo, number: self.holder, now=lambda: self.clock[0], dry_run=dry_run, rabbit=rabbit)
+                            lambda repo, number: self.holder, now=lambda: self.clock[0], dry_run=dry_run)
 
     def waiting(self, number=5, **fields):
         return issue(number, **{"status": "in_review", "assignee": OWNER, **fields})
@@ -745,51 +721,6 @@ class KeeperTest(SweepTest):
         self.assertTrue(policy.only_mergeability_fails(mergeable_only))
         self.assertFalse(policy.only_mergeability_fails(
             {"state": "fail", "checks": [{"name": "mergeable", "state": "fail"}, {"name": "ci", "state": "fail"}]}))
-
-    def test_an_update_at_the_codeRabbit_limit_is_skipped(self):
-        gh = FakeGh([gh_pr(77, 5, merge_state="BEHIND", head="abc")])
-        rabbit = FakeRabbit(limited=True)
-        keeper = self.keeper(FakeTracker([self.waiting()]), gh, rabbit=rabbit)
-        keeper.sweep()
-        keeper.sweep()
-        self.assertEqual((gh.updates, rabbit.requests), ([], []))
-
-    def test_an_update_asks_for_the_review_of_the_new_head(self):
-        gh = FakeGh([gh_pr(77, 5, merge_state="BEHIND", head="abc")])
-        rabbit = FakeRabbit()
-        self.keeper(FakeTracker([self.waiting()]), gh, rabbit=rabbit).sweep()
-        self.assertEqual(len(gh.updates), 1)
-        self.assertEqual(rabbit.requests, [("gaia", 77, "update-branch", 5)])
-
-    def test_a_conflict_at_the_codeRabbit_limit_goes_to_the_owner(self):
-        tracker = FakeTracker([self.waiting(assignee=MERGER_ID)])
-        keeper = self.keeper(tracker, FakeGh([gh_pr(77, 5, "CONFLICTING", "DIRTY")]), rabbit=FakeRabbit(limited=True))
-        keeper.sweep()
-        keeper.sweep()
-        self.assertEqual(tracker.issues[5]["assignee"], OWNER)
-        self.assertEqual(sessions.get("odysseus", 5), {})
-        self.assertEqual(len(tracker.comments), 1)
-        self.assertIn("CodeRabbit limit reached", tracker.comments[0][2])
-
-    def test_a_failing_ai_command_hands_the_issue_to_the_owner(self):
-        tracker = FakeTracker([self.waiting(assignee=MERGER_ID)])
-        gh = FakeGh([gh_pr(77, 5, merge_state="BEHIND", head="abc")])
-        self.keeper(tracker, gh, rabbit=FakeRabbit(fail=True)).sweep()
-        self.assertEqual((gh.updates, tracker.issues[5]["assignee"]), ([], OWNER))
-
-    def test_a_failed_review_request_after_an_update_hands_the_issue_to_the_owner(self):
-        tracker = FakeTracker([self.waiting(assignee=MERGER_ID)])
-        gh = FakeGh([gh_pr(77, 5, merge_state="BEHIND", head="abc")])
-        rabbit = FakeRabbit()
-        rabbit.request = lambda *a: (_ for _ in ()).throw(TalosError("ai down"))
-        self.keeper(tracker, gh, rabbit=rabbit).sweep()
-        self.assertEqual((len(gh.updates), tracker.issues[5]["assignee"]), (1, OWNER))
-
-    def test_a_conflict_below_the_limit_still_goes_to_the_worker(self):
-        tracker = FakeTracker([self.waiting()])
-        rabbit = FakeRabbit()
-        self.keeper(tracker, FakeGh([gh_pr(77, 5, "CONFLICTING", "DIRTY")]), rabbit=rabbit).sweep()
-        self.assertEqual(tracker.issues[5]["assignee"], WORKER_ID)
 
     def test_a_branch_behind_its_base_is_updated_on_github(self):
         gh = FakeGh([gh_pr(77, 5, merge_state="BEHIND", head="abc")])
@@ -870,97 +801,6 @@ class GithubIdentityTest(unittest.TestCase):
         with self.assertRaises(TalosError) as e:
             github.check_identity(self.WORKER, self.gh({"gaia": True}))
         self.assertIn("no write access to prometheus", str(e.exception))
-
-
-class BacklogTest(SweepTest):
-    """Deferred PRs go to CodeRabbit oldest first, while the budget allows, and their issues stay put."""
-
-    def setUp(self):
-        super().setUp()
-        patch = mock.patch("lib.orchestrator.backlog.log")
-        patch.start()
-        self.addCleanup(patch.stop)
-        known = mock.patch("lib.orchestrator.backlog.github.known_repos", return_value={"gaia": "o/gaia"})
-        known.start()
-        self.addCleanup(known.stop)
-
-    def entry(self, pr, number, at):
-        return {"at": at, "repo": "gaia", "pr": pr, "issue": number, "files": 4}
-
-    def sender(self, tracker, states, rabbit, dry_run=False):
-        gh = lambda *args: json.dumps({"state": states[int(args[2])]})     # noqa: E731
-        return BacklogSender(SimpleNamespace(name="agamemnon", display_name="Agent Agamemnon"), tracker, gh, rabbit,
-                             dry_run=dry_run)
-
-    def info(self, tier, *entries):
-        return {"tier": tier, "deferred": list(entries)}
-
-    def waiting(self, number):
-        return issue(number, status="in_review", assignee=OWNER)
-
-    def test_oldest_first_with_its_file_count_and_a_comment(self):
-        rabbit = FakeRabbit(info=self.info("every", self.entry(8, 6, "2026-11-07T09:00:00Z"),
-                                           self.entry(7, 5, "2026-11-07T08:00:00Z")))
-        tracker = FakeTracker([self.waiting(5), self.waiting(6)])
-        note = self.sender(tracker, {7: "OPEN", 8: "OPEN"}, rabbit).sweep()
-        self.assertEqual(rabbit.requests, [("gaia", 7, "backlog", 5, 4), ("gaia", 8, "backlog", 6, 4)])
-        self.assertEqual([c[0] for c in tracker.comments], [5, 6])
-        self.assertIn("CodeRabbit review requested", tracker.comments[0][1])
-        self.assertIn("stays with you", tracker.comments[0][2])
-        self.assertEqual((tracker.assigned, tracker.issues[5]["assignee"]), ([], OWNER))
-        self.assertIn("#5", note)
-
-    def test_stops_at_the_first_human_answer(self):
-        rabbit = FakeRabbit(info=self.info("large", self.entry(7, 5, "a"), self.entry(8, 6, "b")), answers=["human"])
-        tracker = FakeTracker([self.waiting(5), self.waiting(6)])
-        self.assertEqual(self.sender(tracker, {7: "OPEN", 8: "OPEN"}, rabbit).sweep(), "")
-        self.assertEqual(len(rabbit.requests), 1)
-        self.assertEqual(tracker.comments, [])
-
-    def test_the_full_tier_sends_nothing(self):
-        rabbit = FakeRabbit(info=self.info("full", self.entry(7, 5, "a")))
-        self.sender(FakeTracker([self.waiting(5)]), {7: "OPEN"}, rabbit).sweep()
-        self.assertEqual(rabbit.requests, [])
-
-    def test_closed_merged_or_moved_entries_are_dropped_without_a_review(self):
-        rabbit = FakeRabbit(info=self.info("every", self.entry(7, 5, "a"), self.entry(8, 6, "b"),
-                                           self.entry(9, 7, "c"), self.entry(10, 8, "d")))
-        tracker = FakeTracker([self.waiting(5), self.waiting(6), issue(7, status="in_progress", assignee=WORKER_ID),
-                               self.waiting(8)])
-        self.sender(tracker, {7: "CLOSED", 8: "MERGED", 9: "OPEN", 10: "OPEN"}, rabbit).sweep()
-        self.assertEqual(rabbit.requests, [("gaia", 10, "backlog", 8, 4)])
-        self.assertEqual(rabbit.dropped, [("gaia", 7), ("gaia", 8), ("gaia", 9)])
-
-    def test_nothing_is_read_while_coderabbit_is_off(self):
-        rabbit = FakeRabbit(info={**self.info("every", self.entry(7, 5, "a")), "off": True})
-        tracker = FakeTracker([self.waiting(5)])
-        gh = mock.Mock(side_effect=AssertionError("gh called"))
-        tracker.issue = mock.Mock(side_effect=AssertionError("Gaia called"))
-        sender = BacklogSender(SimpleNamespace(name="agamemnon", display_name="Agent Agamemnon"), tracker, gh, rabbit)
-        self.assertEqual(sender.sweep(), "")
-        self.assertEqual((rabbit.requests, rabbit.dropped), ([], []))
-
-    def test_an_unreadable_entry_stays_in_the_ledger(self):
-        rabbit = FakeRabbit(info=self.info("every", self.entry(7, 5, "a")))
-        gh = mock.Mock(side_effect=TalosError("gh down"))
-        sender = BacklogSender(SimpleNamespace(name="agamemnon", display_name="Agent Agamemnon"),
-                               FakeTracker([self.waiting(5)]), gh, rabbit)
-        sender.sweep()
-        self.assertEqual((rabbit.requests, rabbit.dropped), ([], []))
-
-    def test_a_dry_run_drops_nothing(self):
-        rabbit = FakeRabbit(info=self.info("every", self.entry(7, 5, "a")))
-        self.sender(FakeTracker([self.waiting(5)]), {7: "MERGED"}, rabbit, dry_run=True).sweep()
-        self.assertEqual(rabbit.dropped, [])
-
-    def test_a_dry_run_and_a_budget_failure_send_nothing(self):
-        rabbit = FakeRabbit(info=self.info("every", self.entry(7, 5, "a")))
-        tracker = FakeTracker([self.waiting(5)])
-        self.sender(tracker, {7: "OPEN"}, rabbit, dry_run=True).sweep()
-        broken = FakeRabbit()
-        broken.budget = lambda: (_ for _ in ()).throw(TalosError("ai down"))
-        self.assertEqual(self.sender(tracker, {7: "OPEN"}, broken).sweep(), "")
-        self.assertEqual((rabbit.requests, broken.requests, tracker.comments), ([], [], []))
 
 
 if __name__ == "__main__":

@@ -38,7 +38,7 @@ Signed in to GitHub **as agent-agamemnon**:
    |---|---|---|
    | Contents | Read and write | merge PRs, update a branch that is behind its base |
    | Pull requests | Read and write | approve and merge PRs |
-   | Checks | Read-only | read CI and CodeRabbit check runs |
+   | Checks | Read-only | read CI check runs |
    | Actions | Read and write | re-run failed CI jobs (`gh run rerun --failed`) |
    | Commit statuses | Read-only | read commit statuses |
    | Metadata | Read-only | added automatically |
@@ -49,18 +49,3 @@ Signed in to GitHub **as agent-agamemnon**:
 
 **Rotation / revocation:** generate a new token and replace the line; revoking it stops Agamemnon from approving
 and merging without touching anyone else's credentials.
-
-## CodeRabbit budget
-
-CodeRabbit's auto review is off, so every commit Agamemnon pushes (an updated branch, a resolved conflict) needs a
-trigger from the shared daily budget (`ai rabbit budget` / `ai rabbit request`). At the limit it neither updates nor
-resolves: a conflict goes to the owner as in_review with "merge conflict, CodeRabbit limit reached: please resolve and
-review by hand". Reviews the owner asks for on GitHub are not counted.
-
-**Backlog.** A PR the limit sent to the owner is recorded as deferred in the ledger. Every sweep (`lib/orchestrator/backlog.py`)
-reads `ai rabbit budget --json`; while CodeRabbit is switched off it reads nothing else. Otherwise, while the tier isn't
-`full`, it sends the deferred PRs oldest first with
-`ai rabbit request <repo> <pr> --source backlog --files N --issue N` (the stored file count counts against the tier, as
-for a new PR), stopping at the first human answer. A PR that is closed or merged, or whose issue is no longer
-in_review, is dropped from the ledger (`ai rabbit drop`) without spending a review. Each send is commented on the issue ("CodeRabbit review requested");
-the issue stays with the owner and the Talos loop is not started.

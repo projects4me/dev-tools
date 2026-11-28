@@ -13,13 +13,11 @@ from ..tracker import Tracker
 from . import github
 from . import policy as orchestration
 from . import state as store
-from .backlog import BacklogSender
 from .human_merges import HumanMergeSweeper
 from .keeper import BranchKeeper
 from .merge import Merger
 from .merging import MergeSweeper
 from .overlap import IssueFiles, OverlapGate
-from .rabbit import RabbitBudget
 from .worker import Orchestrator, _now
 
 
@@ -90,9 +88,7 @@ def start(agent, cfg, dry_run, claude=None):
     human = HumanMergeSweeper(agent, worker, tracker, github.agamemnon_gh, ai_config["agentLogin"],
                               ai_config.get("mergerLogin", "agent-agamemnon"), owners, dry_run=dry_run)
     keeper = BranchKeeper(agent, worker, tracker, github.agamemnon_gh, worker_id, me, owners,
-                          lambda repo, issue: workspaces.branch_holder(WORKSPACE, repo, issue), dry_run=dry_run,
-                          rabbit=RabbitBudget(tracker.child_env))
-    backlog = BacklogSender(agent, tracker, github.agamemnon_gh, RabbitBudget(tracker.child_env), dry_run=dry_run)
+                          lambda repo, issue: workspaces.branch_holder(WORKSPACE, repo, issue), dry_run=dry_run)
     overlap = OverlapGate(agent, worker, tracker, IssueFiles(tracker.child_env), worker_id, owners,
                          dry_run=dry_run)
     aga_merger = Merger(tracker.child_env, github.agamemnon_gh)
@@ -104,7 +100,7 @@ def start(agent, cfg, dry_run, claude=None):
     triage = _triage(agent, worker, tracker, me, owners, claude, dry_run)
     merges.triage = keeper.triage = triage
     orchestrator = Orchestrator(agent, worker, tracker, worker_id, dry_run=dry_run, merges=merges, keeper=keeper,
-                                human_merges=human, backlog=backlog, overlap=overlap, holds=holds, triage=triage)
+                                human_merges=human, overlap=overlap, holds=holds, triage=triage)
     orchestrator.start()
     Listener(agent, tracker, [policy.ASSIGNEE_EVENT, policy.STATUS_EVENT], orchestrator.on_event,
              orchestrator.on_ready, cfg["hermesUrl"], cfg.get("nodeBin", "node"),

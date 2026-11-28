@@ -4,16 +4,12 @@ goes first to an Agamemnon triage session, which resolves it itself when every h
 or sends it to the worker with notes; without triage it goes to the worker to resolve (merge_conflict). Either way the
 worker has a limited number of attempts, then the owner gets it.
 
-Each push is a commit CodeRabbit must review, and its reviews are a shared daily budget (rabbit.py): at the limit the
-keeper neither updates a branch nor resolves a conflict (a conflict goes to the owner), and after an update it asks
-for the review of the new head. An `ai` failure hands the issue to the owner too.
-
 Conflict attempts are counted per issue: an issue is one PR in one repo (the house rule Nestor plans by), so the
 issue's count is its PR's."""
 
 import html
 import json
-from datetime import date, datetime
+from datetime import datetime
 
 from .. import sessions
 from ..config import TalosError, log
@@ -32,7 +28,7 @@ class BranchKeeper:
 
     def __init__(self, agent, worker, tracker, gh, worker_id, my_id, owners, branch_holder,
                  worker_state=sessions.get, update_worker_state=sessions.update, now=_now, dry_run=False,
-                 triage=None, rabbit=None):
+                 triage=None):
         self.agent, self.worker, self.tracker, self.gh = agent, worker, tracker, gh
         self.settings = agent.orchestration
         self.worker_id, self.my_id = str(worker_id), str(my_id) if my_id else None
@@ -42,8 +38,6 @@ class BranchKeeper:
         self.worker_state, self.update_worker_state = worker_state, update_worker_state
         self.now, self.dry_run = now, dry_run
         self.projects = list(worker.projects)
-        self.rabbit = rabbit                    # rabbit.RabbitBudget (None = no budget: as before)
-        self.told = set()                       # (kind, repo, PR, head, day) already logged or told today
         self.triage = triage                   # agamemnon.triage.Triage: looks before the owner does (None = off)
 
     def sweep(self):
@@ -90,58 +84,14 @@ class BranchKeeper:
         return self._conflict(issue, repo, pr, worker_state)
 
     def _update(self, repo, slug, number, pr):
-        """Merge the base into the branch on GitHub; CI and CodeRabbit then run on the new head."""
+        """Merge the base into the branch on GitHub; CI then runs on the new head."""
         if self.dry_run:
             log(f"#{number} dry run, would bring PR {repo}#{pr['number']} up to date", self.agent.name)
             return "would update the branch (dry run)"
-        if self.rabbit:
-            try:
-                limited = self.rabbit.at_limit()
-            except TalosError as e:
-                return self._to_owner(number, repo, pr, "update", f"the CodeRabbit budget could not be read: {e}")
-            if limited:
-                return self._limit_reached(number, repo, pr, "update")
         self.gh("api", "-X", "PUT", f"repos/{slug}/pulls/{pr['number']}/update-branch",
                 "-f", f"expected_head_sha={pr['headRefOid']}")
         log(f"#{number} PR {repo}#{pr['number']} was behind its base: brought up to date", self.agent.name)
-        if self.rabbit:                     # the new head needs a trigger: CodeRabbit's auto review is off
-            try:
-                self.rabbit.request(repo, pr["number"], "update-branch", number)
-            except TalosError as e:
-                return self._to_owner(number, repo, pr, "request",
-                                      f"the branch was updated but its CodeRabbit review could not be requested: {e}")
         return f"PR {repo}#{pr['number']} brought up to date"
-
-    def _limit_reached(self, number, repo, pr, kind):
-        """The CodeRabbit limit: an update is skipped (logged once per PR per day), a conflict goes to the owner."""
-        if kind == "update":
-            if self._once("update", repo, pr):
-                log(f"#{number} PR {repo}#{pr['number']} is behind its base: not updated, the CodeRabbit limit is "
-                    f"reached", self.agent.name)
-            return "update skipped: CodeRabbit limit reached"
-        return self._to_owner(number, repo, pr, kind,
-                              "merge conflict, CodeRabbit limit reached: please resolve and review by hand")
-
-    def _once(self, kind, repo, pr):
-        """True the first time for this PR head today."""
-        key = (kind, repo, pr["number"], pr.get("headRefOid"), date.today().isoformat())
-        if key in self.told:
-            return False
-        self.told.add(key)
-        return True
-
-    def _to_owner(self, number, repo, pr, kind, note):
-        """Hand the issue to the owner as in_review with `note` and a comment (once per PR head per day)."""
-        if not self._once(f"owner-{kind}", repo, pr):
-            return f"{kind}: owner told"
-        issue = self.tracker.issue(number)
-        owner = self.owners[0] if self.owners else None
-        if issue.get("assignee") != owner and owner:
-            self.tracker.hand_off(number, policy.REVIEW_STATUS, owner)
-        log(f"#{number} PR {repo}#{pr['number']}: {note}: told the owner", self.agent.name)
-        self._comment(number, f"{self.agent.display_name}: {note.split(':')[0]}",
-                      f"<p>PR {html.escape(repo)}#{pr['number']}: {html.escape(note)}.</p>")
-        return f"{kind}: told the owner"
 
     def _conflict(self, issue, repo, pr, worker_state):
         number = issue["number"]
@@ -154,13 +104,6 @@ class BranchKeeper:
             log(f"#{number} dry run, PR {repo}#{pr['number']} conflicts: would "
                 + ("hand it to the worker" if step == policy.RESOLVE else "tell the owner"), self.agent.name)
             return f"conflict: would {step} (dry run)"
-        if step == policy.RESOLVE and self.rabbit:   # a resolution is a push that needs a review
-            try:
-                limited = self.rabbit.at_limit()
-            except TalosError as e:
-                return self._to_owner(number, repo, pr, "conflict", f"the CodeRabbit budget could not be read: {e}")
-            if limited:
-                return self._limit_reached(number, repo, pr, "conflict")
         if step == policy.RESOLVE:
             if attempts == 0:
                 taken = self._triage_first(number, repo, pr)
@@ -205,7 +148,7 @@ class BranchKeeper:
                       f"<p>PR {html.escape(repo)}#{pr['number']} conflicts with its base branch now that other work "
                       f"was merged. {html.escape(self.worker.display_name)} merges the base into "
                       f"<code>{html.escape(pr['headRefName'])}</code>, resolves the conflicts so both changes "
-                      f"survive, runs the tests and sends the PR through CodeRabbit again (automatic attempt "
+                      f"survive, runs the tests and pushes the merge (automatic attempt "
                       f"{attempt} of {self.settings.max_conflict_attempts}).</p>")
         return f"conflict: handed to {self.worker.display_name}"
 
