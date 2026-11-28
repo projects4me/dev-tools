@@ -297,7 +297,7 @@ node records a step for the agent and publishes `workflow.agent.run.requested` t
 
 A Run agent step on a record that isn't an issue (`entityType` other than `issue`; first case a Retrospective agent
 started by "Milestone completed") gets none of the issue flow: no repo, workspace, branch, commit, PR, Gaia pack,
-ship session, merge-review routing or test slot (`lib/record_runs.py`, `Dispatcher.run_record`). Record runs that change
+ship session, PR hand-off or test slot (`lib/record_runs.py`, `Dispatcher.run_record`). Record runs that change
 code are out of scope.
 
 - **Where.** Claude runs on this machine (also for an agent with a container `runner`) in a scratch folder,
@@ -343,7 +343,7 @@ The default, `"dispatch": "status"`, is the assignment flow below. `talos dispat
    |---|---|
    | `done` | checks the issue is no longer assigned to the agent (the skills hand it to the reviewer); if it still is, hands it off as failed |
    | `ready_to_ship` | starts a **fresh ship session** (same model, counts as an iteration) with `shipPrompt` and the agent's `handoff` note, so `/ship-issue` doesn't re-read the implementing session's context on every call; that session ends with one of the other outcomes. Without a `shipPrompt`, or from the ship session itself, it counts as failed |
-   | `pr_opened` | the PR is open with the hand-off deferred (`ai ship --defer-handoff`), PR number in `pr`: Talos hands the issue on by the PR's merge review (see below). Without a `pr` it counts as failed |
+   | `pr_opened` | the PR is open with the hand-off deferred (`ai ship --defer-handoff`), PR number in `pr`: Talos hands the issue on by its milestone (PR hand-off, below). Without a `pr` it counts as failed |
    | `needs_input` | posts the agent's question, status `feedback`, assigns `handoffTo` |
    | `blocked` | posts the blocker, status `pending`, assigns `handoffTo` |
    | `escalate` | comments why, then resumes the same session on `model.escalate` (once); the issue stays on that model |
@@ -353,22 +353,22 @@ The default, `"dispatch": "status"`, is the assignment flow below. `talos dispat
    `pending` resume the session, `in_review` runs `/address-review`). An address-review run reads the open GitHub
    threads, the people's Gaia comments since the agent's last comment and the CI of the PR head (`ai review --open
    --issue N`), ends `done` without touching the status, and Talos hands the issue back itself (`ai handoff`; for an
-   auto-merge milestone on to the merger when the PR's review is clean). `done` with the issue still `in_progress` is flagged `not_handed_back`.
+   auto-merge milestone on to the merger while the PR is open). `done` with the issue still `in_progress` is flagged `not_handed_back`.
 
-**Merge-review routing** (`lib/merge_review.py`). The ship session runs the full suite and `ai design-review <repo>`
-on the final tree, ships with `ai ship --defer-handoff` (which writes `DESIGN REVIEW: clean` into the PR body when
-that review is clean for the tree) and ends with `pr_opened`. Talos then reads `ai merge-review <repo> <pr>` once:
+**PR hand-off** (`lib/pr_handoff.py`). The ship session runs the full suite and one advisory round of
+`ai design-review <repo>` on the final tree (clear findings fixed, the rest listed in the PR description; `ai ship`
+writes `DESIGN REVIEW: clean` into the PR body only when it was clean), ships with `ai ship --defer-handoff` and ends
+with `pr_opened`. Talos then hands the issue on by its milestone, without reading the design review (adt-5046):
 
 ```
-clean       -> ai handoff to Agent Agamemnon in its autoMergeMilestones (not paused), which merges it (see
-               Orchestrator agents); otherwise to the reviewer
-unreviewed  -> ai handoff to the reviewer, with an issue comment saying the PR records no clean design review
-unreadable  -> the same, the comment says the review could not be read
+autoMergeMilestones (Agamemnon not paused) -> ai handoff to Agent Agamemnon, which merges it when its merge gate
+                                              passes (see Orchestrator agents)
+anything else                              -> ai handoff to the reviewer
 ```
 
-Nothing waits and nothing is stored: the review is recorded before the PR opens. A hand-off that fails is a failed
-run, handed to a person. After an address-review run in an auto-merge milestone, a still-open PR whose review is
-clean goes on to the merger instead of staying with the reviewer.
+Nothing waits and nothing is stored. A hand-off that fails is a failed run, handed to a person. After an
+address-review run in an auto-merge milestone, a still-open PR goes on to the merger instead of staying with the
+reviewer (its gate still fails while a person's change request or thread is open).
 
 **Missed events.** Hermes keeps no history, so on every (re)connect Talos lists the issues assigned to each
 agent and queues them. Since there's no event saying who assigned them, a reconciled issue only runs if the
@@ -568,8 +568,9 @@ and is `enabled: false` until the engineer turns it on.
   the one setting read live: Talos reads it again from `agent.json`/`agent.local.json` when either file changes, so
   adding or removing a milestone needs no restart. An invalid file keeps the last good list and says so in the log.
   `lib/orchestrator/milestones.py`):
-  when the worker's merge-review routing finds a PR `clean`, it hands the issue (in_review) to Agamemnon instead of
-  the reviewer, unless Agamemnon is paused. Every other result still goes to the reviewer. On each sweep,
+  the worker's PR hand-off gives a shipped issue (in_review) to Agamemnon instead of the reviewer, unless
+  Agamemnon is paused; the design review is advisory and doesn't decide this. Other milestones still go to the
+  reviewer. On each sweep,
   before feeding new work, Agamemnon finds the issue's open PR (`claude-issue-N`) and runs `ai mergecheck`:
   - `ok`: `ai merge` approves and merges it as `agent-agamemnon`, pinned to the commit the gate read; the issue is
     set `done` (which frees the issues that depend on it) and a comment names the merge commit.
@@ -578,11 +579,9 @@ and is `enabled: false` until the engineer turns it on.
     minutes after each; the comment says "attempt n of 3". A re-run command that errors (for example a token without
     the Actions permission) is counted with its error text; after `ciRerunErrors` (2) errors at the same head, or
     after the last re-run fails again, the worker fixes it (below). A new push starts over.
-  - `fail` on CI and the recorded design review only: straight to the worker's CI fix (a re-run can't pass it).
   - *CI fix*: the issue is assigned to the worker with the one-off action `ci_fix` (`next_action` in talos.db; see
-    Odysseus's `actions`): read the failing job, fix the cause on the branch, run the suite and `ai design-review`,
-    push, record `DESIGN REVIEW: clean` in the PR body when the review is clean, and end `pr_opened`, so the new
-    head comes back through the merge-review routing. Up to `maxCiFixAttempts` (3) per issue (`ci_fix_attempts`,
+    Odysseus's `actions`): read the failing job, fix the cause on the branch, run the suite, push and end
+    `pr_opened`, so the new head comes back to Agamemnon through the PR hand-off. Up to `maxCiFixAttempts` (3) per issue (`ci_fix_attempts`,
     cleared by `talos reset`); after that, and when the re-run command itself keeps failing, the issue goes to the
     owner (triage first).
   - `fail`, still pending after the wait, no open PR, or `maxAutoMergesPerDay` (5) already merged today: in_review,
@@ -594,8 +593,8 @@ and is `enabled: false` until the engineer turns it on.
 - **Owner-held PRs in auto-merge milestones** (`lib/orchestrator/adopt.py`, every sweep while not paused): an issue
   in an `autoMergeMilestones` milestone that is in_review with an owner, last changed by the worker's hand-off, with
   no run in flight and nothing it depends on unfinished, is taken to the merge sweep (in_review, assigned to
-  Agamemnon, with a comment) when the merge gate on its PR head passes, is still pending, or fails only on CI and the
-  recorded design review. Anything else (people on the PR, a do-not-merge label, Agamemnon's own files, a conflict
+  Agamemnon, with a comment) when the merge gate on its PR head passes, is still pending, or fails only on CI.
+  Anything else (people on the PR, a do-not-merge label, Agamemnon's own files, a conflict
   the keeper owns) stays with the owner; feedback and pending issues are never taken. Loop guards: only the worker's
   hand-off arms it (the merge sweep's hand-back is Agamemnon's own change, an owner's edit is theirs), each PR head
   is taken at most once (`adopted_head` in talos.db), and CI fixes are capped as above, so every path ends with the
@@ -611,7 +610,7 @@ and is `enabled: false` until the engineer turns it on.
     triage, or when it declines (outside the premise, already triaged on this issue), it is handed to the worker
     with the one-off action `merge_conflict` (`next_action` in talos.db; see
     Odysseus's `actions`): merge the base, resolve so both changes survive, run the suite, push, and end
-    `pr_opened` so Talos routes the issue by the PR's merge review. Up to `maxConflictAttempts` (1) per issue; then the
+    `pr_opened` so Talos hands the issue on (PR hand-off). Up to `maxConflictAttempts` (1) per issue; then the
     owner is told once per PR head (an issue waiting to be merged automatically goes back to them). `talos reset`
     allows another attempt.
   An automatic merge whose gate fails only on mergeability waits for this instead of going to the reviewer.
@@ -738,8 +737,8 @@ and is `enabled: false` until the engineer turns it on.
     during the test can briefly make it `maxParallel` + 1). While it runs, the worker's talos.db row is marked
     (`conflict_test_running`, `conflict_test_at`) so the idle rule leaves the container alone; its end restarts the
     idle window; the merge commit (signed as Odysseus, its message
-    naming Agamemnon and the incident) is pushed to the odysseus remote as a fast-forward, and the issue is routed by
-    the PR's merge review, as after a deferred ship (to Agamemnon to merge when clean in an auto-merge milestone). Otherwise the
+    naming Agamemnon and the incident) is pushed to the odysseus remote as a fast-forward, and the issue is handed on
+    as after a deferred ship (to Agamemnon to merge in an auto-merge milestone). Otherwise the
     merge is aborted, the workspace is put back at the PR's head, and the verb is refused with the reason, so the
     session sends the issue to Odysseus with notes for its one attempt; after that the owner gets it.
   - Level 3 has no verb: force push, deleting branches or workspaces with unpushed work, closing PRs, writing
@@ -891,7 +890,7 @@ The pre-SQLite `state/sessions.json` is imported when `talos run`/`dispatch` sta
 | `lib/dispatcher.py` | per-agent queue; runs a job and applies the outcome to the tracker |
 | `lib/workflow_steps.py` | workflow Run agent steps: the user-scoped event, claim, the agent spec applied, run through the dispatcher, report |
 | `lib/record_runs.py` | Run agent steps on a record that isn't an issue: the record and its context block, the scratch folder, the per-record session, the outcome reported |
-| `lib/merge_review.py` | routes a shipped PR by its merge review: `ai merge-review`, then `ai handoff` to the merger or the reviewer |
+| `lib/pr_handoff.py` | hands on a shipped PR by its milestone: `ai handoff` to the merger (auto-merge milestones) or the reviewer |
 | `lib/runner.py` | builds and runs the `claude -p` command, keeps its output; the `Runner` interface and `LocalRunner` |
 | `lib/container.py` + `container/` | `ContainerRunner`: the run in a container (`docker run` with the credentials by name); the image and its entrypoint |
 | `lib/workspaces.py` | per-issue workspaces: `.runs/issue-N` with the repo's worktree and the tooling linked in |

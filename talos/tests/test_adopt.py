@@ -19,7 +19,6 @@ from test_orchestrator import (MERGER_ID, OWNER, PROJECTS, WORKER_ID, FakeMerger
 
 MILESTONES = ("aga-v1",)
 CI_FAIL = ("ci", "failed: Build-and-Test (failure)")
-NO_REVIEW = ("review", "the PR body records no clean design review")
 
 
 def held(number=5, **fields):
@@ -46,15 +45,11 @@ class PolicyTest(unittest.TestCase):
         self.assertTrue(policy.adoptable(gate("ok"), None))
         self.assertTrue(policy.adoptable(gate("pending", ("ci", "running")), None))
         self.assertTrue(policy.adoptable(gate("fail", CI_FAIL), None))
-        self.assertTrue(policy.adoptable(gate("fail", CI_FAIL, NO_REVIEW), None))
-        self.assertFalse(policy.adoptable(gate("fail", NO_REVIEW), None))
         self.assertFalse(policy.adoptable(gate("fail", CI_FAIL, ("people", "hammad commented")), None))
         self.assertFalse(policy.adoptable(gate("fail", ("labels", "do-not-merge")), None))
         self.assertFalse(policy.adoptable(gate("ok"), gate("ok")["sha"]))          # this head was taken before
 
     def test_ci_fix_steps(self):
-        self.assertTrue(policy.ci_fixable(gate("fail", CI_FAIL, NO_REVIEW)))
-        self.assertFalse(policy.ci_fixable(gate("fail", NO_REVIEW)))
         self.assertEqual(policy.ci_fix_step(2, 3), policy.FIX)
         self.assertEqual(policy.ci_fix_step(3, 3), policy.TELL)
         self.assertEqual(policy.ci_fix_step(0, 0), policy.TELL)
@@ -90,7 +85,7 @@ class AdoptTest(SweepTest):
         self.assertEqual(tracker.issues[5]["status"], "done")
 
     def test_anything_else_stays_with_the_owner(self):
-        for failing in ((NO_REVIEW,), (CI_FAIL, ("people", "hammad commented"))):
+        for failing in ((("tests", "no passing full test run"),), (CI_FAIL, ("people", "hammad commented"))):
             tracker = FakeTracker([held()])
             self.wire(tracker, FakeMerger(gate("fail", *failing))).sweep()
             self.assertEqual((tracker.issues[5]["assignee"], tracker.comments), (OWNER, []))
@@ -109,23 +104,23 @@ class AdoptTest(SweepTest):
         self.assertEqual(tracker.issues[5]["assignee"], OWNER)
 
     def test_red_ci_goes_to_the_worker_three_times_then_to_the_owner(self):
-        """Loop guard 1: the attempt counter. Each fix pushes a new head that comes back through the routing."""
+        """Loop guard 1: the attempt counter. Each fix pushes a new head that the PR hand-off gives the merger."""
         tracker = FakeTracker([held()])
-        merger = FakeMerger(gate("fail", CI_FAIL, NO_REVIEW))
-        o = self.wire(tracker, merger)
+        merger = FakeMerger(gate("fail", CI_FAIL))
+        o = self.wire(tracker, merger, ci_rerun_attempts=0)
         for attempt in (1, 2, 3):
             head = f"head{attempt}"
-            merger.gates = [{**gate("fail", CI_FAIL, NO_REVIEW), "sha": head}]
+            merger.gates = [{**gate("fail", CI_FAIL), "sha": head}]
             o.sweep()                               # taken from the owner (first time) or merged-route
-            o.sweep()                               # the merge sweep: CI and review fail, so the worker fixes it
+            o.sweep()                               # the merge sweep: CI stays red, so the worker fixes it
             self.assertEqual(tracker.issues[5]["assignee"], WORKER_ID, attempt)
             st = sessions.get("odysseus", 5)
             self.assertEqual((st["next_action"], st["ci_fix_attempts"]), (CI_FIX_ACTION, attempt))
             self.assertIn(f"attempt {attempt} of 3", tracker.comments[-1][2])
-            # the fix run ends pr_opened, routing (still unreviewed) hands it to the owner as the worker
+            # the fix run ends pr_opened and the PR hand-off gives the issue to the merger (auto-merge milestone)
             sessions.update("odysseus", 5, next_action="")
-            tracker.issues[5].update(assignee=OWNER, modifiedUser=WORKER_ID)
-        merger.gates = [{**gate("fail", CI_FAIL, NO_REVIEW), "sha": "head4"}]
+            tracker.issues[5].update(assignee=MERGER_ID, modifiedUser=WORKER_ID)
+        merger.gates = [{**gate("fail", CI_FAIL), "sha": "head4"}]
         o.sweep()
         o.sweep()
         self.assertEqual(tracker.issues[5]["assignee"], OWNER)      # out of attempts: the owner keeps it
@@ -156,8 +151,8 @@ class AdoptTest(SweepTest):
 
     def test_without_the_worker_or_attempts_red_ci_goes_to_the_owner_as_before(self):
         tracker = FakeTracker([issue(5, status="in_review", assignee=MERGER_ID)])
-        merger = FakeMerger(gate("fail", CI_FAIL, NO_REVIEW))
-        self.wire(tracker, merger, max_ci_fix_attempts=0).sweep()
+        merger = FakeMerger(gate("fail", CI_FAIL))
+        self.wire(tracker, merger, max_ci_fix_attempts=0, ci_rerun_attempts=0).sweep()
         self.assertEqual(tracker.issues[5]["assignee"], OWNER)
         self.assertEqual(sessions.get("odysseus", 5).get("ci_fix_attempts") or 0, 0)
 
@@ -172,7 +167,7 @@ class AdoptTest(SweepTest):
 
     def test_a_failed_assignment_does_not_use_up_an_attempt(self):
         tracker = FakeTracker([issue(5, status="in_review", assignee=MERGER_ID)])
-        o = self.wire(tracker, FakeMerger(gate("fail", CI_FAIL, NO_REVIEW)))
+        o = self.wire(tracker, FakeMerger(gate("fail", CI_FAIL)))
 
         def broken(number, assignee):
             raise TalosError("Gaia down")

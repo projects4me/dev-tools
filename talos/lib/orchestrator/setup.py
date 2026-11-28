@@ -81,6 +81,6 @@ def start(agent, cfg, dry_run, claude=None):
     milestones = auto_merge()
     log(f"feeding {worker.display_name}: milestones {agent.orchestration.milestone_prefix}*, "
         f"at most {orchestrator.max_in_flight} in flight"
-        + (f"; merging reviewed PRs in {', '.join(milestones)}" if milestones else "")
+        + (f"; merging PRs whose gate passes in {', '.join(milestones)}" if milestones else "")
         + (" (dry run)" if dry_run else ""), agent.name)
     return orchestrator

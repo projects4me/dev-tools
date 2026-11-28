@@ -10,7 +10,7 @@ from .dependency_gate import DONE_STATUSES, unmet_dependencies
 ASSIGNEE_EVENT = "issue.assignee.changed"
 STATUS_EVENT = "issue.status.changed"
 LIMITED = "limited"      # read_outcome's outcome for a Claude usage or rate-limit stop; never a Claude-reported one
-PR_OPENED = "pr_opened"     # PR open, hand-off deferred: Talos routes it by its merge review (merge_review.py)
+PR_OPENED = "pr_opened"     # PR open, hand-off deferred: Talos hands it to its merger or the reviewer (pr_handoff.py)
 OUTCOMES = ("done", "ready_to_ship", PR_OPENED, "needs_input", "blocked", "escalate")
 # the reasons a blocked run may give in its structured output (schema/outcome.json `reason`), kept as its handback
 # reason so triage reads it instead of the free text

@@ -1,7 +1,7 @@
 """Workflow 'Run agent' steps on a record that isn't an issue (a milestone, ...): what such a run is given, where it
 runs and how it ends. The run has no repo: Claude works in a scratch folder under the per-machine state with the
 step's prompt, the agent's spec and a short context block about the record, and reaches the tracker through its Gaia
-tools. No branch, commit, PR, ship session, merge-review routing or test slot (record runs that change code are out of
+tools. No branch, commit, PR, ship session, PR hand-off or test slot (record runs that change code are out of
 scope).
 
 Sessions are kept per agent and record (type + id) in the `records` table, so a step's `session: resume` continues

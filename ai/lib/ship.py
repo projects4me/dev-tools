@@ -99,8 +99,8 @@ def test_gate(repo):
 
 
 def review_line(repo):
-    """The design-review line for the PR body, or None. A missing, stale or unclean review doesn't stop the ship:
-    the PR opens without the line and the merge gate sends it to the owner."""
+    """The design-review line for the PR body, or None. The line is advisory (the merge gate doesn't read it), so a
+    missing, stale or unclean review doesn't stop the ship: the PR opens without the line."""
     line, why = reviewrecord.ship_line(repo)
     say(f"design review: {why}" + ("" if line else "; the PR opens without the design-review line"))
     return line

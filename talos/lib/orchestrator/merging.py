@@ -1,4 +1,4 @@
-"""Automatic merges: the reviewed PRs the worker's merge-review routing handed to the orchestrator are merged, or
+"""Automatic merges: the PRs the worker's PR hand-off (pr_handoff.py) gave to the orchestrator are merged, or
 handed to the reviewer with the reason. Separate from feeding the worker (worker.Orchestrator), which calls it once
 per sweep."""
 
@@ -88,9 +88,6 @@ class MergeSweeper:
         state = gate.get("state")
         if policy.only_ci_fails(gate):
             return self._ci_failed(issue, repo, pr["number"], gate, record)
-        if policy.ci_fixable(gate):         # CI and the recorded review: re-running alone can't make it pass
-            return self._fix_or_hand_back(issue, pr["number"], f"CI and the design review failed: {failing(gate)}",
-                                          record)
         if policy.only_mergeability_fails(gate) and \
                 self.worker_state(self.worker.name, number).get("conflict_noted") != gate.get("sha"):
             state = "pending"
@@ -208,7 +205,7 @@ class MergeSweeper:
             f"{self.settings.max_ci_fix_attempts})", self.agent.name)
         self._comment(number, f"{self.agent.display_name}: CI failing, handed to {self.worker.display_name}",
                       f"<p>{html.escape(detail)}.</p><p>{html.escape(self.worker.display_name)} fixes it on the PR "
-                      f"branch, runs the suite and the design review, and pushes; the PR then comes back here to be "
+                      f"branch, runs the suite and pushes; the PR then comes back here to be "
                       f"merged (attempt {attempt} of {self.settings.max_ci_fix_attempts}).</p>")
         return f"handed to {self.worker.display_name} to fix CI"
 
@@ -235,10 +232,11 @@ class MergeSweeper:
         log(f"#{number} PR {repo}#{pr} merged as {merge_sha[:7]}; set done", self.agent.name)
         gate = f" and the merge gate passed on <code>{html.escape(head_sha[:7])}</code>" if head_sha else ""
         self._comment(number, f"{self.agent.display_name}: merged automatically",
-                      f"<p>The design review was clean{gate}, so {html.escape(self.agent.display_name)} approved and "
-                      f"merged PR {html.escape(repo)}#{pr} (merge commit <code>{html.escape(merge_sha[:7])}</code>). "
-                      f"Milestone {html.escape(str(issue.get('milestone') or ''))} merges PRs with a clean design "
-                      f"review without a human review; revert the merge commit if this needs another look.</p>")
+                      f"<p>CI and the recorded test run passed{gate}, so {html.escape(self.agent.display_name)} "
+                      f"approved and merged PR {html.escape(repo)}#{pr} (merge commit "
+                      f"<code>{html.escape(merge_sha[:7])}</code>). Milestone "
+                      f"{html.escape(str(issue.get('milestone') or ''))} merges PRs whose merge gate passes without a "
+                      f"human review; revert the merge commit if this needs another look.</p>")
         return f"merged PR {repo}#{pr}"
 
     def _hand_back(self, issue, pr, detail, record=None, triage=True, ci=None):

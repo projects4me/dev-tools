@@ -1,4 +1,4 @@
-"""Where a worker hands an issue whose PR review is clean: the orchestrator that merges its milestone itself, or
+"""Where a worker hands an issue whose PR is open: the orchestrator that merges its milestone itself, or
 None for the reviewer. Shared by the worker's dispatcher and Agamemnon's own pushes (agamemnon/wiring.py)."""
 
 from ..config import TalosError, log
@@ -11,9 +11,9 @@ from .milestones import live
 
 
 class MergeRoute:
-    """Where the worker sends an issue whose PR review is clean when an orchestrator merges its milestone itself:
+    """Where the worker sends an issue whose PR is open when an orchestrator merges its milestone itself:
     route(issue) -> (the orchestrator's Gaia user id, its name), or None for the reviewer (other milestones, the
-    orchestrator paused, or its Gaia user not readable yet: that is retried on the next clean issue)."""
+    orchestrator paused, or its Gaia user not readable yet: that is retried on the next issue)."""
 
     def __init__(self, agent, user_id, is_paused, find_pr=None, milestones=None):
         self.agent = agent

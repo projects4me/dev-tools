@@ -30,7 +30,7 @@ changes for headless work.
 - For one hard, bounded question (a design choice, a stubborn bug, a tricky migration), ask the
   `deep-reasoner` agent and carry on with its answer.
 - Finish with outcome `escalate` (reason in `comment`) instead of pushing on when: the same test still
-  fails after two fix attempts, design-reviewer findings you can't resolve, or the change crosses a
+  fails after two fix attempts, or the change crosses a
   contract (Hermes events, Ares request/response, database migrations) and you are not confident.
   Talos then resumes this session on a stronger model. If you are already on Opus, use `needs_input`.
 
@@ -74,9 +74,10 @@ Shipping re-reads the whole conversation on every call, so it runs in a new, sma
   tree and `/ship-issue` with `ai ship --defer-handoff`, and ends with `pr_opened` and the PR number in `pr` (or
   `needs_input`, `blocked`, `escalate` as usual). A session started with "Ship Projects4Me issue" is that ship
   session: ship, never answer `ready_to_ship`.
-- Talos then hands the issue on by the PR's merge review: the clean design review `ai ship` recorded in the PR body.
-  When it is clean and the milestone merges automatically, Agent Agamemnon gets it to merge; otherwise your reviewer
-  does, with a comment when the review is missing.
+- The design review in the ship session is one advisory round: fix the clear findings, list the rest in the PR
+  description, and don't re-run it to get it clean.
+- Talos then hands the issue on by its milestone: in an auto-merge milestone Agent Agamemnon gets it and merges it
+  when its merge gate passes (CI, the recorded test run, nothing open from people); otherwise your reviewer does.
 - Address-review runs your reviewer started (`/address-review`) push their own follow-up and end with `done`. Feedback there is open GitHub threads, your reviewer's Gaia comments and a failing CI (`ai review --open --issue N` shows all three); don't set the status or assignee, Talos hands the issue back.
 
 ## Finishing

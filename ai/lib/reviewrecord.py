@@ -10,15 +10,10 @@ import re
 from . import results
 from .common import STATE_DIR, checkout_state_file
 
-REVIEW_LINE = "DESIGN REVIEW: clean"      # `ai ship` writes it into the PR body, the merge gate reads it
+REVIEW_LINE = "DESIGN REVIEW: clean"      # `ai ship` writes it into the PR body for the reviewer (advisory)
 FINDING = re.compile(r"^\s*[-*]\s*\[(blocker|should-fix|nit)\]", re.I)
 OPEN = re.compile(r"\[(blocker|should-fix)\]", re.I)            # however the bullet is formatted
 NO_FINDINGS = re.compile(r"^\W*no findings\W*$", re.I | re.M)      # the report's own closing line
-
-
-def recorded_clean(body):
-    """True when a PR body carries the design-review line `ai ship` writes for a clean review of its tree."""
-    return REVIEW_LINE in (body or "")
 
 
 def verdict(report):

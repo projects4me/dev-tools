@@ -1,8 +1,8 @@
 """`ai mergecheck` / `ai merge`: the fixed gate an agent PR passes before Agent Agamemnon approves and merges it.
 
 Every check reads the PR's current head commit. A check is ok, pending (it may pass later: CI still running,
-GitHub still computing mergeability) or failed. The `review` check is the clean design review `ai ship` records in
-the PR body. The gate passes only when every check is ok.
+GitHub still computing mergeability) or failed. The gate passes only when every check is ok. The design review is
+advisory (adt-5046): `ai ship` may record it in the PR body, but the gate doesn't read it.
 """
 
 import contextlib
@@ -10,7 +10,6 @@ import fnmatch
 import io
 import json
 
-from . import reviewrecord
 from .common import REPOS, AiError, agamemnon, config, say
 from .review import _api, _is_bot, open_threads, resolved_threads
 
@@ -33,13 +32,6 @@ def check_open(pr):
     if pr.get("draft"):
         return _check("open", FAIL, "the PR is a draft")
     return _check("open", OK, "open, not a draft")
-
-
-def check_review(body):
-    """`ai ship` writes the design-review line only for a clean review of the tree."""
-    if reviewrecord.recorded_clean(body):
-        return _check("review", OK, "the PR records a clean design review of its tree")
-    return _check("review", FAIL, "the PR body records no clean design review (ai design-review, then ai ship)")
 
 
 def check_ci(check_runs, statuses):
@@ -152,7 +144,7 @@ def gate(repo, pr_number):
     reviews = _api(repo, f"repos/{full}/pulls/{pr_number}/reviews")
     resolved = resolved_threads(repo, pr_number)
     files = [f["filename"] for f in _api(repo, f"repos/{full}/pulls/{pr_number}/files")]
-    checks = [check_open(pr), check_review(pr.get("body")), check_ci(check_runs, statuses),
+    checks = [check_open(pr), check_ci(check_runs, statuses),
               check_tests(pr.get("body")), check_mergeable(pr),
               check_humans(reviews, issue_comments, review_comments, resolved, head_date, (author, merger)),
               check_labels(pr), check_self(files, cfg.get("agamemnonProtected", []))]

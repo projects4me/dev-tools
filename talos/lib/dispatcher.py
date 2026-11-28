@@ -8,7 +8,7 @@ import time
 import uuid
 from datetime import datetime
 
-from . import memory, merge_review, policy, pool, record_runs, runner, runtime_check, sessions, workspaces
+from . import memory, policy, pr_handoff, pool, record_runs, runner, runtime_check, sessions, workspaces
 from .dependency_gate import DependencyGate
 from .registry import Action
 from .usage_pause import UsagePause
@@ -77,10 +77,10 @@ class Dispatcher:
             pause_one=docker_pause, resume=docker_resume, max_containers=agent.docker_max_test_containers, log=lambda text: log(text, agent.name))
         self._deps = DependencyGate(agent.dependency_done_statuses, agent.name)   # issues waiting on "Depends on" issues
         self._releases = queue.Queue()      # changed issue numbers (None = unknown) for the release worker
-        # routes a shipped PR by its merge review; merge_route(issue) names an orchestrator that merges a clean PR
-        # itself (or None)
-        self.merge_review = merge_review.Router(agent.name, agent.display_name, tracker, route=merge_route,
-                                                find_pr=getattr(merge_route, "find_pr", None))
+        # hands on a shipped PR; merge_route(issue) names an orchestrator that merges the issue's milestone itself
+        # (or None: the reviewer)
+        self.pr_handoff = pr_handoff.Router(agent.name, tracker, route=merge_route,
+                                            find_pr=getattr(merge_route, "find_pr", None))
 
     # -- queueing ----------------------------------------------------------------------------
 
@@ -582,11 +582,11 @@ class Dispatcher:
         return "blocked"
 
     def _route_pr(self, issue, repo, pr):
-        """The PR is open with the hand-off deferred: hand the issue to its merger or the reviewer by the PR's merge
-        review. A failed hand-off is a failed run, handed to a person."""
+        """The PR is open with the hand-off deferred: hand the issue to its merger (auto-merge milestones) or the
+        reviewer. A failed hand-off is a failed run, handed to a person."""
         number = issue["number"]
         try:
-            self.merge_review.route_pr(issue, repo, pr)
+            self.pr_handoff.route_pr(issue, repo, pr)
         except TalosError as e:
             log(f"#{number} {repo} PR {pr} not handed on: {e}", self.agent.name)
             self._hand_off(number, "failed", f"{self.agent.display_name}: PR opened, hand-off failed",
@@ -700,17 +700,17 @@ class Dispatcher:
         with `ai handoff` (in_review, the reviewer), as a deferred ship does."""
         try:
             if self.tracker.issue(number)["assignee"] == self.user_id:
-                self.merge_review.handoff(number)
+                self.pr_handoff.handoff(number)
         except TalosError as e:     # _check_handed_back then reports the issue as not handed back
             log(f"#{number} hand-back after the review run failed: {e}", self.agent.name)
 
     def _back_to_merge_loop(self, issue, repo):
-        """After an address-review run: an issue in an auto-merge milestone whose PR review is clean goes on to the
+        """After an address-review run: an issue in an auto-merge milestone whose PR is still open goes on to the
         orchestrator instead of waiting for the reviewer."""
         number = issue["number"]
         try:
             if self.tracker.issue(number)["assignee"] != self.user_id:
-                self.merge_review.route_after_review(issue, repo)
+                self.pr_handoff.route_after_review(issue, repo)
         except TalosError as e:     # GitHub or Gaia failed: it stays with the reviewer, as before
             log(f"#{number} not routed to the merge loop: {e}", self.agent.name)
 
