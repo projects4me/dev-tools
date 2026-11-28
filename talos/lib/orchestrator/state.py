@@ -7,7 +7,7 @@ from .. import db
 from . import policy
 
 COLUMNS = ("paused", "pause_reason", "paused_at", "fail_streak", "seen_upto", "last_sweep_at", "last_sweep")
-SUCCESS_OUTCOMES = ("done", "awaiting_bot_review")      # a run that shipped or opened the PR
+SUCCESS_OUTCOMES = ("done", "pr_opened")      # a run that shipped or opened the PR
 
 
 def get(agent):

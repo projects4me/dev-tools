@@ -76,17 +76,6 @@ CREATE TABLE IF NOT EXISTS records (       -- workflow step runs on a record tha
     last_ended_at       TEXT,               -- end of the latest run (decides warm vs cold resume)
     PRIMARY KEY (agent, record)
 );
-CREATE TABLE IF NOT EXISTS bot_reviews (
-    agent               TEXT    NOT NULL,
-    issue               INTEGER NOT NULL,
-    repo                TEXT    NOT NULL,
-    pr                  INTEGER NOT NULL,
-    status              TEXT,               -- the issue's status when the wait began; a change drops the wait
-    phase               TEXT    NOT NULL,   -- waiting (polling ai rabbit) or round (a bot-round run is queued)
-    rounds              INTEGER DEFAULT 0,  -- bot rounds run so far (capped by botReviewRounds)
-    deadline            TEXT,               -- when a still-pending CodeRabbit review is given up on
-    PRIMARY KEY (agent, issue)
-);
 CREATE TABLE IF NOT EXISTS orchestrators (
     agent               TEXT    PRIMARY KEY,    -- an orchestrator agent (kind orchestrator)
     paused              INTEGER DEFAULT 0,      -- `talos pause`, or the circuit breaker

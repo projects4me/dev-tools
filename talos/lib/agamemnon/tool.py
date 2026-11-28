@@ -74,7 +74,7 @@ class Ports:
     sleep: Callable = field(default=time.sleep)
     ody_git: Callable = None            # ody_git(cwd, *args, check=True): git as Agent Odysseus (commits it makes)
     test_changed: Callable = None       # test_changed(folder, repo) -> (passed, output): ai test <repo> --changed
-    bot_review: Callable = None         # bot_review(issue, repo, pr): the PR back into the worker's CodeRabbit loop
+    route_pr: Callable = None           # route_pr(issue, repo, pr): the issue on to its merger or the reviewer
     update_worker_state: Callable = None    # update_worker_state(issue, **fields): the worker's talos.db issues row
     docker_read: Callable = None        # docker_read() -> docker_state.read()'s dict
     docker_engine: Callable = None      # docker_engine("start"|"restart") -> docker_engine's result dict
@@ -697,7 +697,7 @@ class Aga:
     def _resolve_conflict(self, args):
         """Merge origin/<base> into the PR branch in the issue's own workspace and resolve the conflicts, only when
         conflicts.resolve finds every hunk additive; then the changed files' tests must pass before the merge is
-        pushed as Agent Odysseus and the PR goes back through the CodeRabbit loop. Anything else is aborted and
+        pushed as Agent Odysseus and the issue is routed by the PR's merge review. Anything else is aborted and
         the workspace is put back as it was (Refused), so the worker can be sent instead."""
         pr = self.open_pr()
         folder = self.folder()
@@ -752,9 +752,9 @@ class Aga:
         files = {r.path: r.hunks for r in resolved}
         result = {"issue": self.number, "pr": pr["number"], "pushed": merge, "resolved": files}
         try:
-            self.p.bot_review(self.number, repo, pr["number"])
+            self.p.route_pr(self.number, repo, pr["number"])
         except Exception as e:      # the push happened: journal it anyway, the session hands the issue on itself
-            result["botReviewError"] = str(e)
+            result["routeError"] = str(e)
         return Act(result,
                    {"head": head, "remoteHead": remote_head},
                    {"head": merge, "remoteHead": merge, "resolved": files}, None,

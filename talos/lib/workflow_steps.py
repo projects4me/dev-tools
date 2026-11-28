@@ -2,7 +2,7 @@
 agent's own user), Talos claims the step, runs Claude on the step's issue with the step's prompt, session and model
 and the agent's spec, and reports the outcome. The workflow, not Talos, then decides what happens to the issue.
 
-The run itself is the dispatcher's (workspace, test slot, escalation, fresh ship session, CodeRabbit loop); only the
+The run itself is the dispatcher's (workspace, test slot, escalation, fresh ship session, merge-review routing); only the
 five outcomes Gaia knows leave Talos (see report). A step on any other record (a milestone, ...) is a record run
 (record_runs.py): a scratch folder instead of a repo, and none of the issue flow."""
 
@@ -79,18 +79,18 @@ def with_spec(agent, spec):
 
 
 def report(dispatched, run):
-    """(Gaia outcome, comment) for a finished run. A hand-off recorded on the run wins; a PR waiting for CodeRabbit
-    is done (the CodeRabbit loop carries on and hands the issue to the reviewer itself)."""
+    """(Gaia outcome, comment) for a finished run. A hand-off recorded on the run wins; an opened PR is done
+    (Talos already handed the issue to its merger or the reviewer)."""
     if run.outcome:
         return run.outcome, run.comment
-    if dispatched in ("done", policy.AWAITING_BOT_REVIEW):
+    if dispatched in ("done", policy.PR_OPENED):
         return "done", f"<p>{html.escape(run.summary)}</p>" if run.summary else ""
     return "failed", f"<p>Talos ended the run with '{html.escape(str(dispatched))}'.</p>"
 
 
 class StepRunner:
     """One agent's 'Run agent' steps: a queue of step ids and `maxParallel` workers, each running a step to its
-    report. The issue is reserved on the dispatcher while a step runs, so a CodeRabbit round never runs beside it."""
+    report. The issue is reserved on the dispatcher while a step runs, so no other run on it starts beside it."""
 
     def __init__(self, agent, tracker, dispatcher, dry_run=False):
         self.agent = agent
@@ -211,7 +211,7 @@ class StepRunner:
         """Run the step once its subject (issue number or record key) is free, again after a usage limit, and
         report it."""
         while not self.dispatcher.reserve(key):
-            time.sleep(BUSY_POLL_SECONDS)       # e.g. a CodeRabbit round on the issue: the step runs after it
+            time.sleep(BUSY_POLL_SECONDS)       # e.g. another run on the issue: the step runs after it
         try:
             log(f"step {sid} runs {what} (session {step.get('session') or 'new'})", self.agent.name)
             while True:

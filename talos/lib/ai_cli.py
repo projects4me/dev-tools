@@ -1,4 +1,4 @@
-"""Running dev-tools/ai from Talos (the CodeRabbit loop's `ai rabbit` / `ai handoff`, the orchestrator's merges)."""
+"""Running dev-tools/ai from Talos (the merge-review routing's `ai merge-review` / `ai handoff`, the orchestrator's merges)."""
 
 import json
 import subprocess
@@ -28,3 +28,18 @@ def ai_json(env, *args, timeout=300):
     except (IndexError, ValueError):
         raise TalosError(f"ai {' '.join(map(str, args))}: exit {r.returncode}: "
                          f"{(r.stderr or r.stdout or '')[-500:]}")
+
+
+def ai_merge_review(env, repo, pr):
+    """`ai merge-review <repo> <pr>`: clean or unreviewed; TalosError when it can't be read."""
+    state = ai_json(env, "merge-review", repo, str(pr)).get("state")
+    if state not in ("clean", "unreviewed"):
+        raise TalosError(f"ai merge-review {repo} {pr}: unexpected state {state!r}")
+    return state
+
+
+def ai_handoff(env, issue, to=None):
+    """`ai handoff <issue>`: in_review, assigned to the reviewer (or `to`, a Gaia user id), pending record cleared."""
+    r = run_ai(env, "handoff", str(issue), *(["--to", str(to)] if to else []))
+    if r.returncode != 0:
+        raise TalosError(f"ai handoff {issue}: exit {r.returncode}: {(r.stderr or r.stdout or '')[-500:]}")

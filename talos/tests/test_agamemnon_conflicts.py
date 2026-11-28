@@ -61,7 +61,7 @@ class ResolveConflictVerbTest(AgaTest):
             cwd, "-c", "user.name=Agent Odysseus", "-c", "user.email=o@example.com", "-c", "commit.gpgsign=false",
             *a, check=check)
         self.ports.test_changed = lambda folder, repo: (self.tested.append(repo), self.test_result)[1]
-        self.ports.bot_review = lambda issue, repo, pr: self.reviews.append((issue, repo, pr))
+        self.ports.route_pr = lambda issue, repo, pr: self.reviews.append((issue, repo, pr))
         self.ports.update_worker_state = lambda issue, **f: sessions.update("odysseus", issue, **f)
         self.settings.worker.max_parallel = 2       # the fixture's worker runs #8: one run free
         self.incident_id = journal.open_incident(ISSUE, "merge_conflict", "t")
@@ -152,10 +152,10 @@ class ResolveConflictVerbTest(AgaTest):
 
         def no_review(issue, repo, pr):
             raise RuntimeError("tracker down")
-        self.ports.bot_review = no_review
+        self.ports.route_pr = no_review
         out = self.resolve()
         self.assertEqual(self.remote_head(), out["pushed"])
-        self.assertIn("tracker down", out["botReviewError"])
+        self.assertIn("tracker down", out["routeError"])
         self.assertIsNotNone(journal.action(out["action"]))
 
     def test_the_test_is_marked_in_the_workers_row_while_it_runs(self):

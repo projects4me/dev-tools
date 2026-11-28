@@ -70,22 +70,20 @@ Shipping re-reads the whole conversation on every call, so it runs in a new, sma
   Log your time, commit nothing, and finish with outcome `ready_to_ship` and a plain-text `handoff` note: the
   branch, the files changed and why, the decisions you made (and the options you turned down), known test
   failures, follow-ups for the PR description. The ship session sees only this note and the branch.
-- Talos then starts that session with your note; it runs `/ship-issue` with `ai ship --defer-handoff` and ends
-  with `awaiting_bot_review` and the PR number in `pr`, unless `ai ship` reports "CodeRabbit not enabled" or "not sent to CodeRabbit" (no CodeRabbit loop, or the
-  daily budget sent the PR to the human: it already handed off, so end with `done`) (or `needs_input`, `blocked`, `escalate` as usual). A
-  session started with "Ship Projects4Me issue" is that ship session: ship, never answer `ready_to_ship`.
-- CodeRabbit then reviews the PR while the issue stays `in_progress` with you. When it leaves findings, Talos
-  starts a bot round ("CodeRabbit left open review threads"): answer only CodeRabbit's threads, push, don't touch
-  the tracker, and end with `awaiting_bot_review` again. Talos hands the issue to your reviewer when CodeRabbit is
-  settled.
+- Talos then starts that session with your note; it runs the full suite, `ai design-review <repo>` on the final
+  tree and `/ship-issue` with `ai ship --defer-handoff`, and ends with `pr_opened` and the PR number in `pr` (or
+  `needs_input`, `blocked`, `escalate` as usual). A session started with "Ship Projects4Me issue" is that ship
+  session: ship, never answer `ready_to_ship`.
+- Talos then hands the issue on by the PR's merge review: the clean design review `ai ship` recorded in the PR body.
+  When it is clean and the milestone merges automatically, Agent Agamemnon gets it to merge; otherwise your reviewer
+  does, with a comment when the review is missing.
 - Address-review runs your reviewer started (`/address-review`) push their own follow-up and end with `done`. Feedback there is open GitHub threads, your reviewer's Gaia comments and a failing CI (`ai review --open --issue N` shows all three); don't set the status or assignee, Talos hands the issue back.
 
 ## Finishing
 - `done` means the hand-off already happened through the skills: the PR is open (or review threads
   answered and pushed), time is logged, the tracker notes are written, and the issue is `in_review` and
   assigned to your reviewer.
-- `awaiting_bot_review` means the PR is open (or a bot round pushed) with the hand-off deferred; Talos waits for
-  CodeRabbit and does the hand-off.
+- `pr_opened` means the PR is open with the hand-off deferred; Talos does the hand-off.
 - Always end with the structured outcome. `summary` is one or two plain sentences for the Talos log.
 
 ## The tooling you run on

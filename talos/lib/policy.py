@@ -10,8 +10,8 @@ from .dependency_gate import DONE_STATUSES, unmet_dependencies
 ASSIGNEE_EVENT = "issue.assignee.changed"
 STATUS_EVENT = "issue.status.changed"
 LIMITED = "limited"      # read_outcome's outcome for a Claude usage or rate-limit stop; never a Claude-reported one
-AWAITING_BOT_REVIEW = "awaiting_bot_review"   # PR open, hand-off deferred until CodeRabbit settles (bot_review.py)
-OUTCOMES = ("done", "ready_to_ship", AWAITING_BOT_REVIEW, "needs_input", "blocked", "escalate")
+PR_OPENED = "pr_opened"     # PR open, hand-off deferred: Talos routes it by its merge review (merge_review.py)
+OUTCOMES = ("done", "ready_to_ship", PR_OPENED, "needs_input", "blocked", "escalate")
 # the reasons a blocked run may give in its structured output (schema/outcome.json `reason`), kept as its handback
 # reason so triage reads it instead of the free text
 BASE_TEST_FAILED = "base_test_failed"     # the worker's local suite fails on tests its diff does not touch
@@ -159,16 +159,8 @@ def render_ship_prompt(agent, issue, repo, handoff):
                                     handoff=handoff.strip() or "(no handoff note was written)")
 
 
-def render_bot_round_prompt(agent, issue, repo, pr, round_number, catch_up=False):
-    """A bot round's prompt: the agent's botRoundPrompt for one CodeRabbit round on the PR."""
-    values = dict(issue=issue["number"], repo=repo, project=issue["project"], pr=pr, round=round_number,
-                  rounds=agent.bot_review_rounds, reviewer=agent.reviewer_name)
-    prompt = agent.bot_round_prompt.format(**values)
-    return prompt + CATCH_UP.format(**values) if catch_up else prompt
-
-
 def read_pr(result):
-    """The PR number an awaiting_bot_review outcome names, or None."""
+    """The PR number a pr_opened outcome names, or None."""
     out = result.get("structured_output") if isinstance(result, dict) else None
     try:
         pr = int(str((out or {}).get("pr") or "").strip().lstrip("#"))

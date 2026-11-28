@@ -6,15 +6,15 @@ import dataclasses
 import os
 import re
 import subprocess
-from datetime import datetime, timedelta
 
-from .. import bot_review as review_loop
+from .. import merge_review
 from .. import db, docker_engine, docker_free, docker_state, sessions, workspaces
 from ..ai_cli import run_ai
 from ..config import DEV_TOOLS, LOCAL_DIR, WORKSPACE, TalosError
 from ..orchestrator import github
 from ..orchestrator import state as store
 from ..orchestrator.merge import Merger
+from ..orchestrator.routes import merge_routes
 from ..registry import load_agents
 from ..tracker import Tracker, read_env_file
 from . import branch_update, premise
@@ -57,14 +57,13 @@ def test_changed(folder, repo):
     return r.returncode == 0, f"{r.stdout or ''}{r.stderr or ''}"
 
 
-def bot_review(worker, worker_id, tracker):
-    """The PR back into the worker's CodeRabbit loop after a push, as a re-review does (bot_review.Watcher.reenter):
-    waiting for CodeRabbit on the new head, then the clean PR is routed to the orchestrator to merge."""
-    def reenter(issue, repo, pr):
-        deadline = datetime.now().astimezone() + timedelta(minutes=worker.bot_review_wait_minutes)
-        review_loop.reenter(worker.name, tracker, worker_id, issue, repo, pr, tracker.issue(issue).get("status"),
-                            deadline)
-    return reenter
+def route_pr(agent, tracker):
+    """After a pushed merge, the issue on by the PR's merge review (merge_review.Router.route_pr): to this
+    orchestrator to merge when the review is clean in one of its auto-merge milestones (orchestrator.routes.MergeRoute),
+    else to the reviewer."""
+    route = merge_routes([agent]).get(agent.orchestration.worker)
+    router = merge_review.Router(agent.name, agent.display_name, tracker, route=route)
+    return lambda issue, repo, pr: router.route_pr(tracker.issue(issue), repo, pr)
 
 
 def push(cwd, *refspecs):
@@ -224,7 +223,7 @@ def build(agent_name=AGENT):
     ports = Ports(tracker=tracker, merger=Merger(tracker.child_env, github.agamemnon_gh), gh=github.agamemnon_gh,
                   git=git, push=push, worker_state=lambda issue: sessions.get(worker.name, issue),
                   run_log=run_log(worker.name), in_flight=in_flight(worker.name), free_slot=free_slot,
-                  ody_git=ody_git, test_changed=test_changed, bot_review=bot_review(worker, worker_id, tracker),
+                  ody_git=ody_git, test_changed=test_changed, route_pr=route_pr(agent, tracker),
                   update_worker_state=lambda issue, **fields: sessions.update(worker.name, issue, **fields),
                   docker_read=docker_state.read, docker_engine=lambda action: docker_engine.for_agent(agent, action),
                   stale_containers=stale_containers(agent, tracker), stop_containers=docker_free.stop,

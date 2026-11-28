@@ -8,7 +8,7 @@ import time
 import uuid
 from datetime import datetime
 
-from . import bot_review, memory, policy, pool, record_runs, runner, runtime_check, sessions, workspaces
+from . import memory, merge_review, policy, pool, record_runs, runner, runtime_check, sessions, workspaces
 from .dependency_gate import DependencyGate
 from .registry import Action
 from .usage_pause import UsagePause
@@ -77,9 +77,10 @@ class Dispatcher:
             pause_one=docker_pause, resume=docker_resume, max_containers=agent.docker_max_test_containers, log=lambda text: log(text, agent.name))
         self._deps = DependencyGate(agent.dependency_done_statuses, agent.name)   # issues waiting on "Depends on" issues
         self._releases = queue.Queue()      # changed issue numbers (None = unknown) for the release worker
-        # the CodeRabbit loop; merge_route(issue) names an orchestrator that merges a clean PR itself (or None)
-        self.bot_review = bot_review.Watcher(agent, self.user_id, tracker, self.submit, route=merge_route,
-                                             find_pr=getattr(merge_route, "find_pr", None))
+        # routes a shipped PR by its merge review; merge_route(issue) names an orchestrator that merges a clean PR
+        # itself (or None)
+        self.merge_review = merge_review.Router(agent.name, agent.display_name, tracker, route=merge_route,
+                                                find_pr=getattr(merge_route, "find_pr", None))
 
     # -- queueing ----------------------------------------------------------------------------
 
@@ -217,17 +218,14 @@ class Dispatcher:
         path.write_text(json.dumps({"verdict": verdict, "since": since}), encoding="utf-8")
 
     def stop(self):
-        """Release workers waiting out a usage-limit or Docker hold, and stop polling CodeRabbit."""
+        """Release workers waiting out a usage-limit or Docker hold."""
         self._pause.stop()
         self._docker.stop()
-        self.bot_review.stop()
 
     def start(self):
         for n in range(self.agent.max_parallel):
             threading.Thread(target=self._loop, name=f"worker-{self.agent.name}-{n + 1}", daemon=True).start()
         threading.Thread(target=self._release_loop, name=f"release-{self.agent.name}", daemon=True).start()
-        if not self.dry_run:
-            self.bot_review.start()
 
     def _loop(self):
         while True:
@@ -254,13 +252,6 @@ class Dispatcher:
 
     def handle(self, number, reconcile=False):
         issue = self.tracker.issue(number)
-        review = bot_review.get(self.agent.name, number)
-        if review and not bot_review.still_waiting(review, issue, self.user_id):
-            bot_review.drop(self.agent.name, number)    # someone moved it while it waited: work it as usual
-            review = {}
-        elif review.get("phase") == bot_review.WAITING:
-            log(f"#{number} skipped: waiting for CodeRabbit on PR {review['pr']}", self.agent.name)
-            return None
         dependencies = issue.get("dependsOn") or []
         try:
             statuses = self.tracker.statuses_of(dependencies)
@@ -274,8 +265,6 @@ class Dispatcher:
         decision = policy.decide(issue, self.agent, self.user_id, require_allowed_modifier=reconcile and not self._deps.is_held(number),
                                  dependency_statuses=statuses, done_statuses=self._deps.done_statuses,
                                  action_override=override)
-        if review and (decision.waiting_on or not decision.run):
-            bot_review.drop(self.agent.name, number)    # held or not to be worked: out of the CodeRabbit loop
         if decision.waiting_on:
             return self._hold(number, decision, reconcile, dependencies)
         was_held = self._deps.clear(number)
@@ -285,34 +274,19 @@ class Dispatcher:
             log(f"#{number} skipped: {decision.reason}" + (" (left the held set)" if was_held else ""),
                 self.agent.name)
             return None
-        if override and review:     # the orchestrator's action wins over a stale CodeRabbit round
-            bot_review.drop(self.agent.name, number)
-            review = {}
-        bot_round = review.get("phase") == bot_review.ROUND
-        if not bot_round:
-            return self._work(number, issue, decision, decision.action)
-        try:
-            return self._work(number, issue, decision, Action(self.agent.bot_round_prompt, resume=True), review)
-        except Exception:   # broke inside Talos: back to waiting (counted), so the watcher still ends the loop
-            bot_review.undo_round(self.agent.name, number, self.bot_review.deadline(), uncount=False)
-            raise
+        return self._work(number, issue, decision, decision.action)
 
-    def _work(self, number, issue, decision, action, review=None):
-        """Prepare the workspace and run the action, or a bot round when `review` is the record it runs for."""
-        bot_round = bool(review)
+    def _work(self, number, issue, decision, action):
+        """Prepare the workspace and run the action."""
         state = sessions.get(self.agent.name, number)
         session_id, why = policy.resume_session(action, state, _now(), self.agent.resume_max_idle_minutes)
         if session_id and not self.runner.resumable:
             session_id, why = None, "new session (the runner keeps no sessions)"
         catch_up = action.resume and bool(state.get("session_id")) and not session_id
         model = policy.choose_model(self.agent, issue, escalated=bool(state.get("escalated")))
-        if bot_round:
-            prompt = policy.render_bot_round_prompt(self.agent, issue, decision.repo, review["pr"], review["rounds"],
-                                                    catch_up=catch_up)
-        else:
-            prompt = policy.render_prompt(action, issue, decision.repo, catch_up=catch_up,
-                                         reviewer=self.agent.reviewer_name)
-        return self._start(issue, decision.repo, prompt, model, session_id, why, bot_round=bot_round)
+        prompt = policy.render_prompt(action, issue, decision.repo, catch_up=catch_up,
+                                     reviewer=self.agent.reviewer_name)
+        return self._start(issue, decision.repo, prompt, model, session_id, why)
 
     def run_step(self, issue, repo, prompt, resume, model, step):
         """A workflow 'Run agent' step on the issue (workflow_steps.py): the step's prompt, session and model. The
@@ -388,7 +362,7 @@ class Dispatcher:
         step.outcome, step.comment = record_runs.report(outcome, summary, comment)
         return outcome
 
-    def _start(self, issue, repo, prompt, model, session_id, why, bot_round=False, step=None):
+    def _start(self, issue, repo, prompt, model, session_id, why, step=None):
         """Prepare the issue's workspace, add the Gaia pack to a fresh session's prompt, and run."""
         number = issue["number"]
         folder = workspace_error = None
@@ -396,13 +370,11 @@ class Dispatcher:
             try:
                 folder = self.runner.prepare(number, repo)
             except workspaces.BranchCheckedOut as e:
-                if bot_round:
-                    bot_review.drop(self.agent.name, number)    # handed to a person: out of the loop
                 return self._branch_checked_out(number, e, repo, step)
             except workspaces.WorkspaceError as e:     # the run itself reports it as a failed run
                 log(f"#{number} workspace not ready before the run: {e}", self.agent.name)
                 workspace_error = str(e)
-        if repo == "gaia" and not session_id and not bot_round:     # a resumed session already has it
+        if repo == "gaia" and not session_id:     # a resumed session already has it
             prompt = policy.with_pack(prompt, runner.gaia_pack(number, folder))
         return self._run(issue, prompt, model, session_id, why=why, repo=repo, workspace_error=workspace_error,
                          step=step)
@@ -542,12 +514,11 @@ class Dispatcher:
             outcome = "failed"
             summary = f"reported ready_to_ship where it can't be used: {summary}"
 
-        if outcome == policy.AWAITING_BOT_REVIEW:
+        if outcome == policy.PR_OPENED:
             pr = policy.read_pr(result)
             if pr and repo:
-                return self._await_bot_review(issue, repo, pr)
-            outcome, summary = "failed", f"reported awaiting_bot_review without a PR number: {summary}"
-        bot_review.drop(self.agent.name, number)       # any other end takes the issue out of the CodeRabbit loop
+                return self._route_pr(issue, repo, pr)
+            outcome, summary = "failed", f"reported pr_opened without a PR number: {summary}"
 
         if outcome == "done":
             review_run = issue.get("status_before_pickup") == "in_review" and not step   # a reviewer's changes
@@ -599,7 +570,6 @@ class Dispatcher:
 
     def _runtime_changed(self, number, found, log_name, step=None):
         """The run changed the tooling it ran on: whatever it reported, the issue goes to a person as blocked."""
-        bot_review.drop(self.agent.name, number)
         items = "".join(f"<li><code>{html.escape(line)}</code></li>" for line in found)
         self._hand_off(number, "blocked", f"{self.agent.display_name}: changed the tooling in place",
                        f"<p>The run changed the runtime copy of dev-tools (<code>{workspaces.RUNTIME_NAME}</code>), "
@@ -611,17 +581,19 @@ class Dispatcher:
                        f"the copy, so check the diff belongs to this issue.</p>", escaped=True, step=step)
         return "blocked"
 
-    def _await_bot_review(self, issue, repo, pr):
-        """The PR is open with the hand-off deferred: the watcher polls CodeRabbit for it from here, without holding
-        a run slot. The issue stays with the agent and nothing is posted to the tracker."""
+    def _route_pr(self, issue, repo, pr):
+        """The PR is open with the hand-off deferred: hand the issue to its merger or the reviewer by the PR's merge
+        review. A failed hand-off is a failed run, handed to a person."""
         number = issue["number"]
-        bot_review.wait(self.agent.name, number, repo, pr, issue["status"], self.bot_review.deadline())
-        rounds = bot_review.get(self.agent.name, number).get("rounds") or 0
-        if rounds and not self.bot_review.after_round(number, repo, pr):
-            return policy.AWAITING_BOT_REVIEW       # handed to the reviewer: nothing to wait for
-        log(f"#{number} waiting for CodeRabbit on {repo} PR {pr} ({rounds}/{self.bot_review.cap} bot rounds run)",
-            self.agent.name)
-        return policy.AWAITING_BOT_REVIEW
+        try:
+            self.merge_review.route_pr(issue, repo, pr)
+        except TalosError as e:
+            log(f"#{number} {repo} PR {pr} not handed on: {e}", self.agent.name)
+            self._hand_off(number, "failed", f"{self.agent.display_name}: PR opened, hand-off failed",
+                           f"<p>PR {pr} in {html.escape(repo)} is open, but handing the issue on failed: "
+                           f"{html.escape(str(e))}</p>", escaped=True, reason="handoff_failed")
+            return "failed"
+        return policy.PR_OPENED
 
     def _pause_for_limit(self, number, reset_at):
         """Stop dispatching until the limit resets (or an exponential backoff); comment once if it is long. Workers
@@ -660,7 +632,6 @@ class Dispatcher:
         """Out of iterations: a human has to look before the agent spends more runs on it."""
         cap = (step.agent if step else self.agent).max_iterations
         log(f"#{number} iteration limit reached ({runs}/{cap})", self.agent.name)
-        bot_review.drop(self.agent.name, number)
         self._hand_off(number, "limit", f"{self.agent.display_name}: needs manual intervention",
                        f"<p>{self.agent.display_name} has had {runs} runs on this issue, the limit is "
                        f"{cap}. It needs a human look before more agent work. To give it "
@@ -729,17 +700,17 @@ class Dispatcher:
         with `ai handoff` (in_review, the reviewer), as a deferred ship does."""
         try:
             if self.tracker.issue(number)["assignee"] == self.user_id:
-                self.bot_review.handoff(number)
+                self.merge_review.handoff(number)
         except TalosError as e:     # _check_handed_back then reports the issue as not handed back
             log(f"#{number} hand-back after the review run failed: {e}", self.agent.name)
 
     def _back_to_merge_loop(self, issue, repo):
-        """After an address-review run: an issue in an auto-merge milestone goes through the CodeRabbit loop again
-        (and on to the orchestrator when clean) instead of waiting for the reviewer."""
+        """After an address-review run: an issue in an auto-merge milestone whose PR review is clean goes on to the
+        orchestrator instead of waiting for the reviewer."""
         number = issue["number"]
         try:
             if self.tracker.issue(number)["assignee"] != self.user_id:
-                self.bot_review.reenter(issue, repo)
+                self.merge_review.route_after_review(issue, repo)
         except TalosError as e:     # GitHub or Gaia failed: it stays with the reviewer, as before
             log(f"#{number} not routed to the merge loop: {e}", self.agent.name)
 
@@ -765,11 +736,9 @@ class Dispatcher:
             sessions.update(self.agent.name, number, running=False, last_ended_at=_iso(_now()))
             run_log.close_unfinished(self.agent.name, number, _iso(_now()))
             log(f"#{number} was interrupted by a Talos restart", self.agent.name)
-            bot_review.drop(self.agent.name, number)
             self._hand_off(number, "failed", f"{self.agent.display_name}: run interrupted",
                            "<p>Talos stopped while this issue was being worked on. Check the branch, "
                            "then assign it back to resume.</p>", escaped=True, reason="interrupted")
-        self.bot_review.recover()           # issues waiting for CodeRabbit are polled again by the watcher
 
     def reconcile(self, project_ids):
         """Pick up issues assigned while the listener was down (Hermes keeps no history)."""

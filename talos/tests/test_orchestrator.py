@@ -16,7 +16,7 @@ from lib.config import TalosError  # noqa: E402
 from lib.orchestrator import github, policy  # noqa: E402
 from lib.orchestrator.keeper import BranchKeeper  # noqa: E402
 from lib.orchestrator.merging import MergeSweeper  # noqa: E402
-from lib.orchestrator.setup import MergeRoute  # noqa: E402
+from lib.orchestrator.routes import MergeRoute  # noqa: E402
 from lib.orchestrator import state as store  # noqa: E402
 from lib.orchestrator.worker import Orchestrator  # noqa: E402
 from lib.policy import ASSIGNEE_EVENT  # noqa: E402
