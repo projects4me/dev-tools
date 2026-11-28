@@ -10,8 +10,8 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 from lib.common import AiError, REPOS  # noqa: E402
-from lib import (apitester, coderabbit, context, cost, designreview, doctor, gaiadev, kb, mergegate, mergereviewer, rabbitbudget,  # noqa: E402
-                 rabbitdigest, review, screen, ship, tests, workflow)
+from lib import (apitester, context, cost, designreview, doctor, gaiadev, kb, mergegate, mergereviewer,  # noqa: E402
+                 review, screen, ship, tests, workflow)
 
 
 def build_parser():
@@ -108,7 +108,7 @@ def build_parser():
     sp.add_argument("--no-tests", metavar="REASON", help="ship without a recorded test run (docs-only changes)")
     sp.add_argument("--defer-handoff", action="store_true",
                     help="open the PR and post the notes but keep the issue in_progress with the agent "
-                         "(CodeRabbit round pending); finish later with `ai handoff <issue>`")
+                         "(Talos routes it); finish later with `ai handoff <issue>`")
 
     sp = add("commit", workflow.cmd_commit,
              "check branch/base, stage exactly FILES, commit as Agent Odysseus (+co-author), push to odysseus")
@@ -133,7 +133,7 @@ def build_parser():
              "finish a deferred hand-off (ai ship --defer-handoff): set in_review, assign the reviewer")
     sp.add_argument("issue", type=int)
     sp.add_argument("--to", help="assign this Projects4Me user (id or email) instead of the reviewer, e.g. Agent "
-                                 "Agamemnon to merge a CodeRabbit-clean PR")
+                                 "Agamemnon to merge a reviewed PR")
 
     sp = add("review", review.cmd_review, "list PR reviews and inline comments (marks what's already answered)")
     sp.add_argument("repo", choices=repos)
@@ -143,21 +143,19 @@ def build_parser():
     sp.add_argument("--issue", type=int, help="also show the issue's Gaia comments from people since the agent's last "
                                               "comment and the PR's CI, and end with what needs addressing")
 
-    sp = add("rabbit", mergereviewer.cmd_rabbit, "CodeRabbit's state for the PR head: clean/findings/pending/paused/absent "
-             "(exit 0/1/2/3/4); for a mergeReviewers repo clean/unreviewed (exit 0/5)")
+    sp = add("merge-review", mergereviewer.cmd_merge_review, "the PR's merge review: clean when its body records "
+             "a clean design review (ai ship), else unreviewed (exit 0/1)")
     sp.add_argument("repo", choices=repos)
     sp.add_argument("pr", type=int)
     sp.add_argument("--json", action="store_true")
-    sp.add_argument("--wait", action="store_true", help="poll every 30 s until the state is not pending")
-    sp.add_argument("--timeout", type=float, default=10, help="minutes to wait with --wait (default 10)")
 
     sp = add("design-review", designreview.cmd_design_review, "run the design-reviewer headless on the repo's "
              "change and record its verdict for this tree; ai ship writes the design-review line from it "
              "(exit 0 clean, 1 not)")
     sp.add_argument("repo", choices=repos)
 
-    sp = add("mergecheck", mergegate.cmd_mergecheck, "the merge gate for an agent PR's head commit: CodeRabbit "
-             "(or, for mergeReviewers, the recorded design review) clean, CI green, tests recorded, mergeable, "
+    sp = add("mergecheck", mergegate.cmd_mergecheck, "the merge gate for an agent PR's head commit: the "
+             "recorded design review clean, CI green, tests recorded, mergeable, "
              "nothing from people, no do-not-merge (ok/fail/pending, exit 0/1/2)")
     sp.add_argument("repo", choices=repos)
     sp.add_argument("pr", type=int)
@@ -167,39 +165,6 @@ def build_parser():
     sp.add_argument("repo", choices=repos)
     sp.add_argument("pr", type=int)
     sp.add_argument("--json", action="store_true")
-
-    sp = add("rabbit-request", rabbitbudget.cmd_request, "(ai rabbit request) apply the daily CodeRabbit budget policy: "
-             "post the review trigger and count it, or send the PR to the human reviewer")
-    sp.add_argument("repo", choices=repos)
-    sp.add_argument("pr", type=int)
-    sp.add_argument("--source", required=True, choices=rabbitbudget.SOURCES)
-    sp.add_argument("--files", type=int, default=0, help="hand-written files changed")
-    sp.add_argument("--rereview", action="store_true", help="a re-review of a PR CodeRabbit already saw")
-    sp.add_argument("--issue", type=int, help="record the PR as deferred to the human when the limit sends it there")
-    sp.add_argument("--json", action="store_true")
-
-    sp = add("rabbit-budget", rabbitbudget.cmd_budget, "(ai rabbit budget) CodeRabbit triggers used in the last 24 hours, "
-             "the tier, the next free slot and the deferred PRs")
-    sp.add_argument("--json", action="store_true")
-
-    sp = add("rabbit-drop", rabbitbudget.cmd_drop, "(ai rabbit drop) remove a PR from the deferred list: the backlog "
-             "sweep found it closed or merged, or its issue out of review")
-    sp.add_argument("repo", choices=repos)
-    sp.add_argument("pr", type=int)
-    sp.add_argument("--json", action="store_true")
-
-    sp = add("rabbit-off", rabbitbudget.cmd_off, "(ai rabbit off) stop every agent CodeRabbit submission: "
-             "rabbit request answers human and defers nothing until `ai rabbit on`")
-    sp.add_argument("--reason", default="", help="why it is off (shown by rabbit budget and in the request reason)")
-
-    sp = add("rabbit-on", rabbitbudget.cmd_on, "(ai rabbit on) allow CodeRabbit submissions again; clears the "
-             "deferred list unless --keep-deferred")
-    sp.add_argument("--keep-deferred", action="store_true", help="keep the deferred PRs for the backlog sweep")
-
-    sp = add("rabbit-digest", rabbitdigest.cmd_digest, "(ai rabbit digest) CodeRabbit's findings across Agent Odysseus "
-             "PRs, categorised, as a markdown report")
-    sp.add_argument("--repo", choices=repos, help="one repo (default: every codeRabbitRepos entry)")
-    sp.add_argument("--since", metavar="DATE", help="only PRs created on or after YYYY-MM-DD")
 
     sp = add("screen", screen.cmd_screen, "render one nestor-screen block (stdin) to a PNG under "
              "talos/state/nestor/previews/ (Nestor previews a screen before replying)")
@@ -236,9 +201,6 @@ def build_parser():
 
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else list(argv)
-    if argv[:2] in (["rabbit", "digest"], ["rabbit", "request"], ["rabbit", "budget"], ["rabbit", "drop"],
-                    ["rabbit", "off"], ["rabbit", "on"]):  # `ai rabbit <sub>` is `rabbit-<sub>`
-        argv = [f"rabbit-{argv[1]}", *argv[2:]]
     args = build_parser().parse_args(argv)
     try:
         code = args.func(args)

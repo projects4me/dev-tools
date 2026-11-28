@@ -16,6 +16,11 @@ OPEN = re.compile(r"\[(blocker|should-fix)\]", re.I)            # however the bu
 NO_FINDINGS = re.compile(r"^\W*no findings\W*$", re.I | re.M)      # the report's own closing line
 
 
+def recorded_clean(body):
+    """True when a PR body carries the design-review line `ai ship` writes for a clean review of its tree."""
+    return REVIEW_LINE in (body or "")
+
+
 def verdict(report):
     """{"clean", "findings", "open"} from the reviewer's report. Clean means no blocker or should-fix finding and
     a report that says so (nits are listed but don't block); an empty or unreadable report is not clean and has

@@ -1,8 +1,8 @@
 """`ai mergecheck` / `ai merge`: the fixed gate an agent PR passes before Agent Agamemnon approves and merges it.
 
-Every check reads the PR's current head commit. A check is ok, pending (it may pass later: CI or CodeRabbit still
-running, GitHub still computing mergeability) or failed. A repo in `mergeReviewers` gets the `review` check (a clean
-design review recorded by `ai ship`) instead of the `coderabbit` one. The gate passes only when every check is ok.
+Every check reads the PR's current head commit. A check is ok, pending (it may pass later: CI still running,
+GitHub still computing mergeability) or failed. The `review` check is the clean design review `ai ship` records in
+the PR body. The gate passes only when every check is ok.
 """
 
 import contextlib
@@ -10,7 +10,7 @@ import fnmatch
 import io
 import json
 
-from . import coderabbit, mergereviewer, reviewrecord
+from . import reviewrecord
 from .common import REPOS, AiError, agamemnon, config, say
 from .review import _api, _is_bot, open_threads, resolved_threads
 
@@ -35,23 +35,9 @@ def check_open(pr):
     return _check("open", OK, "open, not a draft")
 
 
-def check_coderabbit(enabled, verdict):
-    """verdict is coderabbit.classify()'s result for the head commit."""
-    if not enabled:
-        return _check("coderabbit", FAIL, "CodeRabbit doesn't review this repo")
-    state = verdict["state"]
-    if state == "clean":
-        return _check("coderabbit", OK, "clean, no open CodeRabbit threads")
-    if state == "pending":
-        return _check("coderabbit", PENDING, "review still running")
-    if state == "findings":
-        return _check("coderabbit", FAIL, f"{verdict['open']} open CodeRabbit thread(s)")
-    return _check("coderabbit", FAIL, f"{state}" + (f": {verdict['detail']}" if verdict.get("detail") else ""))
-
-
 def check_review(body):
-    """For a repo in mergeReviewers: `ai ship` writes the design-review line only for a clean review of the tree."""
-    if reviewrecord.REVIEW_LINE in (body or ""):
+    """`ai ship` writes the design-review line only for a clean review of the tree."""
+    if reviewrecord.recorded_clean(body):
         return _check("review", OK, "the PR records a clean design review of its tree")
     return _check("review", FAIL, "the PR body records no clean design review (ai design-review, then ai ship)")
 
@@ -166,14 +152,7 @@ def gate(repo, pr_number):
     reviews = _api(repo, f"repos/{full}/pulls/{pr_number}/reviews")
     resolved = resolved_threads(repo, pr_number)
     files = [f["filename"] for f in _api(repo, f"repos/{full}/pulls/{pr_number}/files")]
-    if mergereviewer.merge_reviewer(repo) == mergereviewer.DESIGN_REVIEW:
-        review = check_review(pr.get("body"))
-    else:
-        enabled = coderabbit.enabled(repo)
-        review = check_coderabbit(enabled, coderabbit.classify(coderabbit.review_status(check_runs, statuses),
-                                                               issue_comments, review_comments, resolved, author)
-                                  if enabled else None)
-    checks = [check_open(pr), review, check_ci(check_runs, statuses),
+    checks = [check_open(pr), check_review(pr.get("body")), check_ci(check_runs, statuses),
               check_tests(pr.get("body")), check_mergeable(pr),
               check_humans(reviews, issue_comments, review_comments, resolved, head_date, (author, merger)),
               check_labels(pr), check_self(files, cfg.get("agamemnonProtected", []))]
