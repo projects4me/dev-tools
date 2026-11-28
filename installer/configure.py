@@ -466,12 +466,6 @@ def install_talos_deps():
 
 def verify(a):
     _say("\nChecks")
-    try:
-        repos = json.loads((TOOLS_DIR / "ai" / "config.json").read_text(encoding="utf-8")).get("codeRabbitRepos", [])
-        _ok("CodeRabbit loop (Talos waits for its review) for: " + (", ".join(repos) or "no repo")
-            + "; every other repo hands off straight away")
-    except (OSError, ValueError):
-        _warn("could not read codeRabbitRepos from ai/config.json")
     ody =TOOLS_DIR / "odysseus" / "odysseus"
     bash = find_bash()
     if bash:
