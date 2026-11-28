@@ -64,7 +64,7 @@ VERBS = {v.name: v for v in (
     Verb("update-branch", "update", VISIBLE, "merge the base into the PR branch on GitHub (never a rebase)"),
     Verb("push-merge", "update", VISIBLE, "push a resolved merge from the workspace (fast-forward only)"),
     Verb("resolve-conflict", "resolve", VISIBLE, "merge the base into the branch in the workspace, resolve only "
-         "additive conflicts, test, push as Odysseus, route by the merge review (needs a backup in this incident)"),
+         "additive conflicts, test, push as Odysseus, hand on by milestone (needs a backup in this incident)"),
     Verb("merge", "merge", VISIBLE, "merge the PR through the merge gate"),
     Verb("file-bug", "file", VISIBLE, "file a Bug for a failed CI job (or, for base_test_failed, a test test-base "
          "saw fail; for base_lint_failed, a lint error lint-base saw) that also fails on the base branch, assigned "

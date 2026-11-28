@@ -7,8 +7,7 @@ import os
 import re
 import subprocess
 
-from .. import merge_review
-from .. import db, docker_engine, docker_free, docker_state, sessions, workspaces
+from .. import db, docker_engine, docker_free, docker_state, pr_handoff, sessions, workspaces
 from ..ai_cli import run_ai
 from ..config import DEV_TOOLS, LOCAL_DIR, WORKSPACE, TalosError
 from ..orchestrator import github
@@ -58,11 +57,10 @@ def test_changed(folder, repo):
 
 
 def route_pr(agent, tracker):
-    """After a pushed merge, the issue on by the PR's merge review (merge_review.Router.route_pr): to this
-    orchestrator to merge when the review is clean in one of its auto-merge milestones (orchestrator.routes.MergeRoute),
-    else to the reviewer."""
+    """After a pushed merge, the issue on (pr_handoff.Router.route_pr): to this orchestrator to merge in one of its
+    auto-merge milestones (orchestrator.routes.MergeRoute), else to the reviewer."""
     route = merge_routes([agent]).get(agent.orchestration.worker)
-    router = merge_review.Router(agent.name, agent.display_name, tracker, route=route)
+    router = pr_handoff.Router(agent.name, tracker, route=route)
     return lambda issue, repo, pr: router.route_pr(tracker.issue(issue), repo, pr)
 
 

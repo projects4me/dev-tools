@@ -2,7 +2,7 @@
 agent's own user), Talos claims the step, runs Claude on the step's issue with the step's prompt, session and model
 and the agent's spec, and reports the outcome. The workflow, not Talos, then decides what happens to the issue.
 
-The run itself is the dispatcher's (workspace, test slot, escalation, fresh ship session, merge-review routing); only the
+The run itself is the dispatcher's (workspace, test slot, escalation, fresh ship session, PR hand-off); only the
 five outcomes Gaia knows leave Talos (see report). A step on any other record (a milestone, ...) is a record run
 (record_runs.py): a scratch folder instead of a repo, and none of the issue flow."""
 

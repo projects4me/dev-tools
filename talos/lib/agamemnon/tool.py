@@ -697,7 +697,7 @@ class Aga:
     def _resolve_conflict(self, args):
         """Merge origin/<base> into the PR branch in the issue's own workspace and resolve the conflicts, only when
         conflicts.resolve finds every hunk additive; then the changed files' tests must pass before the merge is
-        pushed as Agent Odysseus and the issue is routed by the PR's merge review. Anything else is aborted and
+        pushed as Agent Odysseus and the issue is handed on by its milestone (pr_handoff). Anything else is aborted and
         the workspace is put back as it was (Refused), so the worker can be sent instead."""
         pr = self.open_pr()
         folder = self.folder()

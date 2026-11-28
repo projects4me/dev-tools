@@ -192,7 +192,7 @@ class FakeTracker:
         self.issues[number]["status"] = status
 
     def hand_off(self, number, status, assignee):
-        self.issues[number].update(status=status, assignee=assignee)
+        self.issues[number].update(status=status, assignee=assignee, modifiedUser=MERGER_ID)   # Gaia credits the caller, here the merger
 
 
 class SweepTest(unittest.TestCase):

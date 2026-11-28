@@ -218,23 +218,20 @@ REVIEW_STATUS = "in_review"     # where a routed PR's issue is handed off
 
 
 def auto_merges(issue, milestones):
-    """The issue's milestone is one whose reviewed PRs are merged automatically (exact name, any case)."""
+    """The issue's milestone is one whose PRs are merged automatically when the merge gate passes (exact name, any case)."""
     return _lower(issue.get("milestone")) in {_lower(m) for m in milestones}
 
 
 def merge_target(issue, milestones, merger_id, paused):
-    """Who a PR with a clean merge review is handed to: the merger for an auto-merge milestone while it isn't
+    """Who a shipped PR is handed to: the merger for an auto-merge milestone while it isn't
     paused, else None (the reviewer, as before)."""
     return merger_id if merger_id and not paused and auto_merges(issue, milestones) else None
 
 
 def is_merge_candidate(issue, milestones, projects, merger_id):
-    """Handed to the merger by the merge-review routing: in review, assigned to it, in an auto-merge milestone."""
+    """Handed to the merger by the PR hand-off (pr_handoff.py): in review, assigned to it, in an auto-merge milestone."""
     return (issue.get("project") in projects and auto_merges(issue, milestones)
             and _lower(issue.get("status")) == REVIEW_STATUS and issue.get("assignee") == merger_id)
-
-
-CI_FIXABLE = ("ci", "review")     # failing gate checks a worker's CI-fix run deals with (it re-records the review)
 
 
 def adopt_skip_reason(issue, milestones, projects, owners, worker_id, state):
@@ -259,16 +256,10 @@ def adopt_skip_reason(issue, milestones, projects, owners, worker_id, state):
 
 def adoptable(gate, adopted_head):
     """The PR is worth taking to the merge sweep: a head not adopted before whose gate passes, is still pending, or
-    fails only on CI and the recorded review (which the worker's CI fix takes care of)."""
+    fails only on CI (which the worker's CI fix takes care of)."""
     if not gate.get("sha") or gate.get("sha") == adopted_head:
         return False
-    return gate.get("state") in ("ok", "pending") or ci_fixable(gate)
-
-
-def ci_fixable(gate):
-    """The gate fails on CI, and on nothing but CI and the recorded design review."""
-    failed = {c.get("name") for c in gate.get("checks") or [] if c.get("state") == "fail"}
-    return gate.get("state") == "fail" and "ci" in failed and failed <= set(CI_FIXABLE)
+    return gate.get("state") in ("ok", "pending") or only_ci_fails(gate)
 
 
 def ci_fix_step(attempts, max_attempts):

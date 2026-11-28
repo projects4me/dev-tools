@@ -53,7 +53,7 @@ class Orchestration:
     auto_retry_reasons: tuple = AUTO_RETRY_REASONS   # handback reason codes that are restarted automatically
     max_auto_retries: int = 2           # automatic restarts per issue (cleared by `talos reset`)
     fail_streak_limit: int = 3          # consecutive failed or blocked handbacks before it pauses itself
-    auto_merge_milestones: tuple = ()   # milestones (exact name, any case) whose reviewed PRs it merges itself, as
+    auto_merge_milestones: tuple = ()   # milestones (exact name, any case) whose PRs it merges itself, as
                                         # read at startup
     max_auto_merges_per_day: int = 5    # automatic merges per day; past it, PRs go to the reviewer
     auto_merge_wait_minutes: float = 60  # how long a still-pending merge gate (CI) is waited for

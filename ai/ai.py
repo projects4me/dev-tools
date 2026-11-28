@@ -10,7 +10,7 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 from lib.common import AiError, REPOS  # noqa: E402
-from lib import (apitester, context, cost, designreview, doctor, gaiadev, kb, mergegate, mergereviewer,  # noqa: E402
+from lib import (apitester, context, cost, designreview, doctor, gaiadev, kb, mergegate,  # noqa: E402
                  review, screen, ship, tests, workflow)
 
 
@@ -133,7 +133,7 @@ def build_parser():
              "finish a deferred hand-off (ai ship --defer-handoff): set in_review, assign the reviewer")
     sp.add_argument("issue", type=int)
     sp.add_argument("--to", help="assign this Projects4Me user (id or email) instead of the reviewer, e.g. Agent "
-                                 "Agamemnon to merge a reviewed PR")
+                                 "Agamemnon to merge the PR")
 
     sp = add("review", review.cmd_review, "list PR reviews and inline comments (marks what's already answered)")
     sp.add_argument("repo", choices=repos)
@@ -143,19 +143,13 @@ def build_parser():
     sp.add_argument("--issue", type=int, help="also show the issue's Gaia comments from people since the agent's last "
                                               "comment and the PR's CI, and end with what needs addressing")
 
-    sp = add("merge-review", mergereviewer.cmd_merge_review, "the PR's merge review: clean when its body records "
-             "a clean design review (ai ship), else unreviewed (exit 0/1)")
-    sp.add_argument("repo", choices=repos)
-    sp.add_argument("pr", type=int)
-    sp.add_argument("--json", action="store_true")
-
     sp = add("design-review", designreview.cmd_design_review, "run the design-reviewer headless on the repo's "
              "change and record its verdict for this tree; ai ship writes the design-review line from it "
-             "(exit 0 clean, 1 not)")
+             "(advisory: the merge gate doesn't read it; exit 0 clean, 1 not)")
     sp.add_argument("repo", choices=repos)
 
-    sp = add("mergecheck", mergegate.cmd_mergecheck, "the merge gate for an agent PR's head commit: the "
-             "recorded design review clean, CI green, tests recorded, mergeable, "
+    sp = add("mergecheck", mergegate.cmd_mergecheck, "the merge gate for an agent PR's head commit: "
+             "CI green, tests recorded, mergeable, "
              "nothing from people, no do-not-merge (ok/fail/pending, exit 0/1/2)")
     sp.add_argument("repo", choices=repos)
     sp.add_argument("pr", type=int)

@@ -1,5 +1,5 @@
-"""The merge review, the tree-bound design review (ai design-review), its ship line and the merge gate's review
-check. Run: python -m unittest discover -s tests"""
+"""The tree-bound design review (ai design-review), its ship line, and the merge gate that no longer reads it
+(adt-5046). Run: python -m unittest discover -s tests"""
 
 import sys
 import tempfile
@@ -9,34 +9,12 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from lib import designreview, mergegate, mergereviewer, reviewrecord, ship  # noqa: E402
+from lib import designreview, mergegate, reviewrecord, ship  # noqa: E402
 from lib.common import AiError  # noqa: E402
 
 CLEAN = "Looked at ai/lib/x.py.\n\nNo findings"
 NITS = "- [nit] ai/lib/x.py:3: long line → wrap it\n"
 OPEN = "- [should-fix] ai/lib/x.py:9: mixes I/O and logic → split\n- [nit] ai/lib/x.py:3: long line → wrap it\n"
-
-
-class ReviewStateTest(unittest.TestCase):
-    def state(self, body, repo="dev-tools"):
-        with mock.patch.object(mergereviewer, "ody", return_value=body):
-            return mergereviewer.review_state(repo, 5)["state"]
-
-    def test_the_recorded_line_is_clean(self):
-        self.assertEqual(self.state("text " + reviewrecord.REVIEW_LINE), "clean")
-
-    def test_no_line_is_unreviewed(self):
-        self.assertEqual(self.state("text"), "unreviewed")
-
-    def test_every_repo_reads_the_recorded_line(self):
-        for repo in ("gaia", "prometheus", "hermes", "ares"):
-            self.assertEqual(self.state(reviewrecord.REVIEW_LINE, repo), "clean")
-
-    def test_the_command_exits_by_state(self):
-        args = mock.Mock(repo="gaia", pr=1, json=True)
-        for body, code in ((reviewrecord.REVIEW_LINE, 0), ("text", 1)):
-            with mock.patch.object(mergereviewer, "ody", return_value=body), mock.patch.object(mergereviewer, "say"):
-                self.assertEqual(mergereviewer.cmd_merge_review(args), code)
 
 
 class VerdictTest(unittest.TestCase):
@@ -150,19 +128,10 @@ class ShipLineTest(unittest.TestCase):
             self.assertIn("opens without the design-review line", say.call_args[0][0])
 
 
-class ReviewCheckTest(unittest.TestCase):
-    BODY = "## How tested\n```\nRESULT: PASS\nDESIGN REVIEW: clean\n```"
-
-    def test_the_design_review_line_passes(self):
-        self.assertEqual(mergegate.check_review(self.BODY)["state"], "ok")
-        missing = mergegate.check_review("## How tested\n```\nRESULT: PASS\n```")
-        self.assertEqual((missing["name"], missing["state"]), ("review", "fail"))
-        self.assertIn("no clean design review", missing["detail"])
-
-
 class DevToolsGateTest(unittest.TestCase):
-    """`ai mergecheck <repo> <pr>` with the shipped config.json: the recorded design review is the review check."""
-    BODY = ReviewCheckTest.BODY
+    """`ai mergecheck <repo> <pr>` with the shipped config.json: the design review is advisory, not a check."""
+    BODY = "## How tested\n```\nRESULT: PASS\nDESIGN REVIEW: clean\n```"
+    UNREVIEWED = "## How tested\n```\nRESULT: PASS\n```"
 
     def gate(self, body, files, repo="dev-tools"):
         pr = {"state": "open", "draft": False, "mergeable": True, "mergeable_state": "clean", "labels": [],
@@ -180,23 +149,24 @@ class DevToolsGateTest(unittest.TestCase):
     def failed(self, result):
         return {c["name"]: c["detail"] for c in result["checks"] if c["state"] != "ok"}
 
-    def test_ok_with_tests_a_clean_review_and_no_protected_paths(self):
-        result = self.gate(self.BODY, ["ai/lib/ship.py"])
-        self.assertEqual((result["state"], self.failed(result)), ("ok", {}))
-        self.assertIn("review", [c["name"] for c in result["checks"]])
+    def test_ok_with_or_without_the_design_review_line(self):
+        for body in (self.BODY, self.UNREVIEWED):
+            result = self.gate(body, ["ai/lib/ship.py"])
+            self.assertEqual((result["state"], self.failed(result)), ("ok", {}))
+            self.assertNotIn("review", [c["name"] for c in result["checks"]])
 
-    def test_fails_without_the_review_line_or_on_protected_paths(self):
-        missing = self.gate("## How tested\n```\nRESULT: PASS\n```", ["ai/lib/ship.py"])
-        self.assertEqual((missing["state"], list(self.failed(missing))), ("fail", ["review"]))
-        protected = self.gate(self.BODY, ["ai/lib/mergegate.py"])
+    def test_protected_paths_still_fail(self):
+        protected = self.gate(self.UNREVIEWED, ["ai/lib/mergegate.py"])
         self.assertEqual((protected["state"], list(self.failed(protected))), ("fail", ["self"]))
 
-    def test_every_repo_gets_the_review_check(self):
+    def test_no_recorded_test_run_still_fails(self):
+        result = self.gate("## How tested\nnothing", ["ai/lib/ship.py"])
+        self.assertEqual((result["state"], list(self.failed(result))), ("fail", ["tests"]))
+
+    def test_every_repo_passes_without_the_review_line(self):
         for repo in ("gaia", "prometheus", "hermes", "ares"):
-            result = self.gate(self.BODY, ["src/x.php"], repo=repo)
+            result = self.gate(self.UNREVIEWED, ["src/x.php"], repo=repo)
             self.assertEqual((repo, result["state"], self.failed(result)), (repo, "ok", {}))
-        missing = self.gate("## How tested\n```\nRESULT: PASS\n```", ["src/x.php"], repo="gaia")
-        self.assertEqual(list(self.failed(missing)), ["review"])
 
 
 if __name__ == "__main__":

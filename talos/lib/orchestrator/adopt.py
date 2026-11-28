@@ -1,6 +1,6 @@
 """Taking owner-held PRs to the automatic merges (adt-5045). An issue in an auto-merge milestone that waits for its
 owner's review, untouched since the worker handed it off, is handed to the orchestrator when its merge gate passes,
-is still pending, or fails only on CI and the recorded design review. The merge sweep (merging.py) then merges it,
+is still pending, or fails only on CI. The merge sweep (merging.py) then merges it,
 or re-runs CI and, when CI stays red, hands it to the worker to fix (maxCiFixAttempts). Anything else (people on the
 PR, a do-not-merge label, a conflict the keeper owns, ...) stays with the owner.
 
@@ -89,7 +89,7 @@ class Adopter:
         """Tell the owner why their review queue lost the issue (a failed comment never undoes the hand-off)."""
         state = gate.get("state")
         why = ("its merge gate passed" if state == "ok" else "its merge gate is still running" if state == "pending"
-               else f"its merge gate fails only on CI and the design review, which {self.worker.display_name} can fix")
+               else f"its merge gate fails only on CI, which {self.worker.display_name} can fix")
         try:
             self.tracker.comment(number, f"{self.agent.display_name}: taken to merge automatically",
                                  f"<p>PR {html.escape(repo)}#{pr} is in an auto-merge milestone and "
