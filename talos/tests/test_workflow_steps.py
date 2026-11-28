@@ -127,9 +127,9 @@ class ReportTest(unittest.TestCase):
         self.assertEqual(workflow_steps.report("needs_input", self.run_(outcome="needs_input", comment="<p>q</p>")),
                          ("needs_input", "<p>q</p>"))
 
-    def test_done_and_a_pr_waiting_for_coderabbit_are_done(self):
+    def test_done_and_an_opened_pr_are_done(self):
         self.assertEqual(workflow_steps.report("done", self.run_(summary="a & b")), ("done", "<p>a &amp; b</p>"))
-        self.assertEqual(workflow_steps.report(policy.AWAITING_BOT_REVIEW, self.run_())[0], "done")
+        self.assertEqual(workflow_steps.report(policy.PR_OPENED, self.run_())[0], "done")
 
     def test_anything_else_is_failed(self):
         self.assertEqual(workflow_steps.report("dry_run", self.run_())[0], "failed")

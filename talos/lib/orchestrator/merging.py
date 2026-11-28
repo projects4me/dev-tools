@@ -1,4 +1,4 @@
-"""Automatic merges: the CodeRabbit-clean PRs the worker's CodeRabbit loop handed to the orchestrator are merged, or
+"""Automatic merges: the reviewed PRs the worker's merge-review routing handed to the orchestrator are merged, or
 handed to the reviewer with the reason. Separate from feeding the worker (worker.Orchestrator), which calls it once
 per sweep."""
 
@@ -195,10 +195,10 @@ class MergeSweeper:
         log(f"#{number} PR {repo}#{pr} merged as {merge_sha[:7]}; set done", self.agent.name)
         gate = f" and the merge gate passed on <code>{html.escape(head_sha[:7])}</code>" if head_sha else ""
         self._comment(number, f"{self.agent.display_name}: merged automatically",
-                      f"<p>CodeRabbit was clean{gate}, so {html.escape(self.agent.display_name)} approved and merged "
-                      f"PR {html.escape(repo)}#{pr} (merge commit <code>{html.escape(merge_sha[:7])}</code>). "
-                      f"Milestone {html.escape(str(issue.get('milestone') or ''))} merges CodeRabbit-clean PRs "
-                      f"without a review; revert the merge commit if this needs another look.</p>")
+                      f"<p>The design review was clean{gate}, so {html.escape(self.agent.display_name)} approved and "
+                      f"merged PR {html.escape(repo)}#{pr} (merge commit <code>{html.escape(merge_sha[:7])}</code>). "
+                      f"Milestone {html.escape(str(issue.get('milestone') or ''))} merges PRs with a clean design "
+                      f"review without a human review; revert the merge commit if this needs another look.</p>")
         return f"merged PR {repo}#{pr}"
 
     def _hand_back(self, issue, pr, detail, record=None, triage=True, ci=None):

@@ -454,13 +454,14 @@ class DispatcherTest(unittest.TestCase):
             orig(t, issue)
             tracker_holder["t"] = t
 
-        with mock.patch.object(StubTracker, "__init__", init),                 mock.patch.object(dispatcher_mod.bot_review, "ai_handoff", handoff):
+        with mock.patch.object(StubTracker, "__init__", init), \
+                mock.patch.object(dispatcher_mod.merge_review, "ai_handoff", handoff):
             self.dispatch(make_issue(status="in_review"), [result("done")], pickup_status="in_progress", actions=REVIEW_ACTIONS)
         self.assertEqual(called, [42])
         self.assertNotEqual(self.reason(), "not_handed_back")
 
     def test_review_run_that_cannot_be_handed_back_is_flagged(self):
-        with mock.patch.object(dispatcher_mod.bot_review, "ai_handoff", side_effect=TalosError("down")):
+        with mock.patch.object(dispatcher_mod.merge_review, "ai_handoff", side_effect=TalosError("down")):
             self.dispatch(make_issue(status="in_review"), [result("done")], pickup_status="in_progress",
                           actions=REVIEW_ACTIONS)
         self.assertEqual(self.reason(), "not_handed_back")

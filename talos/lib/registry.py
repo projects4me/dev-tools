@@ -53,9 +53,9 @@ class Orchestration:
     auto_retry_reasons: tuple = AUTO_RETRY_REASONS   # handback reason codes that are restarted automatically
     max_auto_retries: int = 2           # automatic restarts per issue (cleared by `talos reset`)
     fail_streak_limit: int = 3          # consecutive failed or blocked handbacks before it pauses itself
-    auto_merge_milestones: tuple = ()   # milestones (exact name, any case) whose CodeRabbit-clean PRs it merges itself
+    auto_merge_milestones: tuple = ()   # milestones (exact name, any case) whose reviewed PRs it merges itself
     max_auto_merges_per_day: int = 5    # automatic merges per day; past it, PRs go to the reviewer
-    auto_merge_wait_minutes: float = 60  # how long a still-pending merge gate (CI, CodeRabbit) is waited for
+    auto_merge_wait_minutes: float = 60  # how long a still-pending merge gate (CI) is waited for
     ci_rerun_attempts: int = 3          # re-runs of a failed CI per PR head before it goes to the reviewer
     ci_rerun_errors: int = 2            # failing re-run commands per head before it goes to the reviewer
     max_conflict_attempts: int = 1      # merge-conflict resolutions per issue handed to the worker (0 = none)
@@ -109,10 +109,6 @@ class Agent:
     denied_tools: list = field(default_factory=list)  # `--disallowedTools`
     limits_by_model: dict = field(default_factory=dict)  # model -> {"maxTurns", "maxBudgetUsd"} for that model's runs
     ship_prompt: str = ""               # fresh session that ships after a ready_to_ship outcome ("" = not offered)
-    bot_round_prompt: str = ""          # run that answers CodeRabbit's findings ("" = hand off without bot rounds)
-    bot_review_rounds: int = 3          # bot rounds per issue before it is handed off with open bot threads
-    bot_review_wait_minutes: float = 20     # per round: how long a pending CodeRabbit review is waited for
-    bot_review_poll_seconds: int = 60   # how often waiting issues are checked with `ai rabbit`
     env: dict = field(default_factory=dict)          # extra environment for the Claude process
     max_parallel: int = 1               # worker threads: issues run at once (1 = one at a time)
     max_parallel_by_repo: dict = field(default_factory=dict)   # repo -> runs at once
@@ -300,10 +296,6 @@ def _issues_agent(folder, path, local, raw, role_prompt, model, gaia_env):
         denied_tools=list(raw.get("deniedTools", [])),
         limits_by_model=dict(raw.get("limitsByModel", {})),
         ship_prompt=raw.get("shipPrompt", ""),
-        bot_round_prompt=raw.get("botRoundPrompt", ""),
-        bot_review_rounds=max(0, int(raw.get("botReviewRounds", 3))),
-        bot_review_wait_minutes=float(raw.get("botReviewWaitMinutes", 20)),
-        bot_review_poll_seconds=max(5, int(raw.get("botReviewPollSeconds", 60))),
         env={str(k): str(v) for k, v in raw.get("env", {}).items()},
         max_parallel=max(1, int(raw.get("maxParallel", 1))),
         max_parallel_by_repo={str(k): int(v) for k, v in raw.get("maxParallelByRepo", {}).items()},

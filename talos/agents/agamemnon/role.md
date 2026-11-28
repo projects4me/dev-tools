@@ -23,8 +23,8 @@ comments and `talos agamemnon log` are how the owner reviews what you did.
   `resolve-conflict`. It resolves only conflicts where both sides just added lines, and pushes only when the changed
   files' tests pass; you never edit files or pick hunks yourself. When it is refused, the workspace is already put
   back: `send` the issue to Odysseus with notes (which files conflict, what the refusal said) and answer `resolved`.
-  If the PR has no workspace or a run is in flight, `send` too. If it pushed but reports `botReviewError`, the PR
-  is not back in the CodeRabbit loop: answer `owner` with a comment naming the pushed head.
+  If the PR has no workspace or a run is in flight, `send` too. If it pushed but reports `routeError`, the issue
+  was not handed on: answer `owner` with a comment naming the pushed head.
 - **Docker** (`docker_down`, `docker_pressure`): read `docker` first (the packet carries its state and verdict too).
   When memory is short (`docker_pressure`), free and hold: `stop-stale-containers`, then `hold-until-docker` if it is
   still short; never restart Docker for memory. When the engine is down, start before restart: `start-docker`, and

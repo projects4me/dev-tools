@@ -84,7 +84,7 @@ agent.json stays for Talos' own agents (Odysseus, Nestor, Agamemnon), which keep
 
   Everything machine-local comes from `agents/gaia-runtime/template.json`, overlaid by its `agent.local.json`
   (`p4m configure` writes the reviewer there): agent.json's issues-agent keys (`projects`, `allowedTools`,
-  `runner`, parallelism, `limitsByModel`, the ship and bot-round prompts, ...) without `name`, `displayName`,
+  `runner`, parallelism, `limitsByModel`, the ship prompt, ...) without `name`, `displayName`,
   `gaiaEnv`, `model`, `rolePrompt`, `kind` or `dispatch` (refused). Every Gaia agent is `dispatch: "workflow"`: it
   takes work from Gaia's workflow run requests only (see Workflow steps). `"enabled": false` in the overlay runs none.
 - **Delegated tokens** (`lib/delegated_tokens.py`). Each agent acts on its own token from the agent-delegation grant
@@ -285,10 +285,10 @@ node records a step for the agent and publishes `workflow.agent.run.requested` t
 4. **Run.** The issue's workspace and run are the dispatcher's, as for an assignment, with the step's prompt (as
    Gaia resolved it), session (`resume` resumes the issue's last session while its cache is warm, as an action with
    `resume`), model (else the complexity choice) and `maxTurns` (else the spec's). A run that waits for the issue
-   (a CodeRabbit round on it) waits after the claim. Inside the step, `escalate` still reruns on the stronger
+   (another run on it) waits after the claim. Inside the step, `escalate` still reruns on the stronger
    model, `ready_to_ship` still ships in a fresh session, and a usage limit runs the step again after the pause.
-5. **Report.** `PATCH outcome, comment` with one of Gaia's outcomes: `done` (also `awaiting_bot_review`: the
-   CodeRabbit loop carries on and hands the issue to the reviewer itself), `needs_input`, `blocked`, `failed`,
+5. **Report.** `PATCH outcome, comment` with one of Gaia's outcomes: `done` (also `pr_opened`: Talos
+   already handed the issue to its merger or the reviewer), `needs_input`, `blocked`, `failed`,
    `limit`. Talos sets no status and assignee and posts no hand-off comment: the comment goes on the report, and
    the workflow goes on by the outcome's port. A report Gaia refuses is logged; the step then times out to
    `failed`.
@@ -297,7 +297,7 @@ node records a step for the agent and publishes `workflow.agent.run.requested` t
 
 A Run agent step on a record that isn't an issue (`entityType` other than `issue`; first case a Retrospective agent
 started by "Milestone completed") gets none of the issue flow: no repo, workspace, branch, commit, PR, Gaia pack,
-ship session, CodeRabbit loop or test slot (`lib/record_runs.py`, `Dispatcher.run_record`). Record runs that change
+ship session, merge-review routing or test slot (`lib/record_runs.py`, `Dispatcher.run_record`). Record runs that change
 code are out of scope.
 
 - **Where.** Claude runs on this machine (also for an agent with a container `runner`) in a scratch folder,
@@ -310,7 +310,7 @@ code are out of scope.
 - **Sessions** are kept per agent and record (`type:id`) in the `records` table, so `session: resume` resumes the
   record's last session while its cache is warm. Two steps on one record run one after the other.
 - **Report.** `done` with the summary; `needs_input` and `blocked` with the comment; `escalate` is `needs_input`
-  (no rerun on a stronger model); `ready_to_ship` and `awaiting_bot_review` need a repo, so they are `failed`, as is
+  (no rerun on a stronger model); `ready_to_ship` and `pr_opened` need a repo, so they are `failed`, as is
   a run that breaks. A usage limit pauses the agent and runs the step again, as for an issue step. Runs show in
   `runs` with `status_at_start` `record`; the step's run count is not capped by `maxRunsPerIssue`.
 
@@ -343,7 +343,7 @@ The default, `"dispatch": "status"`, is the assignment flow below. `talos dispat
    |---|---|
    | `done` | checks the issue is no longer assigned to the agent (the skills hand it to the reviewer); if it still is, hands it off as failed |
    | `ready_to_ship` | starts a **fresh ship session** (same model, counts as an iteration) with `shipPrompt` and the agent's `handoff` note, so `/ship-issue` doesn't re-read the implementing session's context on every call; that session ends with one of the other outcomes. Without a `shipPrompt`, or from the ship session itself, it counts as failed |
-   | `awaiting_bot_review` | the PR is open with the hand-off deferred (`ai ship --defer-handoff`), PR number in `pr`: the issue waits for CodeRabbit (see below) without holding a run slot. Without a `pr` it counts as failed |
+   | `pr_opened` | the PR is open with the hand-off deferred (`ai ship --defer-handoff`), PR number in `pr`: Talos hands the issue on by the PR's merge review (see below). Without a `pr` it counts as failed |
    | `needs_input` | posts the agent's question, status `feedback`, assigns `handoffTo` |
    | `blocked` | posts the blocker, status `pending`, assigns `handoffTo` |
    | `escalate` | comments why, then resumes the same session on `model.escalate` (once); the issue stays on that model |
@@ -353,43 +353,22 @@ The default, `"dispatch": "status"`, is the assignment flow below. `talos dispat
    `pending` resume the session, `in_review` runs `/address-review`). An address-review run reads the open GitHub
    threads, the people's Gaia comments since the agent's last comment and the CI of the PR head (`ai review --open
    --issue N`), ends `done` without touching the status, and Talos hands the issue back itself (`ai handoff`; for an
-   auto-merge milestone back into the merge loop). `done` with the issue still `in_progress` is flagged `not_handed_back`.
+   auto-merge milestone on to the merger when the PR's review is clean). `done` with the issue still `in_progress` is flagged `not_handed_back`.
 
-**CodeRabbit loop.** Your reviewer receives the issue only after CodeRabbit is done with the PR. The ship session
-ships with `ai ship --defer-handoff` and ends with `awaiting_bot_review`; the issue stays `in_progress` and
-assigned to the agent, and nothing about the loop is posted to the tracker (only `state/talos.log`):
+**Merge-review routing** (`lib/merge_review.py`). The ship session runs the full suite and `ai design-review <repo>`
+on the final tree, ships with `ai ship --defer-handoff` (which writes `DESIGN REVIEW: clean` into the PR body when
+that review is clean for the tree) and ends with `pr_opened`. Talos then reads `ai merge-review <repo> <pr>` once:
 
 ```
-PR pushed -> wait for the CodeRabbit check run on the head SHA (the `CodeRabbit` check of the `coderabbitai` app, or the legacy commit status; ai rabbit, every botReviewPollSeconds)
-  clean                                   -> ai handoff (in_review, assigned to the reviewer; to Agent Agamemnon
-                                             in its autoMergeMilestones, which merges it, see Orchestrator agents)
-  findings                                -> bot round (botRoundPrompt) -> push -> awaiting_bot_review -> wait again
-  paused / absent / timeout / round cap   -> ai handoff
+clean       -> ai handoff to Agent Agamemnon in its autoMergeMilestones (not paused), which merges it (see
+               Orchestrator agents); otherwise to the reviewer
+unreviewed  -> ai handoff to the reviewer, with an issue comment saying the PR records no clean design review
+unreadable  -> the same, the comment says the review could not be read
 ```
 
-- Only the repos in `codeRabbitRepos` (`ai/config.json`; default gaia, prometheus, hermes) have the loop. In any
-  other repo `ai ship --defer-handoff` hands off at once (in_review, reviewer) and the run ends `done`; `ai rabbit`
-  reports `absent` without waiting, so a waiting record left for such a repo is handed off on its first check.
-- A repo in `mergeReviewers` (dev-tools) has the same wait without CodeRabbit or bot rounds: `ai ship
-  --defer-handoff` defers the hand-off, and the first check reads the PR body (`ai rabbit` reports `clean` when it
-  has the `DESIGN REVIEW: clean` line, else `unreviewed`). Clean goes to Agent Agamemnon in its
-  `autoMergeMilestones` (not paused), else to the reviewer; `unreviewed` goes to the reviewer with the reason in
-  the log and an issue comment.
-- A bot round is a queued run that resumes the session while its cache is warm, like other actions, and counts
-  toward `maxIterations`. It answers only CodeRabbit's open threads and doesn't touch the tracker.
-- CodeRabbit's auto review is off, so each follow-up review is asked for: after a bot round pushes, Talos runs
-  `ai rabbit request <repo> <pr> --source bot-round --rereview --issue N` (one trigger comment per push), and when
-  an addressed re-review goes back into the loop, the same with `--source reenter`. Before it queues a round it reads
-  `ai rabbit budget`: at the daily limit (tier `full`) the round isn't run. When the budget answers `human`, or the
-  `ai` command fails, nothing waits for a review that was never requested: Talos comments `CodeRabbit limit reached:
-  open CodeRabbit findings left for you.` (or says the request failed) and hands the issue to the reviewer, never
-  to the merger (a re-entry stays with the reviewer).
-- At `botReviewRounds` (default 3) the issue is handed off with the bot threads still open on the PR; still
-  `pending` after `botReviewWaitMinutes` (default 20, per round) it is handed off too.
-- The wait is kept in `state/talos.db` (`bot_reviews`), so a restart picks it up; a round that was queued but
-  not started waits again, a round cut off mid-run is handed back as interrupted.
-- If someone reassigns the issue or changes its status while it waits, the wait is dropped (an issue handed back
-  in another status is worked as usual).
+Nothing waits and nothing is stored: the review is recorded before the PR opens. A hand-off that fails is a failed
+run, handed to a person. After an address-review run in an auto-merge milestone, a still-open PR whose review is
+clean goes on to the merger instead of staying with the reviewer.
 
 **Missed events.** Hermes keeps no history, so on every (re)connect Talos lists the issues assigned to each
 agent and queues them. Since there's no event saying who assigned them, a reconciled issue only runs if the
@@ -420,10 +399,6 @@ their events), and an env file with its `GAIA_*` credentials.
 | `maxTurns` | turns per run (`claude --max-turns`); when reached, the issue goes back as `needs_input` with the session kept, so assigning it back resumes it (0 = no limit; Odysseus: 80) |
 | `limitsByModel` | model → `{maxTurns, maxBudgetUsd}` for runs on that model, in place of `maxTurns`; `maxBudgetUsd` is `claude --max-budget-usd` and, when reached, hands the issue back like the turn cap (Odysseus: sonnet 80 turns; opus 150 turns and $15 per run) |
 | `shipPrompt` | prompt of the fresh ship session after `ready_to_ship`; placeholders as for `actions` plus `{handoff}` (empty = the outcome is not offered) |
-| `botRoundPrompt` | prompt of a CodeRabbit bot round; placeholders as for `actions` plus `{pr}`, `{round}`, `{rounds}` (empty = no bot rounds: findings hand off straight away) |
-| `botReviewRounds` | bot rounds per issue before it is handed off with open bot threads (default 3; 0 = none) |
-| `botReviewWaitMinutes` | how long a still-pending CodeRabbit review is waited for, per round (default 20) |
-| `botReviewPollSeconds` | how often waiting issues are checked with `ai rabbit` (default 60) |
 | `builtinTools`, `deniedTools` | `claude --tools` (only these built-in tools are loaded, which keeps the fixed context small) and `--disallowedTools` |
 | `env` | extra environment for the Claude process (not `GAIA_*`: the credentials come from `gaiaEnv`). Odysseus sets `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1`: subagents and commands run in the foreground, so no turns go to waiting and no late task notification arrives after the outcome |
 | `resumeMaxIdleMinutes` | resume a session only if its last run ended this recently (0 = always; default 55) |
@@ -590,12 +565,12 @@ and is `enabled: false` until the engineer turns it on.
   itself. `talos pause|resume agamemnon` (resume also clears the streak); `talos status` shows its state and last
   sweep; `talos run --dry-run` only logs what it would do.
 - **Automatic merges** (an experiment, only for `autoMergeMilestones`, e.g. `["aga-v1"]`, exact names in any case):
-  when the worker's CodeRabbit loop finds a PR `clean`, it hands the issue (in_review) to Agamemnon instead of the
-  reviewer, unless Agamemnon is paused. Every other CodeRabbit result still goes to the reviewer. On each sweep,
+  when the worker's merge-review routing finds a PR `clean`, it hands the issue (in_review) to Agamemnon instead of
+  the reviewer, unless Agamemnon is paused. Every other result still goes to the reviewer. On each sweep,
   before feeding new work, Agamemnon finds the issue's open PR (`claude-issue-N`) and runs `ai mergecheck`:
   - `ok`: `ai merge` approves and merges it as `agent-agamemnon`, pinned to the commit the gate read; the issue is
     set `done` (which frees the issues that depend on it) and a comment names the merge commit.
-  - `pending` (CI or CodeRabbit still running): waits, up to `autoMergeWaitMinutes` (60).
+  - `pending` (CI still running): waits, up to `autoMergeWaitMinutes` (60).
   - `fail` on CI only: re-runs the failed jobs, up to `ciRerunAttempts` (3) times per PR head, waiting a couple of
     minutes after each; the comment says "attempt n of 3". A re-run command that errors (for example a token without
     the Actions permission) is counted with its error text; after `ciRerunErrors` (2) errors at the same head, or
@@ -617,7 +592,7 @@ and is `enabled: false` until the engineer turns it on.
     triage, or when it declines (outside the premise, already triaged on this issue), it is handed to the worker
     with the one-off action `merge_conflict` (`next_action` in talos.db; see
     Odysseus's `actions`): merge the base, resolve so both changes survive, run the suite, push, and end
-    `awaiting_bot_review` so CodeRabbit reviews the new head. Up to `maxConflictAttempts` (1) per issue; then the
+    `pr_opened` so Talos routes the issue by the PR's merge review. Up to `maxConflictAttempts` (1) per issue; then the
     owner is told once per PR head (an issue waiting to be merged automatically goes back to them). `talos reset`
     allows another attempt.
   An automatic merge whose gate fails only on mergeability waits for this instead of going to the reviewer.
@@ -744,8 +719,8 @@ and is `enabled: false` until the engineer turns it on.
     during the test can briefly make it `maxParallel` + 1). While it runs, the worker's talos.db row is marked
     (`conflict_test_running`, `conflict_test_at`) so the idle rule leaves the container alone; its end restarts the
     idle window; the merge commit (signed as Odysseus, its message
-    naming Agamemnon and the incident) is pushed to the odysseus remote as a fast-forward, and the issue goes to the
-    worker waiting for CodeRabbit on the new head (the CodeRabbit loop, as after a deferred ship). Otherwise the
+    naming Agamemnon and the incident) is pushed to the odysseus remote as a fast-forward, and the issue is routed by
+    the PR's merge review, as after a deferred ship (to Agamemnon to merge when clean in an auto-merge milestone). Otherwise the
     merge is aborted, the workspace is put back at the PR's head, and the verb is refused with the reason, so the
     session sends the issue to Odysseus with notes for its one attempt; after that the owner gets it.
   - Level 3 has no verb: force push, deleting branches or workspaces with unpushed work, closing PRs, writing
@@ -803,7 +778,7 @@ in `dev-tools/.p4m/test/in-use/` (a lock held for the run, `<container>.last` to
 mid-run is reported by `p4m test ember` as stopped, not as out of memory. Every dispatcher sweeps all Talos workspaces,
 so with agents set differently the shortest `idleTestContainerMinutes` wins (as with `staleHours` above). Only containers labelled under `<workspace>/.runs` are touched:
 never a checkout used interactively, never a gaia slot container. Like `ensure()` after any stop, the next `ai test`
-starts cold (about 40-60 s): the price of not holding a container through `awaiting_bot_review`, `in_review`, conflict
+starts cold (about 40-60 s): the price of not holding a container through `in_review`, conflict
 waits and review rounds. Docker unreachable: the sweep logs it and tries again next time.
 
 ### Starting and restarting the engine
@@ -882,8 +857,6 @@ Readable by other tools while Talos runs (WAL mode), e.g. a future Projects4Me U
 - `event_runs`: one row per events agent, event name and resource id (its dedupe key): project, the envelope as
   received, status (`queued`, `running`, `done`, `failed`, `interrupted`), when it was received, started and ended,
   outcome, summary, `detail` (Claude's comment or the error) and the latest `runs` row.
-- `bot_reviews`: one row per issue in the CodeRabbit loop: repo, PR, the issue's status when the wait began,
-  phase (`waiting` or `round`), bot rounds run, and the deadline of the current wait.
 
 The pre-SQLite `state/sessions.json` is imported when `talos run`/`dispatch` starts, then renamed
 `sessions.json.imported`. `state/talos.log` and the raw JSON per run in `state/logs/` stay as they were.
@@ -899,7 +872,7 @@ The pre-SQLite `state/sessions.json` is imported when `talos run`/`dispatch` sta
 | `lib/dispatcher.py` | per-agent queue; runs a job and applies the outcome to the tracker |
 | `lib/workflow_steps.py` | workflow Run agent steps: the user-scoped event, claim, the agent spec applied, run through the dispatcher, report |
 | `lib/record_runs.py` | Run agent steps on a record that isn't an issue: the record and its context block, the scratch folder, the per-record session, the outcome reported |
-| `lib/bot_review.py` | the CodeRabbit loop: waits kept in `bot_reviews`, the watcher that polls `ai rabbit` and runs `ai handoff` |
+| `lib/merge_review.py` | routes a shipped PR by its merge review: `ai merge-review`, then `ai handoff` to the merger or the reviewer |
 | `lib/runner.py` | builds and runs the `claude -p` command, keeps its output; the `Runner` interface and `LocalRunner` |
 | `lib/container.py` + `container/` | `ContainerRunner`: the run in a container (`docker run` with the credentials by name); the image and its entrypoint |
 | `lib/workspaces.py` | per-issue workspaces: `.runs/issue-N` with the repo's worktree and the tooling linked in |

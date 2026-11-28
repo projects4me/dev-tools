@@ -12,7 +12,7 @@ NEW_STATUSES = ("new",)
 RESTART_STATUSES = ("feedback", "pending")      # where a handback leaves an issue (needs_input, blocked/failed)
 NOT_FED_TYPES = ("epic",)                       # an epic is a container of issues, never worked itself
 QUESTION_REASONS = ("agent_needs_input",)       # a question for the reviewer: neither a failure nor a success
-SUCCESS = "success"                             # a fed issue's run ended done or awaiting_bot_review
+SUCCESS = "success"                             # a fed issue's run ended done or pr_opened
 HANDBACK = "handback"                           # a fed issue was handed back (with a reason code)
 
 
@@ -213,22 +213,22 @@ def breaker_tripped(streak, limit):
 # -- automatic merges -------------------------------------------------------------------------------
 
 MERGE, WAIT, HAND_BACK, RERUN = "merge", "wait", "hand_back", "rerun"
-REVIEW_STATUS = "in_review"     # where the CodeRabbit loop leaves an issue it hands off
+REVIEW_STATUS = "in_review"     # where a routed PR's issue is handed off
 
 
 def auto_merges(issue, milestones):
-    """The issue's milestone is one whose CodeRabbit-clean PRs are merged automatically (exact name, any case)."""
+    """The issue's milestone is one whose reviewed PRs are merged automatically (exact name, any case)."""
     return _lower(issue.get("milestone")) in {_lower(m) for m in milestones}
 
 
 def merge_target(issue, milestones, merger_id, paused):
-    """Who the CodeRabbit loop hands a clean issue to: the merger for an auto-merge milestone while it isn't
+    """Who a PR with a clean merge review is handed to: the merger for an auto-merge milestone while it isn't
     paused, else None (the reviewer, as before)."""
     return merger_id if merger_id and not paused and auto_merges(issue, milestones) else None
 
 
 def is_merge_candidate(issue, milestones, projects, merger_id):
-    """Handed to the merger by the CodeRabbit loop: in review, assigned to it, in an auto-merge milestone."""
+    """Handed to the merger by the merge-review routing: in review, assigned to it, in an auto-merge milestone."""
     return (issue.get("project") in projects and auto_merges(issue, milestones)
             and _lower(issue.get("status")) == REVIEW_STATUS and issue.get("assignee") == merger_id)
 

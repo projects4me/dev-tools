@@ -1,7 +1,7 @@
 """Workflow 'Run agent' steps on a record that isn't an issue (a milestone, ...): what such a run is given, where it
 runs and how it ends. The run has no repo: Claude works in a scratch folder under the per-machine state with the
 step's prompt, the agent's spec and a short context block about the record, and reaches the tracker through its Gaia
-tools. No branch, commit, PR, ship session, CodeRabbit loop or test slot (record runs that change code are out of
+tools. No branch, commit, PR, ship session, merge-review routing or test slot (record runs that change code are out of
 scope).
 
 Sessions are kept per agent and record (type + id) in the `records` table, so a step's `session: resume` continues
@@ -74,7 +74,7 @@ def folder(agent_name, record):
 def report(outcome, summary, comment):
     """(Gaia outcome, comment) for a record run that ended (not on a usage limit). done, needs_input and blocked pass
     on; escalate is needs_input (a record run is not re-run on a stronger model); ready_to_ship and
-    awaiting_bot_review need a repo, so like any other end they are failed."""
+    pr_opened need a repo, so like any other end they are failed."""
     summary_html = f"<p>{html.escape(summary)}</p>" if summary else ""
     if outcome == "done":
         return "done", summary_html

@@ -11,46 +11,13 @@ from ..hermes import Listener
 from ..registry import load_agents
 from ..tracker import Tracker
 from . import github
-from . import policy as orchestration
-from . import state as store
 from .human_merges import HumanMergeSweeper
 from .keeper import BranchKeeper
 from .merge import Merger
 from .merging import MergeSweeper
 from .overlap import IssueFiles, OverlapGate
+from .routes import merge_routes  # noqa: F401  (talos.py starts the workers with it)
 from .worker import Orchestrator, _now
-
-
-class MergeRoute:
-    """Where the worker's CodeRabbit loop sends a clean issue when an orchestrator merges its milestone itself:
-    route(issue) -> (the orchestrator's Gaia user id, its name), or None for the reviewer (other milestones, the
-    orchestrator paused, or its Gaia user not readable yet: that is retried on the next clean issue)."""
-
-    def __init__(self, agent, user_id, is_paused, find_pr=None):
-        self.agent = agent
-        self.find_pr = find_pr          # find_pr(repo, issue) -> the issue's PR (merge.Merger.find_pr)
-        self.user_id = user_id          # user_id() -> the orchestrator's Gaia user id (TalosError when unreadable)
-        self.is_paused = is_paused      # is_paused() -> True while the orchestrator is paused
-        self._id = None
-
-    def __call__(self, issue):
-        if not self._id:
-            try:
-                self._id = self.user_id()
-            except TalosError as e:
-                log(f"#{issue.get('number')} goes to the reviewer: {self.agent.display_name}'s Gaia user is not "
-                    f"readable ({e})", self.agent.name)
-                return None
-        target = orchestration.merge_target(issue, self.agent.orchestration.auto_merge_milestones, self._id,
-                                            self.is_paused())
-        return (target, self.agent.display_name) if target else None
-
-
-def merge_routes(agents):
-    """{worker name: MergeRoute} for the orchestrators that merge CodeRabbit-clean PRs themselves."""
-    return {a.orchestration.worker: MergeRoute(a, Tracker(a).user_id, lambda a=a: bool(store.get(a.name).get("paused")),
-                                               Merger(Tracker(a).child_env, github.agamemnon_gh).find_pr)
-            for a in agents if a.kind == "orchestrator" and a.orchestration.auto_merge_milestones}
 
 
 def _triage(agent, worker, tracker, me, owners, claude, dry_run):
@@ -108,6 +75,6 @@ def start(agent, cfg, dry_run, claude=None):
     milestones = agent.orchestration.auto_merge_milestones
     log(f"feeding {worker.display_name}: milestones {agent.orchestration.milestone_prefix}*, "
         f"at most {orchestrator.max_in_flight} in flight"
-        + (f"; merging CodeRabbit-clean PRs in {', '.join(milestones)}" if milestones else "")
+        + (f"; merging reviewed PRs in {', '.join(milestones)}" if milestones else "")
         + (" (dry run)" if dry_run else ""), agent.name)
     return orchestrator
