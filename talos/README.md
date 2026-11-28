@@ -577,13 +577,29 @@ and is `enabled: false` until the engineer turns it on.
   - `fail` on CI only: re-runs the failed jobs, up to `ciRerunAttempts` (3) times per PR head, waiting a couple of
     minutes after each; the comment says "attempt n of 3". A re-run command that errors (for example a token without
     the Actions permission) is counted with its error text; after `ciRerunErrors` (2) errors at the same head, or
-    after the last re-run fails again, the issue goes to the owner (triage first). A new push starts over.
+    after the last re-run fails again, the worker fixes it (below). A new push starts over.
+  - `fail` on CI and the recorded design review only: straight to the worker's CI fix (a re-run can't pass it).
+  - *CI fix*: the issue is assigned to the worker with the one-off action `ci_fix` (`next_action` in talos.db; see
+    Odysseus's `actions`): read the failing job, fix the cause on the branch, run the suite and `ai design-review`,
+    push, record `DESIGN REVIEW: clean` in the PR body when the review is clean, and end `pr_opened`, so the new
+    head comes back through the merge-review routing. Up to `maxCiFixAttempts` (3) per issue (`ci_fix_attempts`,
+    cleared by `talos reset`); after that, and when the re-run command itself keeps failing, the issue goes to the
+    owner (triage first).
   - `fail`, still pending after the wait, no open PR, or `maxAutoMergesPerDay` (5) already merged today: in_review,
     assigned to the reviewer, with a comment giving the reason.
   - a PR already merged (an earlier pass merged it but setting the issue done failed): the issue is set `done`.
   While Agamemnon is paused, issues already handed to it go to the reviewer instead of waiting. Merging lives in
   `lib/orchestrator/merging.py` (`MergeSweeper`), separate from feeding the worker. Each attempt is kept in
   talos.db (`auto_merges`); `talos status` lists today's automatic merges.
+- **Owner-held PRs in auto-merge milestones** (`lib/orchestrator/adopt.py`, every sweep while not paused): an issue
+  in an `autoMergeMilestones` milestone that is in_review with an owner, last changed by the worker's hand-off, with
+  no run in flight and nothing it depends on unfinished, is taken to the merge sweep (in_review, assigned to
+  Agamemnon, with a comment) when the merge gate on its PR head passes, is still pending, or fails only on CI and the
+  recorded design review. Anything else (people on the PR, a do-not-merge label, Agamemnon's own files, a conflict
+  the keeper owns) stays with the owner; feedback and pending issues are never taken. Loop guards: only the worker's
+  hand-off arms it (the merge sweep's hand-back is Agamemnon's own change, an owner's edit is theirs), each PR head
+  is taken at most once (`adopted_head` in talos.db), and CI fixes are capped as above, so every path ends with the
+  owner after a fixed number of runs.
 - **Merges by a person** (`lib/orchestrator/human_merges.py`, every sweep while not paused): for each in_review issue held by an owner, find its `claude-issue-N` PR by the Agent Odysseus account. When that PR is merged and Agamemnon's own merge flow has no record of it (open or merged in `auto_merges`), the issue is set `done` with the comment "PR repo#N merged by <login>; set done", worded apart from the "merged automatically" comment. Issues with no agent PR, an open one (or several), or only a PR closed without merging are left to the owner. Each step is safe to repeat.
 - **Keeping agent PRs mergeable** (`lib/orchestrator/keeper.py`, every sweep while not paused): for each open
   `claude-issue-N` PR in the worker's repos whose issue waits for a review or a merge (in_review, held by an owner

@@ -8,10 +8,12 @@ from datetime import datetime
 from .. import sessions
 from ..config import TalosError, log
 from . import policy
+from .milestones import auto_merge_pool
 from . import state as store
 
 
 HELD = "held for the daily limit"
+CI_FIX_ACTION = "ci_fix"    # the worker's one-off action for a PR whose CI stays red (agents/odysseus/agent.json)
 
 
 def _now():
@@ -22,7 +24,8 @@ class MergeSweeper:
     """Merges as one orchestrator agent (kind orchestrator) for its worker (kind issues)."""
 
     def __init__(self, agent, worker, tracker, merger, my_id, owners, now=_now, dry_run=False,
-                 worker_state=sessions.get, triage=None, is_held=None, milestones=None):
+                 worker_state=sessions.get, triage=None, is_held=None, milestones=None, worker_id=None,
+                 update_worker_state=sessions.update):
         self.agent, self.worker, self.tracker = agent, worker, tracker
         self.settings = agent.orchestration
         self.merger = merger            # merge.Merger: find PRs, run the merge gate, merge
@@ -30,6 +33,8 @@ class MergeSweeper:
         self.owner = owners[0] if owners else None   # who gets an issue that isn't merged
         self.now, self.dry_run = now, dry_run
         self.worker_state = worker_state    # the worker's Talos state per issue (conflict_noted: the keeper gave up)
+        self.update_worker_state = update_worker_state
+        self.worker_id = str(worker_id) if worker_id else None   # the worker's Gaia user: CI fixes go to it
         self.projects = list(worker.projects)
         self.is_held = is_held or (lambda number: False)   # an issue Agamemnon holds is not merged yet
         self.triage = triage                # agamemnon.triage.Triage: looks before the owner does (None = off)
@@ -49,12 +54,8 @@ class MergeSweeper:
         milestones = self.milestones()
         if not self.enabled(milestones):
             return ""
-        prefix = self.settings.milestone_prefix.lower()
-        pool = list(issues)
-        for milestone in milestones:
-            if not milestone.lower().startswith(prefix):
-                pool.extend(i for project in self.projects
-                            for i in self.tracker.issues_in(project, milestone, skip_statuses))
+        pool = auto_merge_pool(self.tracker, self.projects, issues, milestones, self.settings.milestone_prefix,
+                               skip_statuses)
         found = {}
         for issue in pool:
             if (policy.is_merge_candidate(issue, milestones, self.projects, self.my_id)
@@ -87,7 +88,11 @@ class MergeSweeper:
         state = gate.get("state")
         if policy.only_ci_fails(gate):
             return self._ci_failed(issue, repo, pr["number"], gate, record)
-        if policy.only_mergeability_fails(gate) and                 self.worker_state(self.worker.name, number).get("conflict_noted") != gate.get("sha"):
+        if policy.ci_fixable(gate):         # CI and the recorded review: re-running alone can't make it pass
+            return self._fix_or_hand_back(issue, pr["number"], f"CI and the design review failed: {failing(gate)}",
+                                          record)
+        if policy.only_mergeability_fails(gate) and \
+                self.worker_state(self.worker.name, number).get("conflict_noted") != gate.get("sha"):
             state = "pending"
         step, why = policy.merge_step(state, waited, s.auto_merge_wait_minutes, merged_today,
                                       s.max_auto_merges_per_day)
@@ -148,7 +153,7 @@ class MergeSweeper:
         if step == policy.HAND_BACK or not runs:
             why = (f"CI failed again after {count} re-run{'s' if count != 1 else ''}" if step == policy.HAND_BACK
                    else "CI failed and has no job to re-run")
-            return self._hand_back(issue, pr, f"{why}: {listed}", record, ci=ci)
+            return self._fix_or_hand_back(issue, pr, f"{why}: {listed}", record, ci=ci)
         if self.dry_run:
             log(f"#{number} dry run, would re-run failed CI of PR {repo}#{pr}: {listed}", self.agent.name)
             return "would re-run CI (dry run)"
@@ -175,6 +180,37 @@ class MergeSweeper:
                       f"{s.ci_rerun_attempts}; if they still fail after the last one the issue goes to the "
                       f"owner.</p>")
         return "re-ran failed CI"
+
+    def _fix_or_hand_back(self, issue, pr, detail, record, ci=None):
+        """CI stays red: the worker fixes it while it has CI-fix attempts left (maxCiFixAttempts per issue, cleared by
+        `talos reset`), then the owner gets it as before."""
+        number = issue["number"]
+        attempts = int(self.worker_state(self.worker.name, number).get("ci_fix_attempts") or 0)
+        if not self.worker_id or policy.ci_fix_step(attempts, self.settings.max_ci_fix_attempts) == policy.TELL:
+            used = f" ({attempts} CI fix attempt{'s' if attempts != 1 else ''} used)" if attempts else ""
+            return self._hand_back(issue, pr, detail + used, record, ci=ci)
+        attempt = attempts + 1
+        if self.dry_run:
+            log(f"#{number} dry run, would hand PR #{pr} to {self.worker.display_name} to fix CI: {detail}",
+                self.agent.name)
+            return "would hand to the worker to fix CI (dry run)"
+        # the action first: the assignment wakes the worker, which reads it for that run; undone if that fails, so
+        # a Gaia error neither uses up the attempt nor leaves the action for a later, unrelated run
+        self.update_worker_state(self.worker.name, number, next_action=CI_FIX_ACTION, ci_fix_attempts=attempt)
+        try:
+            self.tracker.assign(number, self.worker_id)
+        except TalosError:
+            self.update_worker_state(self.worker.name, number, next_action="", ci_fix_attempts=attempts)
+            raise
+        if record:
+            store.close_merge(record["id"], self.now(), "ci_fix", detail=detail)
+        log(f"#{number} PR #{pr}: {detail}; handed to {self.worker.display_name} to fix (attempt {attempt} of "
+            f"{self.settings.max_ci_fix_attempts})", self.agent.name)
+        self._comment(number, f"{self.agent.display_name}: CI failing, handed to {self.worker.display_name}",
+                      f"<p>{html.escape(detail)}.</p><p>{html.escape(self.worker.display_name)} fixes it on the PR "
+                      f"branch, runs the suite and the design review, and pushes; the PR then comes back here to be "
+                      f"merged (attempt {attempt} of {self.settings.max_ci_fix_attempts}).</p>")
+        return f"handed to {self.worker.display_name} to fix CI"
 
     def _wait_record(self, number, repo, pr):
         """(the open auto_merges record or None, minutes it has waited). A dry run reads it without creating one, so

@@ -213,6 +213,7 @@ def breaker_tripped(streak, limit):
 # -- automatic merges -------------------------------------------------------------------------------
 
 MERGE, WAIT, HAND_BACK, RERUN = "merge", "wait", "hand_back", "rerun"
+FIX = "fix"                     # a CI fix handed to the worker (ci_fix_step)
 REVIEW_STATUS = "in_review"     # where a routed PR's issue is handed off
 
 
@@ -231,6 +232,48 @@ def is_merge_candidate(issue, milestones, projects, merger_id):
     """Handed to the merger by the merge-review routing: in review, assigned to it, in an auto-merge milestone."""
     return (issue.get("project") in projects and auto_merges(issue, milestones)
             and _lower(issue.get("status")) == REVIEW_STATUS and issue.get("assignee") == merger_id)
+
+
+CI_FIXABLE = ("ci", "review")     # failing gate checks a worker's CI-fix run deals with (it re-records the review)
+
+
+def adopt_skip_reason(issue, milestones, projects, owners, worker_id, state):
+    """Why an issue is not one the orchestrator takes from its owner to merge, or None (adt-5045). It must be waiting
+    for the owner's review in an auto-merge milestone, untouched since the worker handed it off (the merge sweep's
+    hand-back is the orchestrator's own change and an owner's edit is theirs, so neither re-arms it), with no run in
+    flight."""
+    if issue.get("project") not in projects:
+        return f"project '{issue.get('project')}' is not one of the worker's"
+    if not auto_merges(issue, milestones):
+        return f"milestone '{issue.get('milestone')}' doesn't merge automatically"
+    if _lower(issue.get("status")) != REVIEW_STATUS:
+        return f"status '{issue.get('status')}', not waiting for a review"
+    if issue.get("assignee") not in owners:
+        return "not held by an owner"
+    if not worker_id or issue.get("modifiedUser") != str(worker_id):
+        return "changed by someone since the worker's hand-off"
+    if (state or {}).get("running"):
+        return "a run is in flight"
+    return None
+
+
+def adoptable(gate, adopted_head):
+    """The PR is worth taking to the merge sweep: a head not adopted before whose gate passes, is still pending, or
+    fails only on CI and the recorded review (which the worker's CI fix takes care of)."""
+    if not gate.get("sha") or gate.get("sha") == adopted_head:
+        return False
+    return gate.get("state") in ("ok", "pending") or ci_fixable(gate)
+
+
+def ci_fixable(gate):
+    """The gate fails on CI, and on nothing but CI and the recorded design review."""
+    failed = {c.get("name") for c in gate.get("checks") or [] if c.get("state") == "fail"}
+    return gate.get("state") == "fail" and "ci" in failed and failed <= set(CI_FIXABLE)
+
+
+def ci_fix_step(attempts, max_attempts):
+    """FIX (hand the PR to the worker to fix its CI) while attempts are left, else TELL (the owner gets it)."""
+    return FIX if int(attempts or 0) < max_attempts else TELL
 
 
 def merge_step(gate_state, waited_minutes, wait_limit, merged_today, daily_limit):

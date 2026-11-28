@@ -11,6 +11,7 @@ from ..hermes import Listener
 from ..registry import load_agents
 from ..tracker import Tracker
 from . import github
+from .adopt import Adopter
 from .human_merges import HumanMergeSweeper
 from .keeper import BranchKeeper
 from .merge import Merger
@@ -50,9 +51,12 @@ def start(agent, cfg, dry_run, claude=None):
         log(f"warning: {worker.name} does not accept assignments from {agent.display_name} (Gaia user {me}); "
             f"add it to acceptAssignmentsFrom in its agent.local.json", agent.name)
     owners = [str(o) for o in (agent.orchestration.owners or [worker.handoff_to]) if o]
-    merges = MergeSweeper(agent, worker, tracker, Merger(tracker.child_env, github.agamemnon_gh), me, owners,
+    auto_merge = live(agent)
+    merger = Merger(tracker.child_env, github.agamemnon_gh)
+    merges = MergeSweeper(agent, worker, tracker, merger, me, owners,
                           dry_run=dry_run, is_held=lambda number: bool(journal.active_hold(number)),
-                          milestones=live(agent))
+                          milestones=auto_merge, worker_id=worker_id)
+    adopter = Adopter(agent, worker, tracker, merger, worker_id, me, owners, auto_merge, dry_run=dry_run)
     ai_config = workspaces.ai_common().config()
     human = HumanMergeSweeper(agent, worker, tracker, github.agamemnon_gh, ai_config["agentLogin"],
                               ai_config.get("mergerLogin", "agent-agamemnon"), owners, dry_run=dry_run)
@@ -69,12 +73,12 @@ def start(agent, cfg, dry_run, claude=None):
     triage = _triage(agent, worker, tracker, me, owners, claude, dry_run)
     merges.triage = keeper.triage = triage
     orchestrator = Orchestrator(agent, worker, tracker, worker_id, dry_run=dry_run, merges=merges, keeper=keeper,
-                                human_merges=human, overlap=overlap, holds=holds, triage=triage)
+                                human_merges=human, adopter=adopter, overlap=overlap, holds=holds, triage=triage)
     orchestrator.start()
     Listener(agent, tracker, [policy.ASSIGNEE_EVENT, policy.STATUS_EVENT], orchestrator.on_event,
              orchestrator.on_ready, cfg["hermesUrl"], cfg.get("nodeBin", "node"),
              cfg.get("reconnectSeconds", 10)).start()
-    milestones = live(agent)()
+    milestones = auto_merge()
     log(f"feeding {worker.display_name}: milestones {agent.orchestration.milestone_prefix}*, "
         f"at most {orchestrator.max_in_flight} in flight"
         + (f"; merging reviewed PRs in {', '.join(milestones)}" if milestones else "")

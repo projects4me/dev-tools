@@ -60,6 +60,7 @@ class Orchestration:
     ci_rerun_attempts: int = 3          # re-runs of a failed CI per PR head before it goes to the reviewer
     ci_rerun_errors: int = 2            # failing re-run commands per head before it goes to the reviewer
     max_conflict_attempts: int = 1      # merge-conflict resolutions per issue handed to the worker (0 = none)
+    max_ci_fix_attempts: int = 3        # CI fixes per issue handed to the worker by the merge sweep (0 = none)
     overlap_parked_statuses: tuple = PARKED_STATUSES   # statuses of issues set aside: they never hold an issue
     overlap_ignore: tuple = OVERLAP_IGNORE   # globs of files that never hold an issue (generated, additive registries)
     aga_max_actions: int = 5            # `aga` actions per incident (reads don't count)
@@ -240,7 +241,7 @@ def read_auto_merge_milestones(name):
     try:
         return _merge_milestones(path, _read_merged(path, local))
     except (OSError, ValueError) as e:
-        raise TalosError(f"{name}: agent config not readable: {e}")
+        raise TalosError(f"{name}: agent config not readable: {e}") from e
 
 
 def load_gaia_template():
@@ -367,7 +368,7 @@ def _load_orchestrator(path, raw):
     numbers = {}
     for key, default, least in (("maxInFlight", 0, 0), ("maxAutoRetries", 2, 0), ("failStreakLimit", 3, 1),
                                 ("maxAutoMergesPerDay", 5, 0), ("ciRerunAttempts", 3, 0), ("ciRerunErrors", 2, 1),
-                                ("maxConflictAttempts", 1, 0),
+                                ("maxConflictAttempts", 1, 0), ("maxCiFixAttempts", 3, 0),
                                 ("agaMaxActionsPerIncident", 5, 0), ("agaHoldUntilHour", 6, 0),
                                 ("agaFileBugsPerDay", 3, 0),
                                 ("agaMaxTurns", 40, 1), ("agaSessionsPerIncidentType", 1, 0)):
@@ -418,6 +419,7 @@ def _load_orchestrator(path, raw):
         ci_rerun_attempts=numbers["ciRerunAttempts"],
         ci_rerun_errors=numbers["ciRerunErrors"],
         max_conflict_attempts=numbers["maxConflictAttempts"],
+        max_ci_fix_attempts=numbers["maxCiFixAttempts"],
         overlap_ignore=tuple(g.strip() for g in overlap_ignore),
         overlap_parked_statuses=tuple(g.strip() for g in parked),
         aga_max_actions=numbers["agaMaxActionsPerIncident"],
