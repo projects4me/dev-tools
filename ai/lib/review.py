@@ -45,7 +45,6 @@ def fold(body):
             out.append(f"<details><summary>{m.group(1)}</summary>{fold(inner)}</details>")
             i = j
     text = "".join(out)
-    text = re.sub(r"^- \[ \] .*?Fix CodeRabbit comments.*$", "", text, flags=re.M)
     return re.sub(r"\n{3,}", "\n\n", text).strip()
 
 
@@ -167,10 +166,6 @@ def cmd_review(args):
             say(f"  ↳ id={f['id']} {f['user']['login']}: {_show(f, args.raw)}")
     for c in issue_comments:
         if c["user"]["login"] == agent:
-            continue
-        if not args.raw and _is_bot(c["user"]) and "summarize by coderabbit.ai" in (c["body"] or ""):
-            say(f"\n[PR comment] id={c['id']} {c['user']['login']}: [folded: review summary/walkthrough "
-                f"({len(c['body'])} chars), no findings; --raw to see]")
             continue
         say(f"\n[PR comment] id={c['id']} {c['user']['login']}: {_show(c, args.raw)}")
     say(f"\n{shown} inline thread(s) shown" + (" (open only)" if args.open else ""))

@@ -76,7 +76,7 @@ source to learn how to use it 14%**. About 75–80% of wall time went on test ru
 | `ai commit`/`ai pr` broke in submodules (`.git` is a file), so manual fallbacks after reading `workflow.py` | real git dir via `git rev-parse --absolute-git-dir` |
 | ~10 workflow calls per hand-off | `ai ship` from one JSON spec |
 | 25–35 whole-file `cat`/`sed` calls to find the shape of the code | `ai context <issue>` (outlines with line numbers) |
-| CodeRabbit output 16–22k chars per review round | bot boilerplate folded, findings kept, resolved threads hidden in `--open` (`--raw` for all) |
+| Bot review output 16–22k chars per review round | bot boilerplate folded, findings kept, resolved threads hidden in `--open` (`--raw` for all) |
 | `python3` hit the Windows Store stub (120 s hang) | skills: use `python` |
 | Opus for a large but settled change ($5.63 of $7.84) | `complex` means judgement, not size (MCP tool description, Talos role) |
 | No ceiling on a run | Talos `maxTurns` (80): stops, hands back as `needs_input`, session kept |
