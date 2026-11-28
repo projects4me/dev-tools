@@ -22,7 +22,7 @@ class MergeSweeper:
     """Merges as one orchestrator agent (kind orchestrator) for its worker (kind issues)."""
 
     def __init__(self, agent, worker, tracker, merger, my_id, owners, now=_now, dry_run=False,
-                 worker_state=sessions.get, triage=None, is_held=None):
+                 worker_state=sessions.get, triage=None, is_held=None, milestones=None):
         self.agent, self.worker, self.tracker = agent, worker, tracker
         self.settings = agent.orchestration
         self.merger = merger            # merge.Merger: find PRs, run the merge gate, merge
@@ -33,18 +33,22 @@ class MergeSweeper:
         self.projects = list(worker.projects)
         self.is_held = is_held or (lambda number: False)   # an issue Agamemnon holds is not merged yet
         self.triage = triage                # agamemnon.triage.Triage: looks before the owner does (None = off)
+        # milestones() -> the auto-merge milestones now (milestones.live: reloaded when the config changes)
+        self.milestones = milestones or (lambda: self.settings.auto_merge_milestones)
 
-    def enabled(self):
-        return bool(self.settings.auto_merge_milestones and self.merger and self.my_id)
+    def enabled(self, milestones=None):
+        """Merging is on: auto-merge milestones (`milestones`, else read now), a merger and its Gaia user."""
+        milestones = self.milestones() if milestones is None else milestones
+        return bool(milestones and self.merger and self.my_id)
 
     def sweep(self, issues, skip_statuses, paused=False):
         """One pass over the issues handed to the orchestrator to merge. `issues` are the sweep's (the orchestrator
         reads its milestones once per sweep); an auto-merge milestone outside them is read here, leaving out
         skip_statuses. While paused nothing is merged: they go to the reviewer instead of waiting on a paused
         orchestrator. Returns a short note ("" when there were none)."""
-        if not self.enabled():
+        milestones = self.milestones()
+        if not self.enabled(milestones):
             return ""
-        milestones = self.settings.auto_merge_milestones
         prefix = self.settings.milestone_prefix.lower()
         pool = list(issues)
         for milestone in milestones:
